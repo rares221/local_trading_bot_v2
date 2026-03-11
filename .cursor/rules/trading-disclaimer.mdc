@@ -1,0 +1,10 @@
+---
+description: Trading app disclaimer and compliance
+globs: app/api/**/*.py, app/**/routes*.py
+---
+
+# Trading disclaimer
+
+- All user-facing output (API responses, UI, exports) must include a clear **not financial advice** disclaimer.
+- Use the single source constant (e.g. `DISCLAIMER` in `app/api/routes.py`) and reference it from all surfaces.
+- No guarantees about outcomes; educational and research only.

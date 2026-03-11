@@ -1,0 +1,57 @@
+# Python
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Environment and secrets
+.env
+.env.local
+*.local
+
+# Data and DB (keep schema; ignore local data)
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# IDE and OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Testing and coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+.cursor/
+TECH_STACK_AND_INTEGRATION.md
+PLAN_PROGRESS.md
+
+# Optional: snapshot outputs if you don't want them in repo
+# recommendation_snapshots/
+# recommenadtion_snapshots/
