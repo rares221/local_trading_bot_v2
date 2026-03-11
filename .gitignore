@@ -49,8 +49,6 @@ htmlcov/
 .tox/
 .nox/
 .cursor/
-TECH_STACK_AND_INTEGRATION.md
-PLAN_PROGRESS.md
 
 # Optional: snapshot outputs if you don't want them in repo
 # recommendation_snapshots/
