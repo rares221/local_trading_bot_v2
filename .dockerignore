@@ -1,0 +1,16 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+.git/
+.gitignore
+.env
+.env.*
+data/
+*.db
+*.sqlite*
+.cursor/
+.idea/
+.vscode/
+*.md
+!README.md

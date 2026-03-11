@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Recommendations — Trading Bot</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/common.css">
+</head>
+<body>
+  <nav class="nav">
+    <a href="/dashboard">Dashboard</a>
+    <a href="/recommendations" class="active">Recommendations</a>
+    <a href="/analysis">Market analysis</a>
+    <a href="/active-trades">Active trades</a>
+    <a href="/docs" target="_blank" rel="noopener">API docs</a>
+  </nav>
+
+  <main class="app app--wide">
+    <h1 class="page-title">Recommendations</h1>
+    <p class="page-desc">Today's batch by category. Use "Took it" or "Skipped" per row. Trades you take appear on <a href="/active-trades">Active trades</a>. (Workflow: run pipeline on Dashboard first.)</p>
+
+    <section class="card" id="stocks">
+      <h2 class="section-title">Stocks</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Asset</th><th class="num">Buy</th><th class="num">SL</th><th class="num">TP</th><th>Risk</th><th>Status</th><th>Actions</th></tr>
+          </thead>
+          <tbody id="stocks-body"></tbody>
+        </table>
+      </div>
+    </section>
+    <section class="card" id="commodities">
+      <h2 class="section-title">Commodities</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Asset</th><th class="num">Buy</th><th class="num">SL</th><th class="num">TP</th><th>Risk</th><th>Status</th><th>Actions</th></tr>
+          </thead>
+          <tbody id="commodities-body"></tbody>
+        </table>
+      </div>
+    </section>
+    <section class="card" id="other">
+      <h2 class="section-title">Other</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Asset</th><th class="num">Buy</th><th class="num">SL</th><th class="num">TP</th><th>Risk</th><th>Status</th><th>Actions</th></tr>
+          </thead>
+          <tbody id="other-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <p class="disclaimer">Educational use only. Not financial advice.</p>
+  </main>
+
+  <script>
+    function row(rec) {
+      const tr = document.createElement('tr');
+      const actions = rec.status === 'pending'
+        ? `<button type="button" class="btn btn-sm btn--primary" data-id="${rec.id}" data-do="took-it">Took it</button><button type="button" class="btn btn-sm btn--secondary" data-id="${rec.id}" data-do="skipped">Skipped</button>`
+        : rec.status;
+      tr.innerHTML = `<td>${rec.asset_id}</td><td class="num">${rec.buy_in_price}</td><td class="num">${rec.stop_loss}</td><td class="num">${rec.take_profit}</td><td>${rec.risk_tier}</td><td>${rec.status}</td><td>${actions}</td>`;
+      tr.querySelectorAll('button[data-id]').forEach(b => {
+        b.addEventListener('click', async () => {
+          const id = b.getAttribute('data-id');
+          const do_ = b.getAttribute('data-do');
+          await fetch(`/api/recommendations/${id}/${do_ === 'took-it' ? 'took-it' : 'skipped'}`, { method: 'POST' });
+          load();
+        });
+      });
+      return tr;
+    }
+    function render(tbodyId, items) {
+      const tbody = document.getElementById(tbodyId);
+      tbody.innerHTML = '';
+      if (!items || items.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7" class="table-empty">None</td></tr>';
+        return;
+      }
+      items.forEach(rec => tbody.appendChild(row(rec)));
+    }
+    async function load() {
+      const r = await fetch('/api/recommendations?group_by=category');
+      const data = await r.json();
+      const by = data.by_category || {};
+      render('stocks-body', by.stocks);
+      render('commodities-body', by.commodities);
+      render('other-body', by.other);
+    }
+    load();
+  </script>
+</body>
+</html>

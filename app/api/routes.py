@@ -116,6 +116,7 @@ async def mark_took_it(
         last_updated=now,
     )
     db.add(active)
+    await db.commit()
     return _with_disclaimer({"ok": True, "recommendation_id": recommendation_id, "active_trade_created": True})
 
 
@@ -129,27 +130,34 @@ async def mark_skipped(
     if not rec:
         raise HTTPException(status_code=404, detail="Recommendation not found")
     rec.status = "skipped"
+    await db.commit()
     return _with_disclaimer({"ok": True, "recommendation_id": recommendation_id})
 
 
 @router.get("/active-trades")
 async def list_active_trades(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
     """List active trades (recommendations user marked as taken); get updates from update job."""
-    q = select(ActiveTrade).order_by(ActiveTrade.user_taken_at.desc())
+    q = (
+        select(ActiveTrade, Recommendation.asset_id, Recommendation.buy_in_price)
+        .join(Recommendation, ActiveTrade.recommendation_id == Recommendation.id)
+        .order_by(ActiveTrade.user_taken_at.desc())
+    )
     result = await db.execute(q)
-    trades = result.scalars().all()
+    rows = result.all()
     return _with_disclaimer({
         "items": [
             {
                 "id": t.id,
                 "recommendation_id": t.recommendation_id,
+                "asset_id": asset_id,
+                "buy_in_price": buy_in_price,
                 "user_taken_at": t.user_taken_at.isoformat(),
                 "current_sl": t.current_sl,
                 "current_tp": t.current_tp,
                 "expiry": t.expiry.isoformat() if t.expiry else None,
                 "last_updated": t.last_updated.isoformat(),
             }
-            for t in trades
+            for t, asset_id, buy_in_price in rows
         ]
     })
 
@@ -157,3 +165,69 @@ async def list_active_trades(db: AsyncSession = Depends(get_db)) -> dict[str, An
 @router.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok", "app": "local_trading_bot_v2"}
+
+
+# --- Actions (same logic as scripts; for UI buttons) ---
+
+@router.post("/actions/run-pipeline-once")
+async def action_run_pipeline_once() -> dict[str, Any]:
+    """Run ingestion + sentiment, analysis, and daily batch (same as scripts/run_pipeline_once.py)."""
+    from app.jobs.scheduler import job_ingest_and_sentiment, job_run_analysis, job_daily_batch
+    await job_ingest_and_sentiment()
+    await job_run_analysis()
+    await job_daily_batch()
+    return _with_disclaimer({"ok": True, "message": "Pipeline run complete. Check recommendations."})
+
+
+@router.post("/actions/refresh-todays-batch")
+async def action_refresh_todays_batch() -> dict[str, Any]:
+    """Clear today's pending/skipped recommendations (and their active trades); keep taken trades. Then re-run daily batch."""
+    from app.jobs.scheduler import job_daily_batch
+    from sqlalchemy import select, delete
+    from app.core.database import async_session_factory
+    batch_id = date.today().isoformat()
+    async with async_session_factory() as session:
+        recs_to_remove = await session.execute(
+            select(Recommendation.id).where(
+                Recommendation.batch_id == batch_id,
+                Recommendation.status != "taken",
+            )
+        )
+        rec_ids = [r for r in recs_to_remove.scalars().all()]
+        if rec_ids:
+            await session.execute(delete(ActiveTrade).where(ActiveTrade.recommendation_id.in_(rec_ids)))
+        await session.execute(
+            delete(Recommendation).where(
+                Recommendation.batch_id == batch_id,
+                Recommendation.status != "taken",
+            )
+        )
+        await session.commit()
+    await job_daily_batch()
+    return _with_disclaimer({"ok": True, "message": f"Today's batch ({batch_id}) refreshed. Taken trades kept."})
+
+
+@router.post("/actions/clear-todays-batch")
+async def action_clear_todays_batch() -> dict[str, Any]:
+    """Clear today's pending/skipped recommendations only (no re-run). Taken trades and their recommendations are kept."""
+    from sqlalchemy import select, delete
+    from app.core.database import async_session_factory
+    batch_id = date.today().isoformat()
+    async with async_session_factory() as session:
+        recs_to_remove = await session.execute(
+            select(Recommendation.id).where(
+                Recommendation.batch_id == batch_id,
+                Recommendation.status != "taken",
+            )
+        )
+        rec_ids = [r for r in recs_to_remove.scalars().all()]
+        if rec_ids:
+            await session.execute(delete(ActiveTrade).where(ActiveTrade.recommendation_id.in_(rec_ids)))
+        await session.execute(
+            delete(Recommendation).where(
+                Recommendation.batch_id == batch_id,
+                Recommendation.status != "taken",
+            )
+        )
+        await session.commit()
+    return _with_disclaimer({"ok": True, "message": f"Today's batch ({batch_id}) cleared. Taken trades kept."})

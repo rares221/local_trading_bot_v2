@@ -21,28 +21,6 @@ Trading insight app: **market analysis** (Phase 1) and **trade recommendations**
 
 **Shell:** Prefer **bash** for commands in this project (Git Bash or WSL on Windows). PowerShell works but uses different syntax (e.g. `;` instead of `&&`).
 
-## Git and GitHub (push to rares221)
-
-The project is already a local git repo (`.git` present). To push to your GitHub:
-
-1. **Create a new private repo** at [github.com/rares221](https://github.com/rares221): click **New**, name it e.g. `local_trading_bot_v2`, set to **Private**, do **not** add a README or .gitignore (you already have them).
-2. **Add the remote** (if not already added):
-   ```bash
-   cd local_trading_bot_v2
-   git remote add origin https://github.com/rares221/local_trading_bot_v2.git
-   ```
-   If you used a different repo name, replace `local_trading_bot_v2` in the URL.
-3. **Commit** (if you haven’t yet):
-   ```bash
-   git add .
-   git commit -m "initial commit"
-   ```
-4. **Push**:
-   ```bash
-   git branch -M main
-   git push -u origin main
-   ```
-
 ## Setup
 
 ```bash
@@ -57,25 +35,66 @@ Optional: copy `.env.example` to `.env` and set `DATABASE_URL`, `DEBUG`, etc.
 
 ## Run
 
+### Docker (recommended)
+
+Same pattern as codeops-trading-app: start/stop via Makefile and Docker Compose.
+
 ```bash
-# API only (no scheduler)
+make build   # first time or after dependency/code changes
+make start   # start app in background
+```
+
+- **Dashboard:** http://localhost:8000/dashboard (buttons: run pipeline, refresh today’s batch, clear today’s batch, link to recommendations)
+- **Recommendations:** http://localhost:8000/recommendations
+
+```bash
+make stop    # stop and remove the container
+```
+
+**Docker required:** Install [Docker Desktop for Windows](https://docs.docker.com/desktop/install/windows-install/) and have it running.
+
+**Make `docker` work in the terminal (Git Bash, Cursor, PowerShell):**  
+Add Docker’s folder to your **user** PATH so every new terminal finds it:
+
+1. Press **Win**, type **environment**, open **Edit the system environment variables**.
+2. Click **Environment Variables**.
+3. Under **User variables**, select **Path** → **Edit**.
+4. Click **New** and add:  
+   `C:\Program Files\Docker\Docker\resources\bin`
+5. Click **OK** on all dialogs.
+6. **Close and reopen** your terminal (and Cursor if you use its integrated terminal).  
+   Then run: `docker --version` and `docker compose version`.
+
+If Docker was installed to a different drive or folder, use that path instead (the folder must contain `docker.exe`).
+
+**If you don’t want to change PATH:**  
+Double‑click **start.bat** / **stop.bat** in the project folder; they call Docker by full path.
+
+**From a terminal (once `docker` is on PATH):**  
+`docker compose build` and `docker compose up -d --remove-orphans` to start, `docker compose down` to stop (or `make build` / `make start` / `make stop` if you have make).
+
+Data (SQLite DB) is stored in a Docker volume `trading_data` and persists across stop/start.
+
+### Local (venv)
+
+```bash
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 - **Health:** `GET http://localhost:8000/api/health`
 - **Latest analysis:** `GET http://localhost:8000/api/analysis/latest`
-- **Recommendations:** `GET http://localhost:8000/api/recommendations` (optional: `?asset_category=stocks`, `?group_by=category` for stocks/commodities/other sections)
+- **Recommendations:** `GET http://localhost:8000/api/recommendations` (optional: `?asset_category=stocks`, `?group_by=category`)
 - **Mark taken:** `POST http://localhost:8000/api/recommendations/{id}/took-it`
 - **Mark skipped:** `POST http://localhost:8000/api/recommendations/{id}/skipped`
 - **Active trades:** `GET http://localhost:8000/api/active-trades`
 
-To run the scheduler (ingestion, analysis, daily batch, active-trade updates), call `start_scheduler()` from a worker or after app startup (see `app/jobs/scheduler.py`).
+The scheduler runs with the API (ingestion + analysis every 2h, daily batch at 06:00, active-trade updates every 2h).
 
-**Populate data once (no scheduler):**
+**Populate data once (no scheduler):** run from the dashboard (“Run pipeline once”) or:
+
 ```bash
 python scripts/run_pipeline_once.py
 ```
-Then open `/api/analysis/latest` and `/api/recommendations`; try `POST /api/recommendations/{id}/took-it` or `.../skipped`.
 
 ## What's next (proceed from here)
 

@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Market analysis — Trading Bot</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/common.css">
+</head>
+<body>
+  <nav class="nav">
+    <a href="/dashboard">Dashboard</a>
+    <a href="/recommendations">Recommendations</a>
+    <a href="/analysis" class="active">Market analysis</a>
+    <a href="/active-trades">Active trades</a>
+    <a href="/docs" target="_blank" rel="noopener">API docs</a>
+  </nav>
+
+  <main class="app app--wide">
+    <h1 class="page-title">Market analysis</h1>
+    <p class="page-desc">Review the latest report before deciding on recommendations.</p>
+    <p class="meta" id="meta">Loading…</p>
+    <div id="content"></div>
+    <p class="disclaimer">Educational use only. Not financial advice.</p>
+  </main>
+
+  <script>
+    (async function() {
+      const meta = document.getElementById('meta');
+      const content = document.getElementById('content');
+      try {
+        const r = await fetch('/api/analysis/latest');
+        if (!r.ok) {
+          const d = await r.json().catch(() => ({}));
+          meta.textContent = '';
+          content.innerHTML = '<div class="alert alert--error" role="alert">' + (d.detail || r.statusText || 'No market analysis yet. Run pipeline from the Dashboard.') + '</div>';
+          return;
+        }
+        const data = await r.json();
+        meta.textContent = 'As of ' + (data.as_of || '') + (data.sources_used ? ' · Sources: ' + (Array.isArray(data.sources_used) ? data.sources_used.join(', ') : data.sources_used) : '');
+        let html = '';
+        if (data.summary) {
+          html += '<section class="card"><h2 class="section-title">Summary</h2><div class="block-summary">' + escapeHtml(data.summary) + '</div></section>';
+        }
+        if (data.payload) {
+          html += '<section class="card"><h2 class="section-title">Payload</h2><div class="block-payload"><pre>' + escapeHtml(JSON.stringify(data.payload, null, 2)) + '</pre></div></section>';
+        }
+        content.innerHTML = html || '<p class="page-desc">No summary or payload.</p>';
+      } catch (e) {
+        meta.textContent = '';
+        content.innerHTML = '<div class="alert alert--error" role="alert">Request failed: ' + escapeHtml(e.message) + '</div>';
+      }
+    })();
+    function escapeHtml(s) {
+      const div = document.createElement('div');
+      div.textContent = s;
+      return div.innerHTML;
+    }
+  </script>
+</body>
+</html>

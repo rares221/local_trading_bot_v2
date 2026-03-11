@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Active trades — Trading Bot</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/common.css">
+</head>
+<body>
+  <nav class="nav">
+    <a href="/dashboard">Dashboard</a>
+    <a href="/recommendations">Recommendations</a>
+    <a href="/analysis">Market analysis</a>
+    <a href="/active-trades" class="active">Active trades</a>
+    <a href="/docs" target="_blank" rel="noopener">API docs</a>
+  </nav>
+
+  <main class="app app--wide">
+    <h1 class="page-title">Active trades</h1>
+    <p class="page-desc">Trades you marked as "Took it".</p>
+    <div class="alert alert--info" style="margin-bottom: var(--space-2);">
+      <strong>Where do I get updates?</strong> SL/TP and expiry are updated by the app every 2 hours. <strong>Refresh the list below</strong> (or reload this page) to see the latest values. Email/push alerts are not implemented yet.
+    </div>
+    <p style="margin-bottom: var(--space-2);">
+      <button type="button" id="refresh-btn" class="btn btn--secondary">Refresh list</button>
+    </p>
+    <div id="content"></div>
+    <p class="disclaimer">Educational use only. Not financial advice.</p>
+  </main>
+
+  <script>
+    async function load() {
+      const content = document.getElementById('content');
+      const btn = document.getElementById('refresh-btn');
+      if (btn) btn.disabled = true;
+      try {
+        const r = await fetch('/api/active-trades');
+        if (!r.ok) {
+          content.innerHTML = '<div class="alert alert--error" role="alert">Failed to load active trades.</div>';
+          return;
+        }
+        const data = await r.json();
+        const items = data.items || [];
+        if (items.length === 0) {
+          content.innerHTML = '<div class="empty-state"><p>No active trades. Mark recommendations as "Took it" on the Recommendations page.</p><a href="/recommendations" class="btn btn--primary">Go to Recommendations</a></div>';
+          return;
+        }
+        let table = '<div class="table-wrap"><table><thead><tr><th>Asset</th><th class="num">Buy-in</th><th>Taken at</th><th class="num">SL</th><th class="num">TP</th><th>Expiry</th><th>Last updated</th></tr></thead><tbody>';
+        items.forEach(t => {
+          table += '<tr><td>' + (t.asset_id || '') + '</td><td class="num">' + (t.buy_in_price ?? '') + '</td><td>' + (t.user_taken_at || '') + '</td><td class="num">' + (t.current_sl ?? '') + '</td><td class="num">' + (t.current_tp ?? '') + '</td><td>' + (t.expiry || '') + '</td><td>' + (t.last_updated || '') + '</td></tr>';
+        });
+        table += '</tbody></table></div>';
+        content.innerHTML = table;
+      } catch (e) {
+        content.innerHTML = '<div class="alert alert--error" role="alert">Request failed: ' + e.message + '</div>';
+      }
+      if (btn) btn.disabled = false;
+    }
+    document.getElementById('refresh-btn')?.addEventListener('click', load);
+    load();
+  </script>
+</body>
+</html>

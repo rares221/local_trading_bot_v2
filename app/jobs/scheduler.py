@@ -50,8 +50,8 @@ async def job_daily_batch() -> None:
     """
     batch_id = date.today().isoformat()
     async with async_session_factory() as session:
-        # Guard: do not create a new batch if today's batch exists (PLAN_MODE C3)
-        q = select(Recommendation).where(Recommendation.batch_id == batch_id).limit(1)
+        # Guard: do not add more pending if today already has pending recommendations (PLAN_MODE C3). Taken ones can coexist with a new set.
+        q = select(Recommendation).where(Recommendation.batch_id == batch_id, Recommendation.status == "pending").limit(1)
         result = await session.execute(q)
         if result.scalars().first():
             return

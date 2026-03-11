@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dashboard — Trading Bot</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/common.css">
+</head>
+<body>
+  <nav class="nav">
+    <a href="/dashboard" class="active">Dashboard</a>
+    <a href="/recommendations">Recommendations</a>
+    <a href="/analysis">Market analysis</a>
+    <a href="/active-trades">Active trades</a>
+    <a href="/docs" target="_blank" rel="noopener">API docs</a>
+  </nav>
+
+  <main class="app app--wide">
+    <h1 class="page-title">Dashboard</h1>
+    <p class="page-desc">Run the pipeline, then open Market analysis and Recommendations. Trades you take appear on Active trades.</p>
+
+    <div class="dashboard-grid">
+      <section class="dashboard-panel">
+        <h2 class="section-title">Actions</h2>
+        <div class="btn-group">
+          <button type="button" class="btn btn--primary" data-action="run-pipeline-once">Run pipeline once</button>
+          <button type="button" class="btn btn--secondary" data-action="refresh-todays-batch">Refresh today's batch</button>
+          <button type="button" class="btn btn--secondary" data-action="clear-todays-batch">Clear today's batch</button>
+        </div>
+      </section>
+      <section class="dashboard-panel">
+        <h2 class="section-title">Pages</h2>
+        <div class="btn-group">
+          <a href="/recommendations" class="btn btn--secondary">Recommendations</a>
+          <a href="/analysis" class="btn btn--secondary">Market analysis</a>
+          <a href="/active-trades" class="btn btn--secondary">Active trades</a>
+          <a href="/docs" target="_blank" rel="noopener" class="btn btn--secondary">API docs</a>
+        </div>
+      </section>
+    </div>
+
+    <details class="card" style="margin-top: var(--space-4);">
+      <summary style="cursor: pointer; font-weight: 600;">Workflow &amp; batch notes</summary>
+      <ol class="ordered-list" style="margin-top: var(--space-2);">
+        <li>Run pipeline (or wait for schedule) → feeds, analysis, today’s recommendations.</li>
+        <li>Open Market analysis, then Recommendations; mark each row Took it or Skipped.</li>
+        <li>Active trades shows what you took; refresh that page to see SL/TP updates (every 2h).</li>
+      </ol>
+      <p class="meta">Refresh = new set of recs; Clear = remove pending/skipped only. Taken trades persist.</p>
+    </details>
+
+    <div id="message" class="alert" role="alert" style="display: none;"></div>
+    <p class="disclaimer">Educational use only. Not financial advice.</p>
+  </main>
+
+  <script>
+    const messageEl = document.getElementById('message');
+    function showMessage(text, ok) {
+      messageEl.textContent = text;
+      messageEl.className = 'alert ' + (ok ? 'alert--success' : 'alert--error');
+      messageEl.style.display = 'block';
+    }
+    document.querySelectorAll('button[data-action]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const action = btn.getAttribute('data-action');
+        btn.disabled = true;
+        try {
+          const r = await fetch('/api/actions/' + action, { method: 'POST' });
+          const data = await r.json();
+          showMessage(data.message || (typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail)) || (r.ok ? 'Done.' : 'Error'), r.ok);
+        } catch (e) {
+          showMessage('Request failed: ' + e.message, false);
+        }
+        btn.disabled = false;
+      });
+    });
+  </script>
+</body>
+</html>
