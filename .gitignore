@@ -35,6 +35,7 @@ data/
 *.sqlite3
 
 # IDE and OS
+.cursor/
 .idea/
 .vscode/
 *.swp
@@ -48,7 +49,6 @@ Thumbs.db
 htmlcov/
 .tox/
 .nox/
-.cursor/
 
 # Optional: snapshot outputs if you don't want them in repo
 # recommendation_snapshots/
