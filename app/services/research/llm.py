@@ -117,12 +117,14 @@ async def _call_ollama(model: str, system: str, user: str, base_url: str) -> str
 
 async def generate_rationale(context: dict[str, Any]) -> str | None:
     """
-    One-shot LLM call using the configured provider (research_llm_provider + research_llm_model).
+    One-shot LLM call using the configured provider (from preferences or config).
     Returns 2–4 sentences on why this idea might make sense and main risk, or None if unavailable/fails.
     """
     from app.core.config import settings
+    from app.core.preferences import get_research_llm_config
 
-    provider_id = (settings.research_llm_provider or "openai").strip().lower()
+    cfg = get_research_llm_config()
+    provider_id = (cfg.get("research_llm_provider") or "openai").strip().lower()
     provider = get_provider_by_id(provider_id)
     if not provider:
         provider_id = "openai"
@@ -132,12 +134,13 @@ async def generate_rationale(context: dict[str, Any]) -> str | None:
     if not is_available(provider_id, api_key):
         return None
 
-    model = (settings.research_llm_model or "").strip() or provider.default_model
+    model = (cfg.get("research_llm_model") or "").strip() or provider.default_model
     if not model:
         return None
 
     system = SYSTEM_PROMPT
     user = _format_user_content(context)
+    ollama_base_url = (cfg.get("ollama_base_url") or "").strip() or (settings.ollama_base_url or "http://localhost:11434")
 
     try:
         if provider_id == "openai":
@@ -145,7 +148,7 @@ async def generate_rationale(context: dict[str, Any]) -> str | None:
         if provider_id == "anthropic":
             return await _call_anthropic(model, system, user, api_key or "")
         if provider_id == "ollama":
-            return await _call_ollama(model, system, user, settings.ollama_base_url or "http://localhost:11434")
+            return await _call_ollama(model, system, user, ollama_base_url)
         if provider_id == "openrouter":
             return await _call_openrouter(model, system, user, api_key or "")
     except Exception:

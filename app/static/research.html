@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Research an asset — Trading Bot</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/common.css">
+</head>
+<body>
+  <nav class="nav">
+    <a href="/dashboard">Dashboard</a>
+    <a href="/recommendations">Recommendations</a>
+    <a href="/research" class="active">Research an asset</a>
+    <a href="/analysis">Market analysis</a>
+    <a href="/active-trades">Active trades</a>
+    <a href="/docs" target="_blank" rel="noopener">API docs</a>
+  </nav>
+
+  <main class="app app--wide">
+    <h1 class="page-title">Research an asset</h1>
+    <p class="page-desc">Get a short research summary (why this idea might make sense and main risk) for any asset, independent of today's recommendations. Uses the same context (sentiment, price, headlines) and LLM as the batch.</p>
+
+    <section class="card">
+      <h2 class="section-title">Look up an asset</h2>
+      <div class="form-group" style="max-width: 320px;">
+        <label for="asset-id">Asset</label>
+        <input type="text" id="asset-id" class="input" placeholder="e.g. XOM, WTI, XAUUSD" aria-label="Asset id or ticker">
+      </div>
+      <div class="form-group" style="max-width: 240px;">
+        <label for="category">Category</label>
+        <select id="category" class="input" aria-label="Asset category">
+          <option value="stocks">Stocks</option>
+          <option value="commodities">Commodities</option>
+          <option value="other">Other</option>
+        </select>
+      </div>
+      <div class="btn-group btn-group--row" style="margin-top: var(--space-2);">
+        <button type="button" class="btn btn--primary" id="get-research">Get research</button>
+      </div>
+    </section>
+
+    <section class="card" id="result-card" hidden>
+      <h2 class="section-title" id="result-title">Research result</h2>
+      <div id="result-loading" class="meta" hidden>Loading…</div>
+      <div id="result-summary" hidden>
+        <p class="research-summary-label">Summary</p>
+        <p id="result-summary-text" class="block-summary research-text"></p>
+      </div>
+      <details id="result-context-wrap" class="meta" style="margin-top: var(--space-2);" hidden>
+        <summary style="cursor: pointer;">Context (sentiment, price, headlines)</summary>
+        <pre id="result-context-json" class="block-payload" style="margin-top: var(--space-1);"></pre>
+      </details>
+      <p id="result-empty" class="research-empty meta" hidden>No summary returned. Check that an LLM provider is configured (e.g. OPENAI_API_KEY or Ollama running).</p>
+    </section>
+
+    <p class="disclaimer">Educational use only. Not financial advice.</p>
+  </main>
+
+  <script>
+    (function() {
+      const assetInput = document.getElementById('asset-id');
+      const categorySelect = document.getElementById('category');
+      const getBtn = document.getElementById('get-research');
+      const resultCard = document.getElementById('result-card');
+      const resultTitle = document.getElementById('result-title');
+      const resultLoading = document.getElementById('result-loading');
+      const resultSummary = document.getElementById('result-summary');
+      const resultSummaryText = document.getElementById('result-summary-text');
+      const resultContextWrap = document.getElementById('result-context-wrap');
+      const resultContextJson = document.getElementById('result-context-json');
+      const resultEmpty = document.getElementById('result-empty');
+
+      function showResult(assetId, category) {
+        resultCard.hidden = false;
+        resultTitle.textContent = 'Research: ' + assetId + ' (' + category + ')';
+        resultSummary.hidden = true;
+        resultContextWrap.hidden = true;
+        resultEmpty.hidden = true;
+      }
+
+      function showLoading(show) {
+        resultLoading.hidden = !show;
+      }
+
+      function showSummary(text) {
+        resultSummary.hidden = false;
+        resultSummaryText.textContent = text || '';
+        resultEmpty.hidden = !!text;
+      }
+
+      function showContext(ctx) {
+        resultContextWrap.hidden = !ctx;
+        if (ctx) resultContextJson.textContent = JSON.stringify(ctx, null, 2);
+      }
+
+      getBtn.addEventListener('click', async () => {
+        const assetId = (assetInput.value || '').trim();
+        const category = categorySelect.value;
+        if (!assetId) {
+          assetInput.focus();
+          return;
+        }
+        showResult(assetId, category);
+        showLoading(true);
+        showSummary('');
+        showContext(null);
+        try {
+          const r = await fetch('/api/research/summary?asset_id=' + encodeURIComponent(assetId) + '&category=' + encodeURIComponent(category) + '&generate=true');
+          const data = await r.json();
+          showLoading(false);
+          if (data.context) showContext(data.context);
+          if (data.summary) {
+            showSummary(data.summary);
+          } else {
+            showSummary('');
+            resultEmpty.hidden = false;
+          }
+        } catch (e) {
+          showLoading(false);
+          showSummary('');
+          resultEmpty.textContent = 'Request failed: ' + e.message;
+          resultEmpty.hidden = false;
+        }
+      });
+    })();
+  </script>
+</body>
+</html>

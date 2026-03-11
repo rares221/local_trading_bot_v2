@@ -31,7 +31,7 @@ source .venv/bin/activate   # Unix / Git Bash
 pip install -r requirements.txt
 ```
 
-Optional: copy `.env.example` to `.env` and set `DATABASE_URL`, `DEBUG`, etc.
+Optional: copy `.env.example` to `.env` and set `DATABASE_URL`, `DEBUG`, and (for research rationale) the LLM provider and API keys below.
 
 ## Run
 
@@ -45,7 +45,8 @@ make start   # start app in background
 ```
 
 - **Dashboard:** http://localhost:8000/dashboard (buttons: run pipeline, refresh today’s batch, clear today’s batch, link to recommendations)
-- **Recommendations:** http://localhost:8000/recommendations
+- **Recommendations:** http://localhost:8000/recommendations (each row has “Show research” for the stored rationale)
+- **Research an asset:** http://localhost:8000/research (look up any asset and get an on-demand research summary)
 
 ```bash
 make stop    # stop and remove the container
@@ -87,8 +88,28 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 - **Mark taken:** `POST http://localhost:8000/api/recommendations/{id}/took-it`
 - **Mark skipped:** `POST http://localhost:8000/api/recommendations/{id}/skipped`
 - **Active trades:** `GET http://localhost:8000/api/active-trades`
+- **Research summary (LLM rationale):** `GET http://localhost:8000/api/research/summary?asset_id=X&category=Y` (optional `&generate=false` for context only)
+- **LLM providers:** `GET http://localhost:8000/api/research/providers` (list providers and current config)
 
 The scheduler runs with the API (ingestion + analysis every 2h, daily batch at 06:00, active-trade updates every 2h).
+
+### Research rationale (multi-provider LLM)
+
+The app can generate short “why this idea and main risk” rationales using a configurable LLM. Supported providers: **OpenAI**, **Anthropic**, **Ollama** (local), **OpenRouter**.
+
+| Env / config | Description |
+|--------------|-------------|
+| `RESEARCH_LLM_PROVIDER` | `openai` (default), `anthropic`, `ollama`, or `openrouter` |
+| `RESEARCH_LLM_MODEL` | Model name; leave empty to use the provider default (e.g. `gpt-4o-mini`, `llama3.1`) |
+| `OPENAI_API_KEY` | Required when provider is `openai` |
+| `ANTHROPIC_API_KEY` | Required when provider is `anthropic` |
+| `OPENROUTER_API_KEY` | Required when provider is `openrouter`; use model IDs like `openai/gpt-4o-mini` |
+| `OLLAMA_BASE_URL` | Optional; default `http://localhost:11434` when provider is `ollama` |
+
+- **Ollama (local):** Set `RESEARCH_LLM_PROVIDER=ollama` and optionally `RESEARCH_LLM_MODEL=llama3.1`. No API key; ensure Ollama is running and the model is pulled.
+- **OpenAI / Anthropic / OpenRouter:** Set the matching `*_API_KEY` and `RESEARCH_LLM_PROVIDER`. Optionally set `RESEARCH_LLM_MODEL` (e.g. `claude-3-5-haiku-20241022`).
+
+If no provider is configured or the key is missing, rationale generation is skipped (context and recommendations still work; `rationale_text` and the summary endpoint will be empty/null). You can change provider and model (and Ollama URL) from the **Dashboard** under "Research / LLM provider"; choices are saved in `data/preferences.json` and override env.
 
 **Populate data once (no scheduler):** run from the dashboard (“Run pipeline once”) or:
 
@@ -98,13 +119,18 @@ python scripts/run_pipeline_once.py
 
 ## What's next (proceed from here)
 
-| Step | Status | Action |
+See [PLAN_PROGRESS.md](PLAN_PROGRESS.md) §10 for the full backlog. Current order:
+
+| Step | Status | Notes |
 |------|--------|--------|
-| Pipeline runs once | Done | `python scripts/run_pipeline_once.py` |
-| Scheduler on startup | Done | Scheduler starts with the API (ingestion + analysis every 2h, daily batch at 06:00, active-trade updates every 2h). |
-| **Recommendation engine with real prices** | Done | `app/services/recommendations/engine.py` fetches prices via yfinance (CL=F, BZ=F, GC=F, XOM, NG=F), sets buy_in_price = last close, and computes stop_loss/take_profit by risk_tier (conservative: 1.5% SL / 3% TP; moderate: 2% / 4%; aggressive: 3% / 6%). Daily batch uses this; re-run pipeline (new day or after clearing today’s batch) to see real numbers. |
-| Price/conditions in analysis | Later | Add oil/commodity prices and optional EIA conditions into the market analysis payload so the engine can use them. |
-| Feed-item cleanup | Optional | Add a job to delete `feed_items` older than `feed_max_age_days` (e.g. daily). |
+| Pipeline, scheduler, recommendation engine | Done | Real prices (yfinance), risk tiers, daily batch ≤5, Took it/Skipped. |
+| Taken-asset filter | Done | No new pending rec for assets that already have a taken recommendation. |
+| Research / rationale (multi-provider LLM) | Done | Context builder + OpenAI/Anthropic/Ollama/OpenRouter; `GET /api/research/summary`, `GET /api/research/providers`. |
+| **Export (CSV)** | Next | `GET /api/recommendations/export?format=csv` for today’s batch or pending. |
+| Active-trade update logic | Pending | In `job_update_active_trades`, refresh current_sl / current_tp from latest prices or analysis. |
+| Blocklist from file | Pending | `data/blocklist.txt` for yfinance symbol blocklist (§8.1). |
+| Indices category | Pending | Up to 5 indices recs; map SPX/DJI/FTSE/VIX to yfinance (§8.2). |
+| Feed-item cleanup | Optional | Daily job to delete `feed_items` older than `feed_max_age_days`. |
 
 ## Data
 

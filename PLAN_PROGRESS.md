@@ -204,9 +204,9 @@ We **adopt Option B (emulate)** in the app: no dependency on running Dexter; one
 | Recommendation schema | Done | `Recommendation` model; full API schema |
 | Engine (≤5 per category, sentiment + risk) | Done | `engine.py`; dynamic tickers + fixed universe; preferred_risk |
 | Storage (recommendations + active trades) | Done | SQLite |
-| One batch per day; update job for active only | Done | Guard in `job_daily_batch`; `job_update_active_trades` |
+| One batch per day; update job for active only | Done | Guard in `job_daily_batch`; `job_update_active_trades` writes suggested_sl/suggested_tp + levels history; original SL/TP never overwritten |
 | Took it / Skipped | Done | API + UI |
-| Research / rationale (Option B) | Done | Context builder; multi-provider LLM (OpenAI, Anthropic, Ollama, OpenRouter); `rationale_text` on rec; `GET /api/research/summary`, `GET /api/research/providers` |
+| Research / rationale (Option B) | Done | Context builder; multi-provider LLM; `rationale_text` on rec; API + UI: “Show research” modal per rec, “Research an asset” page (`/research`) |
 | Export (CSV/table) | Not done | Optional |
 | Claude Equity Research | Not done | Optional |
 | UI / notifications | Partially done | Dashboard, pages; optional Telegram/Slack |
@@ -225,7 +225,7 @@ We **adopt Option B (emulate)** in the app: no dependency on running Dexter; one
 1. ~~**Taken assets vs new batch**~~ — Done: scheduler passes `exclude_taken` (from DB); engine skips in ideas + backfill (§5.4).
 2. ~~**Research / rationale (Option B — emulate Dexter)**~~ — Done: `app/services/research` (context + multi-provider LLM: OpenAI, Anthropic, Ollama, OpenRouter; config: `research_llm_provider`, `research_llm_model`, `*_api_key`, `ollama_base_url`), `rationale_text` on Recommendation, batch stores rationale when provider available, `GET /api/research/summary`, `GET /api/research/providers`.
 3. **Export (CSV)** — `GET /api/recommendations/export?format=csv` for today’s batch or pending.
-4. **Active-trade update logic** — In `job_update_active_trades`, refresh current_sl / current_tp from latest prices or analysis.
+4. ~~**Active-trade update logic**~~ — Done: original SL/TP preserved; suggested_* + `active_trade_levels` history; API and UI show original, suggested, and per-run table with timestamps.
 5. **Blocklist from file** — `data/blocklist.txt` or log-parsing script (§8.1).
 6. **Indices category** — Up to 5 indices recs; map SPX/DJI/FTSE/VIX to yfinance (§8.2).
 7. **Feed-item cleanup** — Daily job to delete feed_items older than feed_max_age_days.
@@ -236,4 +236,4 @@ We **adopt Option B (emulate)** in the app: no dependency on running Dexter; one
 
 ## 11. One-line summary
 
-Phase 1 and Phase 2 core are done; **taken-asset filter** and **Research/rationale (Option B)** are done. Next: CSV export, active-trade update logic, blocklist file, indices, and optional items.
+Phase 1 and Phase 2 core are done; **taken-asset filter**, **Research/rationale (Option B)**, and **active-trade update logic** are done. Next: CSV export, blocklist file, indices, and optional items.

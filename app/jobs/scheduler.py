@@ -8,16 +8,17 @@ from uuid import uuid4
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
 from app.core.database import async_session_factory
 from app.models.feed_item import FeedItem
-from app.models.recommendation import Recommendation, ActiveTrade
+from app.models.recommendation import Recommendation, ActiveTrade, ActiveTradeLevel
 from app.models.market_analysis import MarketAnalysis
 from app.services.ingestion import fetch_all_feeds, save_feed_items
 from app.services.sentiment import score_sentiment, tag_assets, detect_tickers
 from app.services.analysis import run_analysis, get_latest_analysis
-from app.services.recommendations import build_daily_candidates
+from app.services.recommendations import build_daily_candidates, compute_sl_tp_for_price, get_asset_price_and_risk
 
 
 async def job_ingest_and_sentiment() -> None:
@@ -105,14 +106,36 @@ async def job_daily_batch() -> None:
 
 
 async def job_update_active_trades() -> None:
-    """Refresh SL/TP/expiry for active trades only (PLAN_MODE C4). No new recommendations."""
+    """
+    Suggest new SL/TP from latest price; do not overwrite user's original levels.
+    Writes to suggested_sl/suggested_tp/suggested_at and appends to levels history.
+    """
     async with async_session_factory() as session:
-        q = select(ActiveTrade)
+        q = select(ActiveTrade).options(selectinload(ActiveTrade.recommendation))
         result = await session.execute(q)
         now = datetime.now(timezone.utc)
         for trade in result.scalars().all():
-            # Stub: leave values as-is; real logic will pull from latest analysis/prices
+            rec = trade.recommendation
+            if not rec:
+                continue
+            price_risk = get_asset_price_and_risk(rec.asset_category, rec.asset_id)
+            if not price_risk:
+                trade.last_updated = now
+                continue
+            price, _ = price_risk
+            sl, tp = compute_sl_tp_for_price(price, rec.risk_tier)
+            trade.suggested_sl = sl
+            trade.suggested_tp = tp
+            trade.suggested_at = now
             trade.last_updated = now
+            level = ActiveTradeLevel(
+                active_trade_id=trade.id,
+                sl=sl,
+                tp=tp,
+                created_at=now,
+                source="scheduled_update",
+            )
+            session.add(level)
         await session.commit()
 
 

@@ -13,6 +13,7 @@
   <nav class="nav">
     <a href="/dashboard">Dashboard</a>
     <a href="/recommendations" class="active">Recommendations</a>
+    <a href="/research">Research an asset</a>
     <a href="/analysis">Market analysis</a>
     <a href="/active-trades">Active trades</a>
     <a href="/docs" target="_blank" rel="noopener">API docs</a>
@@ -59,20 +60,88 @@
     <p class="disclaimer">Educational use only. Not financial advice.</p>
   </main>
 
+  <!-- Modal: Show research (rationale_text) for a recommendation -->
+  <div id="research-modal" class="modal-overlay" role="dialog" aria-labelledby="research-modal-title" aria-modal="true" aria-hidden="true" hidden>
+    <div class="modal">
+      <div class="modal__header">
+        <h2 id="research-modal-title" class="modal__title">Research</h2>
+        <button type="button" class="modal__close" id="research-modal-close" aria-label="Close">&times;</button>
+      </div>
+      <div class="modal__body">
+        <p id="research-modal-body" class="research-text"></p>
+        <p style="margin-top: var(--space-2);">
+          <button type="button" class="btn btn--secondary" id="research-modal-close-footer">Close</button>
+        </p>
+      </div>
+    </div>
+  </div>
+
   <script>
+    (function modal() {
+      function init() {
+        const overlay = document.getElementById('research-modal');
+        const titleEl = document.getElementById('research-modal-title');
+        const bodyEl = document.getElementById('research-modal-body');
+        const closeBtn = document.getElementById('research-modal-close');
+        const closeFooter = document.getElementById('research-modal-close-footer');
+        if (!overlay) return;
+        overlay.style.display = 'none';
+        function showResearch(assetId, category, rationaleText) {
+          titleEl.textContent = 'Research: ' + assetId + ' (' + category + ')';
+          if (rationaleText && rationaleText.trim()) {
+            bodyEl.textContent = rationaleText.trim();
+            bodyEl.className = 'research-text';
+          } else {
+            bodyEl.textContent = 'No research summary for this recommendation. Run the pipeline with an LLM configured, or use "Research an asset" to generate one on demand.';
+            bodyEl.className = 'research-empty';
+          }
+          overlay.removeAttribute('hidden');
+          overlay.setAttribute('aria-hidden', 'false');
+          overlay.style.display = 'flex';
+        }
+        function closeModal() {
+          overlay.setAttribute('hidden', '');
+          overlay.setAttribute('aria-hidden', 'true');
+          overlay.style.display = 'none';
+        }
+        function onClose(e) {
+          if (e) { e.preventDefault(); e.stopPropagation(); }
+          closeModal();
+        }
+        if (closeBtn) closeBtn.addEventListener('click', onClose);
+        if (closeFooter) closeFooter.addEventListener('click', onClose);
+        overlay.addEventListener('click', function(e) {
+          if (e.target === overlay) closeModal();
+        });
+        document.addEventListener('keydown', function(e) {
+          if (e.key === 'Escape' && overlay.style.display === 'flex') { e.preventDefault(); closeModal(); }
+        });
+        window.showResearchModal = showResearch;
+      }
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init);
+      } else {
+        init();
+      }
+    })();
+
     function row(rec) {
       const tr = document.createElement('tr');
+      const showResearchBtn = '<button type="button" class="btn btn-sm btn--secondary" data-show-research>Show research</button> ';
       const actions = rec.status === 'pending'
-        ? `<button type="button" class="btn btn-sm btn--primary" data-id="${rec.id}" data-do="took-it">Took it</button><button type="button" class="btn btn-sm btn--secondary" data-id="${rec.id}" data-do="skipped">Skipped</button>`
-        : rec.status;
-      tr.innerHTML = `<td>${rec.asset_id}</td><td class="num">${rec.buy_in_price}</td><td class="num">${rec.stop_loss}</td><td class="num">${rec.take_profit}</td><td>${rec.risk_tier}</td><td>${rec.status}</td><td>${actions}</td>`;
+        ? showResearchBtn + '<button type="button" class="btn btn-sm btn--primary" data-id="' + rec.id + '" data-do="took-it">Took it</button><button type="button" class="btn btn-sm btn--secondary" data-id="' + rec.id + '" data-do="skipped">Skipped</button>'
+        : showResearchBtn + rec.status;
+      tr.innerHTML = '<td>' + rec.asset_id + '</td><td class="num">' + rec.buy_in_price + '</td><td class="num">' + rec.stop_loss + '</td><td class="num">' + rec.take_profit + '</td><td>' + rec.risk_tier + '</td><td>' + rec.status + '</td><td>' + actions + '</td>';
       tr.querySelectorAll('button[data-id]').forEach(b => {
         b.addEventListener('click', async () => {
           const id = b.getAttribute('data-id');
           const do_ = b.getAttribute('data-do');
-          await fetch(`/api/recommendations/${id}/${do_ === 'took-it' ? 'took-it' : 'skipped'}`, { method: 'POST' });
+          await fetch('/api/recommendations/' + id + '/' + (do_ === 'took-it' ? 'took-it' : 'skipped'), { method: 'POST' });
           load();
         });
+      });
+      tr.querySelectorAll('button[data-show-research]').forEach(b => {
+        b.addEventListener('click', () => window.showResearchModal(rec.asset_id, rec.asset_category, rec.rationale_text || ''));
       });
       return tr;
     }

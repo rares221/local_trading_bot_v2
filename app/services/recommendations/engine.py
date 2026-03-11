@@ -148,6 +148,14 @@ def _compute_levels(price: float, risk_tier: str) -> tuple[float, float]:
     return stop_loss, take_profit
 
 
+def compute_sl_tp_for_price(price: float, risk_tier: str) -> tuple[float, float]:
+    """
+    Return (stop_loss, take_profit) for a given current price and risk tier.
+    Used by active-trade update job to refresh SL/TP from latest price.
+    """
+    return _compute_levels(price, risk_tier)
+
+
 def get_asset_price_and_risk(category: str, asset_id: str) -> Optional[tuple[float, str]]:
     """
     Return (current_price, risk_tier) for (category, asset_id) if we can resolve and fetch price.

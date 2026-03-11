@@ -39,9 +39,31 @@ class ActiveTrade(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     recommendation_id: Mapped[str] = mapped_column(String(36), ForeignKey("recommendations.id"), nullable=False, unique=True)
     user_taken_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # Original levels when user took the trade (never overwritten by update job)
     current_sl: Mapped[float] = mapped_column(Float, nullable=False)
     current_tp: Mapped[float] = mapped_column(Float, nullable=False)
+    # Latest pipeline-suggested levels (from update job); user can compare with original
+    suggested_sl: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    suggested_tp: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    suggested_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     expiry: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     last_updated: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     recommendation: Mapped["Recommendation"] = relationship("Recommendation", back_populates="active_trade")
+    levels: Mapped[list["ActiveTradeLevel"]] = relationship(
+        "ActiveTradeLevel", back_populates="active_trade", order_by="ActiveTradeLevel.created_at"
+    )
+
+
+class ActiveTradeLevel(Base):
+    """History of SL/TP values per run (initial when taken + each scheduled update)."""
+    __tablename__ = "active_trade_levels"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    active_trade_id: Mapped[str] = mapped_column(String(36), ForeignKey("active_trades.id"), nullable=False, index=True)
+    sl: Mapped[float] = mapped_column(Float, nullable=False)
+    tp: Mapped[float] = mapped_column(Float, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    source: Mapped[str] = mapped_column(String(32), nullable=False)  # 'initial' | 'scheduled_update'
+
+    active_trade: Mapped["ActiveTrade"] = relationship("ActiveTrade", back_populates="levels")

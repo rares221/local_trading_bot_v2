@@ -35,6 +35,7 @@ async def root() -> dict[str, str]:
         "app": settings.app_name,
         "dashboard": "/dashboard",
         "recommendations": "/recommendations",
+        "research": "/research",
         "analysis": "/analysis",
         "active_trades": "/active-trades",
         "docs": "/docs",
@@ -71,3 +72,9 @@ async def analysis_page() -> HTMLResponse:
 async def active_trades_page() -> HTMLResponse:
     """Active trades page: list of trades user marked as taken."""
     return HTMLResponse(content=_read_static("active-trades.html"))
+
+
+@app.get("/research", response_class=HTMLResponse)
+async def research_page() -> HTMLResponse:
+    """Research an asset: form to look up any asset and get LLM research summary."""
+    return HTMLResponse(content=_read_static("research.html"))

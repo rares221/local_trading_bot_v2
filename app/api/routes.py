@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.models.recommendation import Recommendation, ActiveTrade
+from app.models.recommendation import Recommendation, ActiveTrade, ActiveTradeLevel
 from app.models.market_analysis import MarketAnalysis
 
 DISCLAIMER = (
@@ -166,6 +166,15 @@ async def mark_took_it(
         last_updated=now,
     )
     db.add(active)
+    await db.flush()
+    level = ActiveTradeLevel(
+        active_trade_id=active.id,
+        sl=rec.stop_loss,
+        tp=rec.take_profit,
+        created_at=now,
+        source="initial",
+    )
+    db.add(level)
     await db.commit()
     return _with_disclaimer({"ok": True, "recommendation_id": recommendation_id, "active_trade_created": True})
 
@@ -186,30 +195,39 @@ async def mark_skipped(
 
 @router.get("/active-trades")
 async def list_active_trades(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
-    """List active trades (recommendations user marked as taken); get updates from update job."""
+    """List active trades with original SL/TP (when taken), suggested SL/TP (latest run), and full levels history."""
+    from sqlalchemy.orm import selectinload
+
     q = (
-        select(ActiveTrade, Recommendation.asset_id, Recommendation.buy_in_price)
-        .join(Recommendation, ActiveTrade.recommendation_id == Recommendation.id)
+        select(ActiveTrade)
+        .options(selectinload(ActiveTrade.recommendation), selectinload(ActiveTrade.levels))
         .order_by(ActiveTrade.user_taken_at.desc())
     )
     result = await db.execute(q)
-    rows = result.all()
-    return _with_disclaimer({
-        "items": [
-            {
-                "id": t.id,
-                "recommendation_id": t.recommendation_id,
-                "asset_id": asset_id,
-                "buy_in_price": buy_in_price,
-                "user_taken_at": t.user_taken_at.isoformat(),
-                "current_sl": t.current_sl,
-                "current_tp": t.current_tp,
-                "expiry": t.expiry.isoformat() if t.expiry else None,
-                "last_updated": t.last_updated.isoformat(),
-            }
-            for t, asset_id, buy_in_price in rows
-        ]
-    })
+    trades = result.scalars().unique().all()
+    items = []
+    for t in trades:
+        rec = t.recommendation
+        levels_sorted = sorted(t.levels or [], key=lambda L: L.created_at)
+        items.append({
+            "id": t.id,
+            "recommendation_id": t.recommendation_id,
+            "asset_id": rec.asset_id if rec else None,
+            "buy_in_price": rec.buy_in_price if rec else None,
+            "user_taken_at": t.user_taken_at.isoformat(),
+            "original_sl": t.current_sl,
+            "original_tp": t.current_tp,
+            "suggested_sl": t.suggested_sl,
+            "suggested_tp": t.suggested_tp,
+            "suggested_at": t.suggested_at.isoformat() if t.suggested_at else None,
+            "expiry": t.expiry.isoformat() if t.expiry else None,
+            "last_updated": t.last_updated.isoformat(),
+            "levels": [
+                {"sl": L.sl, "tp": L.tp, "created_at": L.created_at.isoformat(), "source": L.source}
+                for L in levels_sorted
+            ],
+        })
+    return _with_disclaimer({"items": items})
 
 
 @router.get("/health")
@@ -221,22 +239,37 @@ async def health() -> dict[str, str]:
 
 @router.get("/preferences")
 async def get_preferences() -> dict[str, Any]:
-    """Return user preferences (e.g. preferred_risk for recommendations)."""
-    from app.core.preferences import get_preferred_risk
-    return _with_disclaimer({"preferred_risk": get_preferred_risk()})
+    """Return user preferences (risk stance + research LLM provider/model/URL)."""
+    from app.core.preferences import get_preferred_risk, get_research_llm_config
+    out = {"preferred_risk": get_preferred_risk()}
+    out.update(get_research_llm_config())
+    return _with_disclaimer(out)
 
 
 class PreferencesUpdate(BaseModel):
-    preferred_risk: str
+    preferred_risk: str | None = None
+    research_llm_provider: str | None = None
+    research_llm_model: str | None = None
+    ollama_base_url: str | None = None
 
 
 @router.patch("/preferences")
 async def update_preferences(body: PreferencesUpdate) -> dict[str, Any]:
-    """Update preferences. preferred_risk: conservative | moderate | aggressive."""
-    from app.core.preferences import set_preferred_risk
+    """Update preferences. Risk: conservative|moderate|aggressive. LLM: provider (openai|anthropic|ollama|openrouter), model, ollama_base_url."""
+    from app.core.preferences import set_preferred_risk, set_research_llm_config, get_preferred_risk, get_research_llm_config
     try:
-        saved = set_preferred_risk(body.preferred_risk)
-        return _with_disclaimer({"preferred_risk": saved, "message": "Preferences saved."})
+        if body.preferred_risk is not None:
+            set_preferred_risk(body.preferred_risk)
+        if body.research_llm_provider is not None or body.research_llm_model is not None or body.ollama_base_url is not None:
+            set_research_llm_config(
+                provider=body.research_llm_provider,
+                model=body.research_llm_model,
+                ollama_base_url=body.ollama_base_url,
+            )
+        out = {"preferred_risk": get_preferred_risk()}
+        out.update(get_research_llm_config())
+        out["message"] = "Preferences saved."
+        return _with_disclaimer(out)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -305,3 +338,18 @@ async def action_clear_todays_batch() -> dict[str, Any]:
         )
         await session.commit()
     return _with_disclaimer({"ok": True, "message": f"Today's batch ({batch_id}) cleared. Taken trades kept."})
+
+
+@router.post("/actions/purge-all")
+async def action_purge_all() -> dict[str, Any]:
+    """Delete all recommendations, active trades, and levels. For testing only; use with care."""
+    from sqlalchemy import delete
+    from app.core.database import async_session_factory
+    from app.models.recommendation import ActiveTradeLevel
+
+    async with async_session_factory() as session:
+        await session.execute(delete(ActiveTradeLevel))
+        await session.execute(delete(ActiveTrade))
+        await session.execute(delete(Recommendation))
+        await session.commit()
+    return _with_disclaimer({"ok": True, "message": "All recommendations and active trades purged."})
