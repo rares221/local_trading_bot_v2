@@ -24,6 +24,18 @@
 
     <div class="dashboard-grid">
       <section class="dashboard-panel">
+        <h2 class="section-title">Preferences</h2>
+        <div class="form-group">
+          <label for="preferred-risk">Risk stance</label>
+          <select id="preferred-risk" class="input" aria-label="Preferred risk for recommendations">
+            <option value="conservative">Conservative</option>
+            <option value="moderate">Moderate</option>
+            <option value="aggressive">Aggressive</option>
+          </select>
+          <p class="meta">Only assets at or below this level are recommended. Affects next batch.</p>
+        </div>
+      </section>
+      <section class="dashboard-panel">
         <h2 class="section-title">Actions</h2>
         <div class="btn-group">
           <button type="button" class="btn btn--primary" data-action="run-pipeline-once">Run pipeline once</button>
@@ -63,6 +75,23 @@
       messageEl.className = 'alert ' + (ok ? 'alert--success' : 'alert--error');
       messageEl.style.display = 'block';
     }
+    // Load and save preferred risk
+    (function() {
+      const sel = document.getElementById('preferred-risk');
+      if (!sel) return;
+      fetch('/api/preferences').then(r => r.json()).then(data => {
+        if (data.preferred_risk) sel.value = data.preferred_risk;
+      }).catch(() => {});
+      sel.addEventListener('change', function() {
+        fetch('/api/preferences', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ preferred_risk: sel.value })
+        }).then(r => r.json()).then(data => {
+          showMessage(data.message || 'Preferences saved.', true);
+        }).catch(e => showMessage('Failed to save: ' + e.message, false));
+      });
+    })();
     document.querySelectorAll('button[data-action]').forEach(btn => {
       btn.addEventListener('click', async () => {
         const action = btn.getAttribute('data-action');

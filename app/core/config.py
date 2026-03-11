@@ -23,5 +23,9 @@ class Settings(BaseSettings):
     update_active_trades_interval_hours: int = 2
     analysis_run_interval_hours: int = 2
 
+    # Recommendation engine: user risk stance (conservative | moderate | aggressive).
+    # Only assets with risk_tier at or below this level are recommended.
+    preferred_risk: str = "moderate"
+
 
 settings = Settings()

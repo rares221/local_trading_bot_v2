@@ -224,6 +224,23 @@ table .btn-sm { min-height: 32px; padding: 0 var(--space-1); font-size: 13px; ma
 .ordered-list a { color: var(--primary); text-decoration: none; font-weight: 500; }
 .ordered-list a:hover { text-decoration: underline; }
 
+/* Form controls */
+.form-group { margin-bottom: var(--space-2); }
+.form-group label { display: block; font-weight: 500; margin-bottom: var(--space-1); color: var(--foreground); }
+.input, select.input {
+  width: 100%;
+  max-width: 240px;
+  min-height: var(--touch-min);
+  padding: 0 var(--space-2);
+  font-size: 15px;
+  font-family: inherit;
+  border: 1px solid var(--input);
+  border-radius: var(--radius);
+  background: var(--card);
+  color: var(--foreground);
+}
+.input:focus, select.input:focus { outline: 2px solid var(--ring); outline-offset: 2px; }
+
 /* Meta / Small text */
 .meta { font-size: 14px; color: var(--muted-foreground); margin: 0 0 var(--space-2); }
 .disclaimer { font-size: 13px; color: var(--muted-foreground); margin-top: var(--space-4); }

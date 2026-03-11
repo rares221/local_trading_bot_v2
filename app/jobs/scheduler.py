@@ -15,7 +15,7 @@ from app.models.feed_item import FeedItem
 from app.models.recommendation import Recommendation, ActiveTrade
 from app.models.market_analysis import MarketAnalysis
 from app.services.ingestion import fetch_all_feeds, save_feed_items
-from app.services.sentiment import score_sentiment, tag_assets
+from app.services.sentiment import score_sentiment, tag_assets, detect_tickers
 from app.services.analysis import run_analysis, get_latest_analysis
 from app.services.recommendations import build_daily_candidates
 
@@ -31,7 +31,9 @@ async def job_ingest_and_sentiment() -> None:
         for it in result.scalars().all():
             text = f"{it.title or ''} {it.description or ''}"
             it.sentiment_score = score_sentiment(text)
-            it.asset_tags = tag_assets(text) or None
+            keyword_tags = tag_assets(text) or []
+            dynamic_tickers = detect_tickers(text) or []
+            it.asset_tags = list(dict.fromkeys(keyword_tags + dynamic_tickers)) or None
             it.is_processed = True
         await session.commit()
 
@@ -58,8 +60,15 @@ async def job_daily_batch() -> None:
         analysis = await get_latest_analysis(session)
         if not analysis:
             return
-        # Engine: up to 5 stocks, 5 commodities, 5 other (forex/crypto) per day
-        candidates = build_daily_candidates(max_count=5)
+        # Engine: best trade ideas from analysis; respect user risk preference (from UI or config)
+        from app.core.preferences import get_preferred_risk
+        by_asset_sentiment = (analysis.payload or {}).get("by_asset_sentiment") or None
+        candidates = build_daily_candidates(
+            max_count=5,
+            by_asset_sentiment=by_asset_sentiment,
+            preferred_risk=get_preferred_risk(),
+            tie_seed=batch_id,
+        )
         if not candidates:
             return
         now = datetime.now(timezone.utc)

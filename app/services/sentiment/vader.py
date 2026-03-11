@@ -11,11 +11,27 @@ try:
 except ImportError:
     _analyzer = None
 
-# Keywords for oil/gold/gas (extend as needed)
+# Keywords: tag name -> trigger words (lowercase). Tags align with recommendation engine where possible.
 ASSET_KEYWORDS: dict[str, list[str]] = {
-    "oil": ["oil", "wti", "brent", "crude", "opec", "barrel", "xom", "cvx", "chevron", "exxon"],
-    "gold": ["gold", "xau", "gld", "precious", "miner", "newmont", "barrick"],
-    "gas": ["gas", "natural gas", "henry hub", "lng", "energy"],
+    # Umbrella tags (broad)
+    "oil": ["oil", "crude", "opec", "barrel", "petroleum"],
+    "gold": ["gold", "xau", "gld", "precious", "miner"],
+    "gas": ["gas", "natural gas", "lng", "henry hub", "energy"],
+    # Engine assets (stocks)
+    "XOM": ["xom", "exxon"],
+    "CVX": ["cvx", "chevron"],
+    "BP": ["bp", "british petroleum"],
+    "SHEL": ["shel", "shell"],
+    "NEM": ["nem", "newmont", "barrick"],
+    # Engine assets (commodities)
+    "WTI": ["wti", "west texas", "cl="],
+    "Brent": ["brent", "brent crude", "bz="],
+    "XAUUSD": ["xau", "gold", "gc="],
+    "Henry Hub": ["henry hub", "natural gas", "ng="],
+    "Silver": ["silver", "si="],
+    # Other (forex/crypto) – keep generic so we can map to our list
+    "BTC": ["btc", "bitcoin"],
+    "ETH": ["eth", "ethereum"],
 }
 
 

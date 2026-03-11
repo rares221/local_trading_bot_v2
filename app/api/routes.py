@@ -6,6 +6,7 @@ from datetime import datetime, timezone, date
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -165,6 +166,30 @@ async def list_active_trades(db: AsyncSession = Depends(get_db)) -> dict[str, An
 @router.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok", "app": "local_trading_bot_v2"}
+
+
+# --- Preferences (risk stance); used by recommendation engine ---
+
+@router.get("/preferences")
+async def get_preferences() -> dict[str, Any]:
+    """Return user preferences (e.g. preferred_risk for recommendations)."""
+    from app.core.preferences import get_preferred_risk
+    return _with_disclaimer({"preferred_risk": get_preferred_risk()})
+
+
+class PreferencesUpdate(BaseModel):
+    preferred_risk: str
+
+
+@router.patch("/preferences")
+async def update_preferences(body: PreferencesUpdate) -> dict[str, Any]:
+    """Update preferences. preferred_risk: conservative | moderate | aggressive."""
+    from app.core.preferences import set_preferred_risk
+    try:
+        saved = set_preferred_risk(body.preferred_risk)
+        return _with_disclaimer({"preferred_risk": saved, "message": "Preferences saved."})
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # --- Actions (same logic as scripts; for UI buttons) ---
