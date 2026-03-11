@@ -2,11 +2,11 @@
 APScheduler jobs: ingestion + sentiment, analysis run, daily recommendation batch, active-trade updates.
 Aligned with PLAN_MODE: one daily batch (≤5); update job only refreshes active trades.
 """
-from datetime import datetime, timezone, date
+from datetime import datetime, timezone, date, timedelta
 from uuid import uuid4
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -19,6 +19,7 @@ from app.services.ingestion import fetch_all_feeds, save_feed_items
 from app.services.sentiment import score_sentiment, tag_assets, detect_tickers
 from app.services.analysis import run_analysis, get_latest_analysis
 from app.services.recommendations import build_daily_candidates, compute_sl_tp_for_price, get_asset_price_and_risk
+from app.services.briefing import run_briefing
 
 
 async def job_ingest_and_sentiment() -> None:
@@ -139,6 +140,21 @@ async def job_update_active_trades() -> None:
         await session.commit()
 
 
+async def job_daily_briefing() -> None:
+    """Run daily briefing checklist and store result (heartbeat-style)."""
+    async with async_session_factory() as session:
+        await run_briefing(session)
+        await session.commit()
+
+
+async def job_cleanup_feed_items() -> None:
+    """Delete feed_items older than feed_max_age_days. Keeps DB size bounded."""
+    async with async_session_factory() as session:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=settings.feed_max_age_days)
+        await session.execute(delete(FeedItem).where(FeedItem.fetched_at < cutoff))
+        await session.commit()
+
+
 def start_scheduler() -> AsyncIOScheduler:
     """Schedule jobs. Call from main after uvicorn or run in worker."""
     scheduler = AsyncIOScheduler()
@@ -164,12 +180,29 @@ def start_scheduler() -> AsyncIOScheduler:
         minute=0,
         id="daily_batch",
     )
+    # Daily briefing: once per day (e.g. after batch; same hour + 1 or fixed 8:00)
+    briefing_hour = min(23, (settings.daily_batch_hour + 1) % 24)
+    scheduler.add_job(
+        job_daily_briefing,
+        "cron",
+        hour=briefing_hour,
+        minute=5,
+        id="daily_briefing",
+    )
     # Active trades update: every 2h
     scheduler.add_job(
         job_update_active_trades,
         "interval",
         hours=settings.update_active_trades_interval_hours,
         id="update_active_trades",
+    )
+    # Feed-item cleanup: daily (delete items older than feed_max_age_days)
+    scheduler.add_job(
+        job_cleanup_feed_items,
+        "cron",
+        hour=4,
+        minute=0,
+        id="cleanup_feed_items",
     )
     scheduler.start()
     return scheduler

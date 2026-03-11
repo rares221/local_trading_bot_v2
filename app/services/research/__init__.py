@@ -14,6 +14,7 @@ from app.services.analysis import get_latest_analysis
 from app.services.recommendations.engine import (
     get_asset_price_and_risk,
     get_sentiment_score_and_count,
+    get_yf_symbol,
 )
 
 
@@ -52,6 +53,33 @@ async def build_research_context(
             ctx["headlines"].append(it.title or "(no title)")
             if len(ctx["headlines"]) >= 2:
                 break
+    # Optional: yfinance .info for sector, industry, market cap (stocks/ETFs; skip on failure)
+    symbol = get_yf_symbol(category, asset_id)
+    if symbol:
+        try:
+            import yfinance as yf
+            import logging
+            log = logging.getLogger("yfinance")
+            old_level = log.level
+            log.setLevel(logging.WARNING)
+            try:
+                info = yf.Ticker(symbol).info
+                if isinstance(info, dict):
+                    fund: dict[str, Any] = {}
+                    if info.get("sector"):
+                        fund["sector"] = str(info["sector"])
+                    if info.get("industry"):
+                        fund["industry"] = str(info["industry"])
+                    if info.get("marketCap") is not None:
+                        fund["market_cap"] = int(info["marketCap"])
+                    if info.get("shortName"):
+                        fund["short_name"] = str(info["shortName"])
+                    if fund:
+                        ctx["fundamentals"] = fund
+            finally:
+                log.setLevel(old_level)
+        except Exception:
+            pass
     return ctx
 
 

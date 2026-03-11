@@ -45,6 +45,17 @@ def _add_rationale_text_column_if_missing(sync_conn) -> None:
         sync_conn.execute(text("ALTER TABLE recommendations ADD COLUMN rationale_text TEXT"))
 
 
+def _migrate_daily_briefings(sync_conn) -> None:
+    """Create daily_briefings table if missing."""
+    sync_conn.execute(text(
+        "CREATE TABLE IF NOT EXISTS daily_briefings ("
+        "id VARCHAR(36) PRIMARY KEY, "
+        "created_at TIMESTAMP NOT NULL, "
+        "content_text TEXT NOT NULL, "
+        "payload JSON)"
+    ))
+
+
 def _migrate_active_trades_and_levels(sync_conn) -> None:
     """Add suggested_* to active_trades; ensure active_trade_levels exists; backfill initial level for existing trades."""
     import uuid
@@ -85,6 +96,7 @@ async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(_add_rationale_text_column_if_missing)
+        await conn.run_sync(_migrate_daily_briefings)
         await conn.run_sync(_migrate_active_trades_and_levels)
 
 

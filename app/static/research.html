@@ -16,6 +16,7 @@
     <a href="/research" class="active">Research an asset</a>
     <a href="/analysis">Market analysis</a>
     <a href="/active-trades">Active trades</a>
+    <a href="/briefing">Daily briefing</a>
     <a href="/docs" target="_blank" rel="noopener">API docs</a>
   </nav>
 
@@ -27,7 +28,11 @@
       <h2 class="section-title">Look up an asset</h2>
       <div class="form-group" style="max-width: 320px;">
         <label for="asset-id">Asset</label>
-        <input type="text" id="asset-id" class="input" placeholder="e.g. XOM, WTI, XAUUSD" aria-label="Asset id or ticker">
+        <div style="display: flex; gap: var(--space-1); align-items: center;">
+          <input type="text" id="asset-id" class="input" placeholder="e.g. XOM, Apple, WTI" aria-label="Asset id, ticker, or company name">
+          <button type="button" class="btn btn--secondary" id="resolve-name" title="Resolve company name to ticker">Resolve</button>
+        </div>
+        <p id="resolve-hint" class="meta" style="margin-top: var(--space-1); display: none;"></p>
       </div>
       <div class="form-group" style="max-width: 240px;">
         <label for="category">Category</label>
@@ -35,6 +40,7 @@
           <option value="stocks">Stocks</option>
           <option value="commodities">Commodities</option>
           <option value="other">Other</option>
+          <option value="indices">Indices</option>
         </select>
       </div>
       <div class="btn-group btn-group--row" style="margin-top: var(--space-2);">
@@ -95,6 +101,36 @@
         resultContextWrap.hidden = !ctx;
         if (ctx) resultContextJson.textContent = JSON.stringify(ctx, null, 2);
       }
+
+      const resolveBtn = document.getElementById('resolve-name');
+      const resolveHint = document.getElementById('resolve-hint');
+
+      resolveBtn.addEventListener('click', async () => {
+        const raw = (assetInput.value || '').trim();
+        if (!raw) { assetInput.focus(); return; }
+        try {
+          const r = await fetch('/api/research/resolve?q=' + encodeURIComponent(raw));
+          const data = await r.json();
+          const matches = (data.matches || []);
+          resolveHint.style.display = 'block';
+          if (matches.length === 0) {
+            resolveHint.textContent = 'No match for "' + raw + '". Enter a ticker (e.g. AAPL) or try another name.';
+            resolveHint.style.color = 'var(--muted, #666)';
+          } else if (matches.length === 1) {
+            assetInput.value = matches[0].ticker;
+            resolveHint.textContent = '\u2192 ' + matches[0].name + ' \u2192 ' + matches[0].ticker;
+            resolveHint.style.color = '';
+          } else {
+            resolveHint.textContent = 'Matches: ' + matches.map(function(m) { return m.name + ' (' + m.ticker + ')'; }).join(', ') + '. Using first: ' + matches[0].ticker;
+            assetInput.value = matches[0].ticker;
+            resolveHint.style.color = '';
+          }
+        } catch (e) {
+          resolveHint.style.display = 'block';
+          resolveHint.textContent = 'Resolve failed: ' + e.message;
+          resolveHint.style.color = 'var(--error, #c00)';
+        }
+      });
 
       getBtn.addEventListener('click', async () => {
         const assetId = (assetInput.value || '').trim();

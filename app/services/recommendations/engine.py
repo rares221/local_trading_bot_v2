@@ -29,6 +29,15 @@ SENTIMENT_TAG_TO_ASSETS: dict[str, list[tuple[str, str]]] = {
     "Silver": [("commodities", "Silver")],
     "BTC": [("other", "BTC")],
     "ETH": [("other", "ETH")],
+    # Indices (headline tags -> indices category)
+    "SPX": [("indices", "SPX")],
+    "S&P 500": [("indices", "SPX")],
+    "DJI": [("indices", "DJI")],
+    "Dow": [("indices", "DJI")],
+    "NDX": [("indices", "NDX")],
+    "NASDAQ": [("indices", "NDX")],
+    "FTSE": [("indices", "FTSE")],
+    "VIX": [("indices", "VIX")],
 }
 
 # Tradeable universe: assets we can price (yfinance symbol) and their risk_tier. Ideas come from analysis; we only recommend from this set.
@@ -53,6 +62,13 @@ ASSETS_BY_CATEGORY = {
         ("USDJPY", "USDJPY=X", "moderate"),
         ("BTC", "BTC-USD", "aggressive"),
         ("ETH", "ETH-USD", "aggressive"),
+    ],
+    "indices": [
+        ("SPX", "^GSPC", "moderate"),   # S&P 500
+        ("DJI", "^DJI", "moderate"),    # Dow Jones
+        ("NDX", "^IXIC", "moderate"),   # NASDAQ Composite
+        ("FTSE", "^FTSE", "moderate"),  # FTSE 100
+        ("VIX", "^VIX", "aggressive"),  # Volatility index
     ],
 }
 
@@ -154,6 +170,18 @@ def compute_sl_tp_for_price(price: float, risk_tier: str) -> tuple[float, float]
     Used by active-trade update job to refresh SL/TP from latest price.
     """
     return _compute_levels(price, risk_tier)
+
+
+def get_yf_symbol(category: str, asset_id: str) -> Optional[str]:
+    """
+    Return yfinance symbol for (category, asset_id), or None if not resolvable.
+    Used by research context for fundamentals (e.g. sector, marketCap) and by briefing.
+    """
+    universe = _universe_lookup()
+    resolved = _resolve_symbol_risk(category, asset_id, universe)
+    if not resolved:
+        return None
+    return resolved[0]
 
 
 def get_asset_price_and_risk(category: str, asset_id: str) -> Optional[tuple[float, str]]:
@@ -334,11 +362,11 @@ def build_daily_candidates(
     exclude_taken: Optional[set[tuple[str, str]]] = None,
 ) -> list[Candidate]:
     """
-    Build up to max_count per category (stocks, commodities, other).
+    Build up to max_count per category (stocks, commodities, other, indices).
     Skip (category, asset_id) in exclude_taken (e.g. already have a taken recommendation).
     """
     out: list[Candidate] = []
-    for category in ("stocks", "commodities", "other"):
+    for category in ("stocks", "commodities", "other", "indices"):
         out.extend(build_daily_candidates_for_category(
             category,
             max_count=max_count,

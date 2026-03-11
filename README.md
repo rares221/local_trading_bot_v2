@@ -126,11 +126,11 @@ See [PLAN_PROGRESS.md](PLAN_PROGRESS.md) §10 for the full backlog. Current orde
 | Pipeline, scheduler, recommendation engine | Done | Real prices (yfinance), risk tiers, daily batch ≤5, Took it/Skipped. |
 | Taken-asset filter | Done | No new pending rec for assets that already have a taken recommendation. |
 | Research / rationale (multi-provider LLM) | Done | Context builder + OpenAI/Anthropic/Ollama/OpenRouter; `GET /api/research/summary`, `GET /api/research/providers`. |
-| **Export (CSV)** | Next | `GET /api/recommendations/export?format=csv` for today’s batch or pending. |
-| Active-trade update logic | Pending | In `job_update_active_trades`, refresh current_sl / current_tp from latest prices or analysis. |
-| Blocklist from file | Pending | `data/blocklist.txt` for yfinance symbol blocklist (§8.1). |
-| Indices category | Pending | Up to 5 indices recs; map SPX/DJI/FTSE/VIX to yfinance (§8.2). |
-| Feed-item cleanup | Optional | Daily job to delete `feed_items` older than `feed_max_age_days`. |
+| Active-trade update logic | Done | Original SL/TP preserved; suggested + history; API and UI. |
+| Indices category | Done | SPX, DJI, NDX, FTSE, VIX (≤5 recs); Recommendations + Research an asset. |
+| Blocklist from file | Done | `data/blocklist.txt`; one symbol per line, # comments (§8.1). |
+| Feed-item cleanup | Done | Daily job (04:00) deletes `feed_items` older than `feed_max_age_days`. |
+| **Export (CSV)** | Later | `GET /api/recommendations/export?format=csv` when needed. |
 
 ## Data
 

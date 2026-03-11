@@ -207,6 +207,11 @@ We **adopt Option B (emulate)** in the app: no dependency on running Dexter; one
 | One batch per day; update job for active only | Done | Guard in `job_daily_batch`; `job_update_active_trades` writes suggested_sl/suggested_tp + levels history; original SL/TP never overwritten |
 | Took it / Skipped | Done | API + UI |
 | Research / rationale (Option B) | Done | Context builder; multi-provider LLM; `rationale_text` on rec; API + UI: “Show research” modal per rec, “Research an asset” page (`/research`) |
+| Indices category | Done | SPX, DJI, NDX, FTSE, VIX (^GSPC, ^DJI, ^IXIC, ^FTSE, ^VIX); ≤5 recs |
+| Blocklist from file | Done | `data/blocklist.txt`; one symbol per line, # comments |
+| **Practical Order: richer research context** | Done | yfinance `.info` (sector, industry, marketCap, shortName) in `build_research_context`; LLM prompt includes fundamentals |
+| **Practical Order: company name → ticker** | Done | `resolve_company_to_ticker()` in ticker_detection; `GET /api/research/resolve?q=...`; Research page "Resolve" button |
+| **Practical Order: optional daily briefing** | Done | Checklist (SPX move, VIX level, oil, recs today); `data/briefing_checklist.json` or default; job once/day; `daily_briefings` table; `GET /api/briefing/latest`, `GET /api/briefing/checklist`, `POST /api/briefing/run`; `/briefing` page |
 | Export (CSV/table) | Not done | Optional |
 | Claude Equity Research | Not done | Optional |
 | UI / notifications | Partially done | Dashboard, pages; optional Telegram/Slack |
@@ -226,9 +231,9 @@ We **adopt Option B (emulate)** in the app: no dependency on running Dexter; one
 2. ~~**Research / rationale (Option B — emulate Dexter)**~~ — Done: `app/services/research` (context + multi-provider LLM: OpenAI, Anthropic, Ollama, OpenRouter; config: `research_llm_provider`, `research_llm_model`, `*_api_key`, `ollama_base_url`), `rationale_text` on Recommendation, batch stores rationale when provider available, `GET /api/research/summary`, `GET /api/research/providers`.
 3. **Export (CSV)** — `GET /api/recommendations/export?format=csv` for today’s batch or pending.
 4. ~~**Active-trade update logic**~~ — Done: original SL/TP preserved; suggested_* + `active_trade_levels` history; API and UI show original, suggested, and per-run table with timestamps.
-5. **Blocklist from file** — `data/blocklist.txt` or log-parsing script (§8.1).
-6. **Indices category** — Up to 5 indices recs; map SPX/DJI/FTSE/VIX to yfinance (§8.2).
-7. **Feed-item cleanup** — Daily job to delete feed_items older than feed_max_age_days.
+5. ~~**Blocklist from file**~~ — Done: `data/blocklist.txt` loaded at runtime; in-code defaults as fallback (§8.1).
+6. ~~**Indices category**~~ — Done: SPX/DJI/NDX/FTSE/VIX in ASSETS_BY_CATEGORY; recommendations + Research an asset (§8.2).
+7. ~~**Feed-item cleanup**~~ — Done: daily job at 04:00 deletes feed_items where fetched_at older than feed_max_age_days.
 8. **MCP tools** (optional) — get_latest_insight, get_sentiment_summary, get_oil_snapshot.
 9. **UI / notifications** (optional) — Telegram/Slack, etc.
 
@@ -236,4 +241,4 @@ We **adopt Option B (emulate)** in the app: no dependency on running Dexter; one
 
 ## 11. One-line summary
 
-Phase 1 and Phase 2 core are done; **taken-asset filter**, **Research/rationale (Option B)**, and **active-trade update logic** are done. Next: CSV export, blocklist file, indices, and optional items.
+Phase 1 and Phase 2 core are done; **feed-item cleanup** and **Practical Order** (richer research context, company→ticker resolve, daily briefing) are done. Next: CSV export (when needed), MCP/UI optional.

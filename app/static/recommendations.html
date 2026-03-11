@@ -16,6 +16,7 @@
     <a href="/research">Research an asset</a>
     <a href="/analysis">Market analysis</a>
     <a href="/active-trades">Active trades</a>
+    <a href="/briefing">Daily briefing</a>
     <a href="/docs" target="_blank" rel="noopener">API docs</a>
   </nav>
 
@@ -53,6 +54,17 @@
             <tr><th>Asset</th><th class="num">Buy</th><th class="num">SL</th><th class="num">TP</th><th>Risk</th><th>Status</th><th>Actions</th></tr>
           </thead>
           <tbody id="other-body"></tbody>
+        </table>
+      </div>
+    </section>
+    <section class="card" id="indices">
+      <h2 class="section-title">Indices</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Asset</th><th class="num">Buy</th><th class="num">SL</th><th class="num">TP</th><th>Risk</th><th>Status</th><th>Actions</th></tr>
+          </thead>
+          <tbody id="indices-body"></tbody>
         </table>
       </div>
     </section>
@@ -161,6 +173,7 @@
       render('stocks-body', by.stocks);
       render('commodities-body', by.commodities);
       render('other-body', by.other);
+      render('indices-body', by.indices);
     }
     load();
   </script>

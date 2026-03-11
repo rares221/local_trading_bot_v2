@@ -25,6 +25,7 @@ def _format_user_content(context: dict[str, Any]) -> str:
     risk = context.get("risk_tier")
     headlines = context.get("headlines") or []
     asset = context.get("asset_id", "this asset")
+    fundamentals = context.get("fundamentals") or {}
     parts = [f"Asset: {asset}."]
     if sentiment is not None:
         parts.append(f"Recent sentiment (avg): {sentiment:.3f}.")
@@ -32,6 +33,26 @@ def _format_user_content(context: dict[str, Any]) -> str:
         parts.append(f"Current/reference price: {price}.")
     if risk:
         parts.append(f"Risk tier: {risk}.")
+    if fundamentals:
+        fparts = []
+        if fundamentals.get("sector"):
+            fparts.append(f"sector {fundamentals['sector']}")
+        if fundamentals.get("industry"):
+            fparts.append(f"industry {fundamentals['industry']}")
+        if fundamentals.get("market_cap") is not None:
+            mc = fundamentals["market_cap"]
+            if mc >= 1_000_000_000_000:
+                fparts.append("market cap ~trillion")
+            elif mc >= 1_000_000_000:
+                fparts.append("large-cap")
+            elif mc >= 300_000_000:
+                fparts.append("mid-cap")
+            else:
+                fparts.append("small-cap")
+        if fundamentals.get("short_name"):
+            fparts.append(f"({fundamentals['short_name']})")
+        if fparts:
+            parts.append("Fundamentals: " + ", ".join(fparts) + ".")
     if headlines:
         parts.append("Headlines: " + " | ".join(headlines[:2]))
     return "\n".join(parts)

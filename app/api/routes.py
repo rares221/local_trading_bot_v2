@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.models.recommendation import Recommendation, ActiveTrade, ActiveTradeLevel
 from app.models.market_analysis import MarketAnalysis
+from app.models.daily_briefing import DailyBriefing
 
 DISCLAIMER = (
     "This analysis is for educational and research purposes only. Not financial advice. "
@@ -75,6 +76,20 @@ async def list_research_providers() -> dict[str, Any]:
     })
 
 
+@router.get("/research/resolve")
+async def resolve_company(
+    q: str,
+) -> dict[str, Any]:
+    """
+    Resolve company name (or partial) to ticker(s). Uses COMPANY_TO_TICKER.
+    Returns { "query": "...", "matches": [ { "name": "...", "ticker": "..." }, ... ] }.
+    """
+    from app.services.sentiment.ticker_detection import resolve_company_to_ticker
+    query = (q or "").strip()
+    matches = resolve_company_to_ticker(query) if query else []
+    return _with_disclaimer({"query": query, "matches": matches})
+
+
 @router.get("/research/summary")
 async def get_research_summary(
     asset_id: str,
@@ -91,6 +106,44 @@ async def get_research_summary(
     context = await build_research_context(db, asset_id, category)
     summary = await generate_rationale(context) if generate else None
     return _with_disclaimer({"context": context, "summary": summary})
+
+
+@router.get("/briefing/latest")
+async def get_latest_briefing(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    """Return the most recent daily briefing (if any)."""
+    from sqlalchemy import desc
+    q = select(DailyBriefing).order_by(desc(DailyBriefing.created_at)).limit(1)
+    result = await db.execute(q)
+    row = result.scalars().first()
+    if not row:
+        raise HTTPException(status_code=404, detail="No briefing yet. Run the daily briefing job or POST /api/briefing/run.")
+    return _with_disclaimer({
+        "id": row.id,
+        "created_at": row.created_at.isoformat(),
+        "content_text": row.content_text,
+        "payload": row.payload,
+    })
+
+
+@router.get("/briefing/checklist")
+async def get_briefing_checklist() -> dict[str, Any]:
+    """Return the configured briefing checklist (for UI or editing)."""
+    from app.services.briefing import load_checklist
+    return _with_disclaimer({"checklist": load_checklist()})
+
+
+@router.post("/briefing/run")
+async def run_briefing_now(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    """Run the daily briefing checklist now and return the new briefing."""
+    from app.services.briefing import run_briefing
+    row = await run_briefing(db)
+    await db.commit()
+    return _with_disclaimer({
+        "id": row.id,
+        "created_at": row.created_at.isoformat(),
+        "content_text": row.content_text,
+        "payload": row.payload,
+    })
 
 
 def _rec_to_item(r: Recommendation) -> dict:
@@ -120,7 +173,7 @@ async def list_recommendations(
 ) -> dict[str, Any]:
     """
     List recommendations. Optional: batch_id, status, asset_category (stocks|commodities|other).
-    Use group_by=category to get { stocks: [...], commodities: [...], other: [...] } for the recommendation page.
+    Use group_by=category to get { stocks: [...], commodities: [...], other: [...], indices: [...] } for the recommendation page.
     """
     q = select(Recommendation).order_by(Recommendation.created_at.desc())
     if batch_id:
@@ -134,7 +187,7 @@ async def list_recommendations(
     recs = result.scalars().all()
     items = [_rec_to_item(r) for r in recs]
     if group_by == "category":
-        grouped: dict[str, list] = {"stocks": [], "commodities": [], "other": []}
+        grouped: dict[str, list] = {"stocks": [], "commodities": [], "other": [], "indices": []}
         for r in recs:
             cat = r.asset_category if r.asset_category in grouped else "other"
             if cat not in grouped:

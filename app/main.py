@@ -38,6 +38,7 @@ async def root() -> dict[str, str]:
         "research": "/research",
         "analysis": "/analysis",
         "active_trades": "/active-trades",
+        "briefing": "/briefing",
         "docs": "/docs",
         "health": "/api/health",
     }
@@ -78,3 +79,9 @@ async def active_trades_page() -> HTMLResponse:
 async def research_page() -> HTMLResponse:
     """Research an asset: form to look up any asset and get LLM research summary."""
     return HTMLResponse(content=_read_static("research.html"))
+
+
+@app.get("/briefing", response_class=HTMLResponse)
+async def briefing_page() -> HTMLResponse:
+    """Daily briefing: heartbeat-style checklist (SPX/VIX/oil, recs today)."""
+    return HTMLResponse(content=_read_static("briefing.html"))
