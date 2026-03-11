@@ -45,6 +45,54 @@ async def get_latest_analysis(db: AsyncSession = Depends(get_db)) -> dict[str, A
     })
 
 
+@router.get("/research/providers")
+async def list_research_providers() -> dict[str, Any]:
+    """
+    List LLM providers available for research rationale (OpenAI, Anthropic, Ollama, OpenRouter).
+    Returns current provider and model from config so UI can show selection.
+    """
+    from app.services.research.providers import PROVIDERS, get_provider_by_id, is_available
+    from app.services.research.llm import _get_api_key_for_provider
+    from app.core.config import settings
+
+    providers = [
+        {
+            "id": p.id,
+            "display_name": p.display_name,
+            "default_model": p.default_model,
+            "requires_api_key": p.api_key_env_var is not None,
+            "available": is_available(p.id, _get_api_key_for_provider(p.id)),
+        }
+        for p in PROVIDERS
+    ]
+    model = (settings.research_llm_model or "").strip()
+    p = get_provider_by_id(settings.research_llm_provider or "openai")
+    if p and not model:
+        model = p.default_model
+    return _with_disclaimer({
+        "providers": providers,
+        "current": {"provider": settings.research_llm_provider or "openai", "model": model or ""},
+    })
+
+
+@router.get("/research/summary")
+async def get_research_summary(
+    asset_id: str,
+    category: str,
+    generate: bool = True,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """
+    Build research context for (asset_id, category) and optionally generate LLM rationale.
+    Returns { "context": {...}, "summary": "…" }. Summary is None if no API key or generate=False.
+    """
+    from app.services.research import build_research_context, generate_rationale
+
+    context = await build_research_context(db, asset_id, category)
+    summary = await generate_rationale(context) if generate else None
+    return _with_disclaimer({"context": context, "summary": summary})
+
+
 def _rec_to_item(r: Recommendation) -> dict:
     return {
         "id": r.id,
@@ -58,6 +106,7 @@ def _rec_to_item(r: Recommendation) -> dict:
         "expiry_date": r.expiry_date.isoformat() if r.expiry_date else None,
         "risk_tier": r.risk_tier,
         "status": r.status,
+        "rationale_text": getattr(r, "rationale_text", None),
     }
 
 

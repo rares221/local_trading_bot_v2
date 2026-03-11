@@ -60,7 +60,10 @@ async def job_daily_batch() -> None:
         analysis = await get_latest_analysis(session)
         if not analysis:
             return
-        # Engine: best trade ideas from analysis; respect user risk preference (from UI or config)
+        # Do not create new pending recs for assets that already have a taken recommendation (§5.4)
+        q_taken = select(Recommendation.asset_category, Recommendation.asset_id).where(Recommendation.status == "taken").distinct()
+        result_taken = await session.execute(q_taken)
+        exclude_taken = {(row[0], row[1]) for row in result_taken.all()}
         from app.core.preferences import get_preferred_risk
         by_asset_sentiment = (analysis.payload or {}).get("by_asset_sentiment") or None
         candidates = build_daily_candidates(
@@ -68,11 +71,20 @@ async def job_daily_batch() -> None:
             by_asset_sentiment=by_asset_sentiment,
             preferred_risk=get_preferred_risk(),
             tie_seed=batch_id,
+            exclude_taken=exclude_taken,
         )
         if not candidates:
             return
         now = datetime.now(timezone.utc)
+        from app.services.research import build_research_context, generate_rationale
         for c in candidates:
+            rationale_text = None
+            try:
+                ctx = await build_research_context(session, c.asset_id, c.asset_category)
+                ctx["buy_in_price"] = c.buy_in_price
+                rationale_text = await generate_rationale(ctx)
+            except Exception:
+                pass
             rec = Recommendation(
                 id=str(uuid4()),
                 created_at=now,
@@ -84,6 +96,7 @@ async def job_daily_batch() -> None:
                 take_profit=c.take_profit,
                 expiry_date=None,
                 rationale_ref=analysis.id,
+                rationale_text=rationale_text,
                 risk_tier=c.risk_tier,
                 status="pending",
             )

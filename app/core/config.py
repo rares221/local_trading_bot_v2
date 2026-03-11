@@ -27,5 +27,13 @@ class Settings(BaseSettings):
     # Only assets with risk_tier at or below this level are recommended.
     preferred_risk: str = "moderate"
 
+    # Research / rationale (Option B): multi-provider LLM (Dexter-style).
+    research_llm_provider: str = "openai"   # openai | anthropic | ollama | openrouter
+    research_llm_model: str = ""           # empty = use provider default (e.g. gpt-4o-mini, llama3.1)
+    openai_api_key: str | None = None
+    anthropic_api_key: str | None = None
+    openrouter_api_key: str | None = None
+    ollama_base_url: str = "http://localhost:11434"
+
 
 settings = Settings()

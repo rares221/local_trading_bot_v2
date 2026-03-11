@@ -148,6 +148,22 @@ def _compute_levels(price: float, risk_tier: str) -> tuple[float, float]:
     return stop_loss, take_profit
 
 
+def get_asset_price_and_risk(category: str, asset_id: str) -> Optional[tuple[float, str]]:
+    """
+    Return (current_price, risk_tier) for (category, asset_id) if we can resolve and fetch price.
+    Used by research context builder.
+    """
+    universe = _universe_lookup()
+    resolved = _resolve_symbol_risk(category, asset_id, universe)
+    if not resolved:
+        return None
+    symbol, risk_tier = resolved
+    price = _fetch_price(symbol)
+    if price is None or price <= 0:
+        return None
+    return (round(price, 2), risk_tier)
+
+
 def get_sentiment_for_asset(
     category: str,
     asset_id: str,
@@ -214,12 +230,14 @@ def _candidates_for_pairs(
     pairs: list[tuple[str, str]],
     universe: dict[tuple[str, str], tuple[str, str]],
     max_risk_level: int,
+    exclude_taken: Optional[set[tuple[str, str]]] = None,
 ) -> list[Candidate]:
-    """Build candidates for (category, asset_id) pairs; resolve via fixed universe or dynamic ticker."""
+    """Build candidates for (category, asset_id) pairs; skip pairs in exclude_taken."""
     out: list[Candidate] = []
     seen: set[str] = set()
+    excluded = exclude_taken or set()
     for (c, asset_id) in pairs:
-        if c != category or asset_id in seen:
+        if c != category or asset_id in seen or (category, asset_id) in excluded:
             continue
         seen.add(asset_id)
         resolved = _resolve_symbol_risk(category, asset_id, universe)
@@ -250,16 +268,17 @@ def build_daily_candidates_for_category(
     by_asset_sentiment: Optional[dict] = None,
     preferred_risk: str = "moderate",
     tie_seed: Optional[str] = None,
+    exclude_taken: Optional[set[tuple[str, str]]] = None,
 ) -> list[Candidate]:
     """
     Best trade ideas from analysis first (tags we pulled), then backfill from universe if needed.
-    Only assets at or below preferred_risk. Ranked by sentiment then mention count then tie-breaker.
+    Only assets at or below preferred_risk. Skip (category, asset_id) in exclude_taken (already taken).
     """
     max_risk_level = RISK_TIER_ORDER.get(preferred_risk, RISK_TIER_ORDER["moderate"])
     universe = _universe_lookup()
+    excluded = exclude_taken or set()
     idea_pairs = sorted(_trade_ideas_from_analysis(by_asset_sentiment))  # stable order
-    # Candidates from ideas (assets that appeared in the analysis)
-    idea_candidates = _candidates_for_pairs(category, idea_pairs, universe, max_risk_level)
+    idea_candidates = _candidates_for_pairs(category, idea_pairs, universe, max_risk_level, exclude_taken=excluded)
     def _rank_key(c: Candidate) -> tuple:
         pair = get_sentiment_score_and_count(c.asset_category, c.asset_id, by_asset_sentiment or {})
         if pair is None:
@@ -276,7 +295,7 @@ def build_daily_candidates_for_category(
         items = ASSETS_BY_CATEGORY.get(category, [])
         rest: list[Candidate] = []
         for asset_id, symbol, risk_tier in items:
-            if asset_id in chosen_ids or RISK_TIER_ORDER.get(risk_tier, 99) > max_risk_level:
+            if asset_id in chosen_ids or (category, asset_id) in excluded or RISK_TIER_ORDER.get(risk_tier, 99) > max_risk_level:
                 continue
             price = _fetch_price(symbol)
             if price is None or price <= 0:
@@ -304,10 +323,11 @@ def build_daily_candidates(
     by_asset_sentiment: Optional[dict] = None,
     preferred_risk: str = "moderate",
     tie_seed: Optional[str] = None,
+    exclude_taken: Optional[set[tuple[str, str]]] = None,
 ) -> list[Candidate]:
     """
     Build up to max_count per category (stocks, commodities, other).
-    Only assets at or below preferred_risk; ranked by analysis (sentiment + count), tie_seed for variety.
+    Skip (category, asset_id) in exclude_taken (e.g. already have a taken recommendation).
     """
     out: list[Candidate] = []
     for category in ("stocks", "commodities", "other"):
@@ -317,5 +337,6 @@ def build_daily_candidates(
             by_asset_sentiment=by_asset_sentiment,
             preferred_risk=preferred_risk,
             tie_seed=tie_seed,
+            exclude_taken=exclude_taken,
         ))
     return out

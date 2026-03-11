@@ -1,6 +1,8 @@
-# Trading App — Single Plan (Purpose, Spec, Flows, Progress)
+# Trading App — Plan & Progress
 
-**Single source of truth** for the trading insight app: purpose, architecture, Phase 1 & 2 spec, flows, constraints, backlog, and progress. Replaces the need to track TRADING_APP_PLAN.md and PLAN_MODE.md separately.
+**Single source of truth** for the trading insight app: purpose, architecture, spec, flows, constraints, backlog, and progress.
+
+**Quick links:** [1 Purpose](#1-purpose--context) · [2 Architecture](#2-architecture) · [3 Phase 1](#3-phase-1--market-analysis-spec) · [4 Phase 2](#4-phase-2--trade-recommendations-spec) · [5 Flows](#5-flows-and-constraints) · [6 Tech](#6-tech-stack-current) · [7 Legal](#7-legal--compliance) · [8 Backlog](#8-backlog--future-refinements) · [8.4a Dexter research](#84a-dexter-inner-workings-research-summary) · [8.4 Option B](#84-leveraging-dexter-we-proceed-with-option-b-emulate) · [9 Progress](#9-progress) · [10 Next steps](#10-suggested-next-steps-order-with-option-b-in-mind)
 
 ---
 
@@ -37,7 +39,7 @@
 
 - **Goal:** One coherent **market analysis** (news + sentiment + price/conditions) as input for Phase 2.
 - **Pipeline:** Ingest (RSS, price, conditions) → Enrich (sentiment, asset tags) → Aggregate → Output (report + “last analysis” artifact).
-- **Recommendation schema (reference):** Analysis has `as_of`, `sources_used`, `summary`, `payload` (by_category, by_asset_sentiment, price_snapshot).
+- **Analysis output:** `as_of`, `sources_used`, `summary`, `payload` (by_category, by_asset_sentiment, price_snapshot).
 - **Deliverables:** Ingestion, sentiment + tagging, market analysis output, optional MCP tools, Cursor rules.
 
 ---
@@ -45,8 +47,8 @@
 ## 4. Phase 2 — Trade recommendations (spec)
 
 - **Goal:** At most **5 structured recommendations per day** from analysis; user marks Took it / Skipped; updates only for taken trades.
-- **Recommendation schema:** `id`, `created_at`, `batch_id`, `asset_category`, `asset_id`, `buy_in_price`, `stop_loss`, `take_profit`, `expiry_date`, `rationale_ref`, `risk_tier`, `status` (pending | taken | skipped).
-- **Asset categories:** stocks, commodities, other (forex/crypto); backlog: **indices** (see §9).
+- **Recommendation schema:** `id`, `created_at`, `batch_id`, `asset_category`, `asset_id`, `buy_in_price`, `stop_loss`, `take_profit`, `expiry_date`, `rationale_ref`, `risk_tier`, `status` (pending | taken | skipped). Optional (Option B): `rationale_text` (LLM-generated short “why and risk”).
+- **Asset categories:** stocks, commodities, other (forex/crypto). Backlog: **indices** (§8.2).
 - **Daily cap:** One batch per day (batch_id = calendar day); at most 5 recs per day; engine ranks by sentiment + risk preference.
 - **User feedback:** Took it → create **ActiveTrade** (recommendation_id, user_taken_at, current_sl, current_tp, expiry, last_updated). Skipped → status = skipped; no active trade.
 - **Scheduling:** Daily batch at configured time; update job (e.g. every 2h) only refreshes **active trades**.
@@ -130,7 +132,55 @@
 
 ### 8.3 Taken trades vs new batch
 
-- See §5.4: filter out (category, asset_id) with existing **taken** recommendation when generating new batch; push new data only into Active Trades.
+- Same as §5.4: exclude (category, asset_id) with an existing **taken** rec when building a new batch; surface new data in Active Trades only.
+
+### 8.4a Dexter inner workings (research summary)
+
+**Dexter** (`../dexter`) is a TypeScript/Bun CLI agent. Understanding it clarifies what we emulate in Option B.
+
+**Agent loop (simplified)**
+
+1. **Input:** User query (natural language).
+2. **System prompt:** SOUL.md (identity/philosophy) + tool descriptions + behavior + response format. Tools: financial_search, web_search, web_fetch, browser, skill, memory_*, heartbeat, read_file, write_file, edit_file.
+3. **Iteration:** LLM is called with tools bound. If the model returns **tool_calls**, the executor runs them (with optional approval for write_file/edit_file), results are appended to a **scratchpad** (JSONL per query). Then a new prompt is built: original query + full tool results (Anthropic-style: no summarization). LLM is called again. Loop until the model responds **without** tool calls → that text is the final answer.
+4. **Context management:** If token count exceeds a threshold, oldest tool results are dropped from the prompt (scratchpad stays on disk; only “active” results are sent). Optional memory flush writes a summary to `.dexter/memory/`.
+5. **Limits:** Max iterations (e.g. 10), soft limits per tool (warnings to avoid retry loops).
+
+**financial_search (meta-tool)**
+
+- Single tool exposed to the main agent: “natural language query about financial data.”
+- **Inside:** A dedicated LLM call with a **router** system prompt and a set of **finance tools** bound (get_stock_price, get_stock_prices, get_company_news, get_income_statements, get_key_ratios, get_cash_flow_statements, etc.). The router picks which tool(s) to call and with what args (ticker, dates, limit). Tools are executed (often in parallel), results combined, returned as one blob to the main agent.
+- **Data source:** Financial Datasets API (`api.financialdatasets.ai`); each sub-tool calls an endpoint (e.g. `/prices/snapshot/`, `/news`, fundamentals). Responses are cached for immutable data.
+- **Implication for emulation:** We don’t need the full meta-tool. We need: (1) **context** = our analysis (by_asset_sentiment, summary) + price (we have it) + optional extra (yfinance `.info` or one FD API call if we add a key). (2) **One LLM call** with a fixed prompt: “Given this context, write 2–4 sentences: why this idea might make sense and main risk.” No tool loop.
+
+**Skills**
+
+- **Skill** = SKILL.md file: YAML frontmatter (name, description) + markdown body (step-by-step instructions). Example: DCF skill says “Call financial_search with [TICKER] cash flow…”, “Extract FCF…”, “Calculate WACC…”.
+- The **skill** tool just returns that markdown. The agent then “follows” it by calling other tools (e.g. financial_search). So skills are **prompt-like workflows** that the main loop executes.
+- **Implication for emulation:** We can define “workflows” in Python (e.g. “rationale”: gather context → single LLM call → return text). No SKILL.md; same idea as a fixed pipeline.
+
+**What we reuse conceptually (Option B)**
+
+- **Single-shot “research”:** One prompt with rich context (analysis + sentiment + price ± fundamentals), one LLM call, short factual output. No iterative tool loop.
+- **Context builder:** In the app we already have: analysis payload (by_asset_sentiment, summary), recommendation (asset_id, buy_in_price, risk_tier). We can add optional yfinance `.info` or one external API call for a bit more colour. That context is the input to the LLM.
+- **System prompt:** Short, fixed: “You are a research assistant. Given the following context about a trade idea, write 2–4 sentences: why it might make sense and the main risk. Be concise and factual. Do not give generic advice.”
+
+### 8.4 Leveraging Dexter: we proceed with Option B (emulate)
+
+We **adopt Option B (emulate)** in the app: no dependency on running Dexter; one Python codebase; rationale and/or “Research this ticker” implemented with our own context + one LLM call.
+
+**Planned work (Option B)**
+
+1. **Rationale per recommendation (optional at batch time)**  
+   When building the daily batch, for each recommended asset we can call an LLM with context (analysis summary, by_asset_sentiment for that asset, buy_in_price, risk_tier). Prompt: one short paragraph “why this idea and main risk.” Store in a new field (e.g. `rationale_text`) or in a separate table keyed by recommendation_id. Show in Recommendations UI. Requires: LLM API key in app config; context builder; one-shot prompt; schema migration if we store on Recommendation.
+
+2. **“Research this ticker” endpoint**  
+   `GET /api/research/{asset_id}` (and optional category): gather same context (latest analysis, sentiment for that asset, current price; optional: yfinance `.info` or Financial Datasets snapshot if we add a key). Single LLM call with the same style of prompt. Return `{ "summary": "…" }`. No storage; on-demand. Enables a “Research” button per row in the UI.
+
+3. **Richer context (optional later)**  
+   Add a small **research context** module: given (asset_id, category), return a dict: sentiment, price, optional fundamentals (yfinance `ticker.info` or one FD API call). Keeps the LLM prompt factual without reimplementing Dexter’s tool loop.
+
+**Option A (integrate Dexter)** remains in backlog: if we later want Dexter’s full depth (filings, DCF, multi-step planning), we can invoke Dexter as a service from the app instead of or in addition to the one-shot rationale.
 
 ---
 
@@ -156,6 +206,7 @@
 | Storage (recommendations + active trades) | Done | SQLite |
 | One batch per day; update job for active only | Done | Guard in `job_daily_batch`; `job_update_active_trades` |
 | Took it / Skipped | Done | API + UI |
+| Research / rationale (Option B) | Done | Context builder; multi-provider LLM (OpenAI, Anthropic, Ollama, OpenRouter); `rationale_text` on rec; `GET /api/research/summary`, `GET /api/research/providers` |
 | Export (CSV/table) | Not done | Optional |
 | Claude Equity Research | Not done | Optional |
 | UI / notifications | Partially done | Dashboard, pages; optional Telegram/Slack |
@@ -165,24 +216,24 @@
 | Constraint | Status |
 |------------|--------|
 | C1–C6 | Done |
-| Taken assets: no duplicate rec (C7) | Not done (see §5.4, §8.3) |
+| Taken assets: no duplicate rec (C7) | Done | Scheduler queries taken (category, asset_id); engine `exclude_taken` in ideas + backfill |
 
 ---
 
-## 10. Suggested next steps (in order)
+## 10. Suggested next steps (order with Option B in mind)
 
-1. **Taken assets vs new batch** — Do not create a new recommendation for an asset that already has a taken trade; surface new data in Active Trades only (§5.4, §8.3).
-2. **Export (CSV)** — `GET /api/recommendations/export?format=csv` for today’s batch or pending.
-3. **Active-trade update logic** — In `job_update_active_trades`, refresh current_sl / current_tp from latest prices or analysis.
-4. **Feed-item cleanup** — Daily job to delete feed_items older than feed_max_age_days.
-5. **Blocklist from file** — Move ticker blocklist to data/blocklist.txt or script from logs (§8.1).
-6. **Indices category** — Up to 5 indices recommendations; map FTSE/DJI/VIX etc. (§8.2).
-7. **MCP tools** (optional) — get_latest_insight, get_sentiment_summary, get_oil_snapshot.
-8. **Claude Equity Research** (optional) — For stocks.
+1. ~~**Taken assets vs new batch**~~ — Done: scheduler passes `exclude_taken` (from DB); engine skips in ideas + backfill (§5.4).
+2. ~~**Research / rationale (Option B — emulate Dexter)**~~ — Done: `app/services/research` (context + multi-provider LLM: OpenAI, Anthropic, Ollama, OpenRouter; config: `research_llm_provider`, `research_llm_model`, `*_api_key`, `ollama_base_url`), `rationale_text` on Recommendation, batch stores rationale when provider available, `GET /api/research/summary`, `GET /api/research/providers`.
+3. **Export (CSV)** — `GET /api/recommendations/export?format=csv` for today’s batch or pending.
+4. **Active-trade update logic** — In `job_update_active_trades`, refresh current_sl / current_tp from latest prices or analysis.
+5. **Blocklist from file** — `data/blocklist.txt` or log-parsing script (§8.1).
+6. **Indices category** — Up to 5 indices recs; map SPX/DJI/FTSE/VIX to yfinance (§8.2).
+7. **Feed-item cleanup** — Daily job to delete feed_items older than feed_max_age_days.
+8. **MCP tools** (optional) — get_latest_insight, get_sentiment_summary, get_oil_snapshot.
 9. **UI / notifications** (optional) — Telegram/Slack, etc.
 
 ---
 
 ## 11. One-line summary
 
-Phase 1 and Phase 2 core are done (ingestion, sentiment, analysis, ≤5/day recommendations with dynamic tickers and risk preference, Took it/Skipped, active trades). Next: taken-asset filter so no duplicate rec for same asset, then CSV export, blocklist file, indices category, and optional items.
+Phase 1 and Phase 2 core are done; **taken-asset filter** and **Research/rationale (Option B)** are done. Next: CSV export, active-trade update logic, blocklist file, indices, and optional items.

@@ -20,3 +20,7 @@ apscheduler>=3.10.0
 
 # Config and env
 pydantic-settings>=2.1.0
+
+# Research rationale (Option B): multi-provider LLM (OpenAI, Anthropic, Ollama, OpenRouter)
+openai>=1.12.0
+anthropic>=0.39.0

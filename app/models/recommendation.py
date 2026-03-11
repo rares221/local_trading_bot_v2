@@ -23,6 +23,7 @@ class Recommendation(Base):
     take_profit: Mapped[float] = mapped_column(Float, nullable=False)
     expiry_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     rationale_ref: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)  # analysis run id or report ref
+    rationale_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # Option B: LLM-generated "why and risk"
     risk_tier: Mapped[str] = mapped_column(String(32), nullable=False)  # conservative | moderate | aggressive
     volatility_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")  # pending | taken | skipped
