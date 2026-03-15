@@ -56,6 +56,7 @@ class ActiveTrade(Base):
     breakeven_hit: Mapped[bool] = mapped_column(default=False)
     highest_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)  # for longs
     lowest_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)   # for shorts
+    signal_flip_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     recommendation: Mapped["Recommendation"] = relationship("Recommendation", back_populates="active_trade")
     levels: Mapped[list["ActiveTradeLevel"]] = relationship(

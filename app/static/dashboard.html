@@ -13,66 +13,96 @@
   <nav class="nav">
     <a href="/dashboard" class="active">Dashboard</a>
     <a href="/recommendations">Recommendations</a>
-    <a href="/research">Research an asset</a>
-    <a href="/analysis">Market analysis</a>
+    <a href="/research">Research</a>
+    <a href="/analysis">Analysis</a>
     <a href="/active-trades">Active trades</a>
-    <a href="/docs" target="_blank" rel="noopener">API docs</a>
+    <a href="/briefing">Briefing</a>
   </nav>
 
   <main class="app app--wide">
     <h1 class="page-title">Dashboard</h1>
-    <p class="page-desc">Run the pipeline, then open Market analysis and Recommendations. Trades you take appear on Active trades.</p>
+    <p class="page-desc">Control center for your trading pipeline. Run the pipeline to ingest news, analyse sentiment, and generate today's recommendations.</p>
+
+    <div id="toast" class="alert" role="alert" style="display:none;"></div>
 
     <div class="dashboard-grid">
-      <section class="dashboard-panel">
-        <h2 class="section-title">Preferences</h2>
+
+      <!-- Pipeline actions -->
+      <section class="card">
+        <h2 class="section-title">Pipeline actions</h2>
+        <div class="flex-col gap-2">
+          <div>
+            <button type="button" class="btn btn--primary" data-action="run-pipeline-once" style="width:100%;">
+              <span class="btn-label">Run full pipeline</span>
+            </button>
+            <p class="meta mt-1">Ingests RSS feeds, runs sentiment analysis, generates today's recommendations.</p>
+          </div>
+          <div>
+            <button type="button" class="btn btn--secondary" data-action="refresh-todays-batch" style="width:100%;">
+              <span class="btn-label">Refresh today's batch</span>
+            </button>
+            <p class="meta mt-1">Re-generate recommendations for today (clears pending, keeps taken).</p>
+          </div>
+          <div>
+            <button type="button" class="btn btn--secondary" data-action="clear-todays-batch" style="width:100%;">
+              <span class="btn-label">Clear today's batch</span>
+            </button>
+            <p class="meta mt-1">Remove pending and skipped recommendations. Taken trades are preserved.</p>
+          </div>
+          <div>
+            <button type="button" class="btn btn--danger" data-action="purge-all" style="width:100%;">
+              <span class="btn-label">Purge all data</span>
+            </button>
+            <p class="meta mt-1">Delete every recommendation and active trade. For testing only.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Risk preference -->
+      <section class="card">
+        <h2 class="section-title">Risk preference</h2>
+        <p class="meta">Only assets at or below this risk level will be recommended. Takes effect on the next batch.</p>
         <div class="form-group">
           <label for="preferred-risk">Risk stance</label>
-          <select id="preferred-risk" class="input" aria-label="Preferred risk for recommendations">
+          <select id="preferred-risk" class="input" style="max-width:200px;">
             <option value="conservative">Conservative</option>
             <option value="moderate">Moderate</option>
             <option value="aggressive">Aggressive</option>
           </select>
-          <p class="meta">Only assets at or below this level are recommended. Affects next batch.</p>
         </div>
       </section>
-      <section class="dashboard-panel">
-        <h2 class="section-title">Actions</h2>
-        <div class="btn-group">
-          <button type="button" class="btn btn--primary" data-action="run-pipeline-once">Run pipeline once</button>
-          <button type="button" class="btn btn--secondary" data-action="refresh-todays-batch">Refresh today's batch</button>
-          <button type="button" class="btn btn--secondary" data-action="clear-todays-batch">Clear today's batch</button>
-          <button type="button" class="btn btn--secondary" data-action="purge-all" style="border-color: var(--destructive); color: var(--destructive);">Purge all (testing)</button>
+
+      <!-- LLM provider -->
+      <section class="card" style="grid-column: 1 / -1;">
+        <h2 class="section-title">LLM provider</h2>
+        <p class="meta mb-2">The LLM generates research rationales for each recommendation. Choose a provider and model below.</p>
+        <div class="flex gap-2 mb-2" style="flex-wrap:wrap;" id="llm-provider-btns">
+          <button type="button" class="btn btn--secondary llm-provider-btn" data-provider="ollama">Ollama (local)</button>
+          <button type="button" class="btn btn--secondary llm-provider-btn" data-provider="openai">OpenAI</button>
+          <button type="button" class="btn btn--secondary llm-provider-btn" data-provider="anthropic">Anthropic</button>
+          <button type="button" class="btn btn--secondary llm-provider-btn" data-provider="openrouter">OpenRouter</button>
         </div>
-        <p class="meta">Purge all = delete every recommendation and active trade. For testing only.</p>
-      </section>
-      <section class="dashboard-panel" id="llm-panel">
-        <h2 class="section-title">Research / LLM provider</h2>
-        <p class="meta">Choose which model runs research summaries (batch + Research an asset page). API keys for cloud providers come from env.</p>
-        <div class="form-group" style="margin-top: var(--space-2);">
-          <label>Provider</label>
-          <div class="btn-group btn-group--row" id="llm-provider-btns">
-            <button type="button" class="btn btn--secondary llm-provider-btn" data-provider="ollama">Ollama (local)</button>
-            <button type="button" class="btn btn--secondary llm-provider-btn" data-provider="openai">OpenAI</button>
-            <button type="button" class="btn btn--secondary llm-provider-btn" data-provider="anthropic">Anthropic</button>
-            <button type="button" class="btn btn--secondary llm-provider-btn" data-provider="openrouter">OpenRouter</button>
+        <div class="flex gap-3" style="flex-wrap:wrap;">
+          <div class="form-group" id="llm-ollama-fields">
+            <label for="ollama-url">Ollama URL</label>
+            <input type="text" id="ollama-url" class="input" placeholder="http://localhost:11434">
+            <label for="ollama-model" class="mt-1">Model</label>
+            <input type="text" id="ollama-model" class="input" placeholder="e.g. llama3.1, gemma3:1b">
+          </div>
+          <div class="form-group" id="llm-model-group">
+            <label for="llm-model">Model</label>
+            <input type="text" id="llm-model" class="input" placeholder="Leave empty for provider default">
           </div>
         </div>
-        <div class="form-group llm-ollama-only" id="llm-ollama-fields">
-          <label for="ollama-url">Ollama URL</label>
-          <input type="text" id="ollama-url" class="input" placeholder="http://localhost:11434" style="max-width: 320px;">
-          <label for="ollama-model" style="margin-top: var(--space-1);">Model</label>
-          <input type="text" id="ollama-model" class="input" placeholder="e.g. llama3.1, qwen2.5-coder:7b" style="max-width: 240px;">
-        </div>
-        <div class="form-group" id="llm-model-group">
-          <label for="llm-model">Model</label>
-          <input type="text" id="llm-model" class="input" placeholder="Leave empty for provider default" style="max-width: 240px;">
-        </div>
-        <button type="button" class="btn btn--secondary" id="llm-save">Save LLM settings</button>
+        <button type="button" class="btn btn--secondary" id="llm-save">
+          <span class="btn-label">Save LLM settings</span>
+        </button>
       </section>
-      <section class="dashboard-panel">
-        <h2 class="section-title">Pages</h2>
-        <div class="btn-group">
+
+      <!-- Quick navigation -->
+      <section class="card" style="grid-column: 1 / -1;">
+        <h2 class="section-title">Quick navigation</h2>
+        <div class="btn-group" style="flex-wrap:wrap;">
           <a href="/recommendations" class="btn btn--secondary">Recommendations</a>
           <a href="/research" class="btn btn--secondary">Research an asset</a>
           <a href="/analysis" class="btn btn--secondary">Market analysis</a>
@@ -83,110 +113,91 @@
       </section>
     </div>
 
-    <details class="card" style="margin-top: var(--space-4);">
-      <summary style="cursor: pointer; font-weight: 600;">Workflow &amp; batch notes</summary>
-      <ol class="ordered-list" style="margin-top: var(--space-2);">
-        <li>Run pipeline (or wait for schedule) → feeds, analysis, today’s recommendations.</li>
-        <li>Open Market analysis, then Recommendations; mark each row Took it or Skipped.</li>
-        <li>Active trades shows what you took; refresh that page to see SL/TP updates (every 2h).</li>
-      </ol>
-      <p class="meta">Refresh = new set of recs; Clear = remove pending/skipped only. Taken trades persist.</p>
-    </details>
-
-    <div id="message" class="alert" role="alert" style="display: none;"></div>
-    <p class="disclaimer">Educational use only. Not financial advice.</p>
+    <p class="disclaimer">Educational and research purposes only. Not financial advice.</p>
   </main>
 
   <script>
-    const messageEl = document.getElementById('message');
-    function showMessage(text, ok) {
-      messageEl.textContent = text;
-      messageEl.className = 'alert ' + (ok ? 'alert--success' : 'alert--error');
-      messageEl.style.display = 'block';
+    const toast = document.getElementById('toast');
+    function showToast(text, ok) {
+      toast.textContent = text;
+      toast.className = 'alert ' + (ok ? 'alert--success' : 'alert--error');
+      toast.style.display = 'block';
+      clearTimeout(toast._t);
+      toast._t = setTimeout(() => { toast.style.display = 'none'; }, 6000);
     }
-    // Load and save preferred risk
-    (function() {
-      const sel = document.getElementById('preferred-risk');
-      if (!sel) return;
-      fetch('/api/preferences').then(r => r.json()).then(data => {
-        if (data.preferred_risk) sel.value = data.preferred_risk;
-      }).catch(() => {});
-      sel.addEventListener('change', function() {
-        fetch('/api/preferences', {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ preferred_risk: sel.value })
-        }).then(r => r.json()).then(data => {
-          showMessage(data.message || 'Preferences saved.', true);
-        }).catch(e => showMessage('Failed to save: ' + e.message, false));
+
+    /* Risk preference */
+    const riskSel = document.getElementById('preferred-risk');
+    fetch('/api/preferences').then(r=>r.json()).then(d => {
+      if (d.preferred_risk) riskSel.value = d.preferred_risk;
+    }).catch(()=>{});
+    riskSel.addEventListener('change', () => {
+      fetch('/api/preferences', {
+        method:'PATCH', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({preferred_risk: riskSel.value})
+      }).then(r=>r.json()).then(d => showToast(d.message || 'Saved.', true))
+        .catch(e => showToast('Failed: ' + e.message, false));
+    });
+
+    /* LLM provider */
+    const provBtns = document.querySelectorAll('.llm-provider-btn');
+    const ollamaFields = document.getElementById('llm-ollama-fields');
+    const modelGroup = document.getElementById('llm-model-group');
+    let curProvider = 'openai';
+    function setProvider(p) {
+      curProvider = p;
+      provBtns.forEach(b => {
+        const match = b.dataset.provider === p;
+        b.classList.toggle('btn--primary', match);
+        b.classList.toggle('btn--secondary', !match);
       });
-    })();
+      ollamaFields.style.display = p === 'ollama' ? 'block' : 'none';
+      modelGroup.style.display = p === 'ollama' ? 'none' : 'block';
+    }
+    fetch('/api/preferences').then(r=>r.json()).then(d => {
+      const p = (d.research_llm_provider||'openai').toLowerCase();
+      setProvider(p);
+      document.getElementById('ollama-url').value = d.ollama_base_url || 'http://localhost:11434';
+      document.getElementById('ollama-model').value = p==='ollama' ? (d.research_llm_model||'') : '';
+      document.getElementById('llm-model').value = p!=='ollama' ? (d.research_llm_model||'') : '';
+    }).catch(()=>{});
+    provBtns.forEach(b => b.addEventListener('click', () => setProvider(b.dataset.provider)));
 
-    // Research / LLM provider: load, select provider, show Ollama fields when Ollama, save
-    (function() {
-      const providerBtns = document.querySelectorAll('.llm-provider-btn');
-      const ollamaFields = document.getElementById('llm-ollama-fields');
-      const ollamaUrl = document.getElementById('ollama-url');
-      const ollamaModel = document.getElementById('ollama-model');
-      const llmModelGroup = document.getElementById('llm-model-group');
-      const llmModel = document.getElementById('llm-model');
-      const saveBtn = document.getElementById('llm-save');
-      let currentProvider = 'openai';
-
-      function setProvider(p) {
-        currentProvider = p;
-        providerBtns.forEach(b => {
-          b.classList.toggle('btn--primary', b.getAttribute('data-provider') === p);
-          b.classList.toggle('btn--secondary', b.getAttribute('data-provider') !== p);
-        });
-        if (ollamaFields) ollamaFields.style.display = p === 'ollama' ? 'block' : 'none';
-        if (llmModelGroup) llmModelGroup.style.display = p === 'ollama' ? 'none' : 'block';
+    document.getElementById('llm-save').addEventListener('click', function() {
+      const btn = this;
+      const body = { research_llm_provider: curProvider };
+      if (curProvider === 'ollama') {
+        body.ollama_base_url = document.getElementById('ollama-url').value.trim() || 'http://localhost:11434';
+        body.research_llm_model = document.getElementById('ollama-model').value.trim();
+      } else {
+        body.research_llm_model = document.getElementById('llm-model').value.trim();
       }
+      btn.disabled = true;
+      btn.querySelector('.btn-label').textContent = 'Saving...';
+      fetch('/api/preferences', {method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})
+        .then(r=>r.json()).then(d => showToast(d.message || 'LLM settings saved.', true))
+        .catch(e => showToast('Failed: ' + e.message, false))
+        .finally(() => { btn.disabled = false; btn.querySelector('.btn-label').textContent = 'Save LLM settings'; });
+    });
 
-      fetch('/api/preferences').then(r => r.json()).then(data => {
-        const p = (data.research_llm_provider || 'openai').toLowerCase();
-        setProvider(p);
-        if (ollamaUrl) ollamaUrl.value = data.ollama_base_url || 'http://localhost:11434';
-        if (ollamaModel) ollamaModel.value = p === 'ollama' ? (data.research_llm_model || '') : '';
-        if (llmModel) llmModel.value = p !== 'ollama' ? (data.research_llm_model || '') : '';
-      }).catch(() => {});
-
-      providerBtns.forEach(b => {
-        b.addEventListener('click', function() {
-          setProvider(this.getAttribute('data-provider'));
-        });
-      });
-
-      if (saveBtn) saveBtn.addEventListener('click', function() {
-        const body = { research_llm_provider: currentProvider };
-        if (currentProvider === 'ollama') {
-          body.ollama_base_url = (ollamaUrl && ollamaUrl.value.trim()) || 'http://localhost:11434';
-          body.research_llm_model = (ollamaModel && ollamaModel.value.trim()) || '';
-        } else {
-          body.research_llm_model = (llmModel && llmModel.value.trim()) || '';
-        }
-        saveBtn.disabled = true;
-        fetch('/api/preferences', {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body)
-        }).then(r => r.json()).then(data => {
-          showMessage(data.message || 'LLM settings saved.', true);
-        }).catch(e => showMessage('Failed to save: ' + e.message, false)).finally(() => { saveBtn.disabled = false; });
-      });
-    })();
+    /* Pipeline action buttons with spinner */
     document.querySelectorAll('button[data-action]').forEach(btn => {
       btn.addEventListener('click', async () => {
-        const action = btn.getAttribute('data-action');
-        if (action === 'purge-all' && !confirm('Delete all recommendations and active trades? This cannot be undone.')) return;
+        const action = btn.dataset.action;
+        if (action === 'purge-all' && !confirm('Delete ALL recommendations and active trades? This cannot be undone.')) return;
+        const label = btn.querySelector('.btn-label');
+        const origText = label.textContent;
         btn.disabled = true;
+        label.innerHTML = '<span class="spinner spinner--white"></span> Working...';
+        if (!btn.classList.contains('btn--primary')) {
+          label.innerHTML = '<span class="spinner"></span> Working...';
+        }
         try {
           const r = await fetch('/api/actions/' + action, { method: 'POST' });
-          const data = await r.json();
-          showMessage(data.message || (typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail)) || (r.ok ? 'Done.' : 'Error'), r.ok);
-        } catch (e) {
-          showMessage('Request failed: ' + e.message, false);
-        }
+          const d = await r.json();
+          showToast(d.message || (r.ok ? 'Done.' : 'Error'), r.ok);
+        } catch (e) { showToast('Request failed: ' + e.message, false); }
+        label.textContent = origText;
         btn.disabled = false;
       });
     });

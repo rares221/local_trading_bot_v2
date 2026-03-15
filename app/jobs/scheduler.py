@@ -19,8 +19,8 @@ from app.services.ingestion import fetch_all_feeds, save_feed_items
 from app.services.sentiment import score_sentiment, tag_assets, detect_tickers
 from app.services.analysis import run_analysis, get_latest_analysis
 from app.services.recommendations import build_daily_candidates, get_asset_price_and_risk
-from app.services.recommendations.engine import get_yf_symbol, compute_sl_tp_for_price
-from app.services.technicals import build_snapshot, compute_atr_levels, clear_cache
+from app.services.recommendations.engine import get_yf_symbol, compute_sl_tp_for_price, get_sentiment_score_and_count
+from app.services.technicals import build_snapshot, compute_atr_levels, clear_cache, determine_direction
 from app.services.briefing import run_briefing
 
 
@@ -126,6 +126,10 @@ async def job_update_active_trades() -> None:
     """
     clear_cache()
     async with async_session_factory() as session:
+        # Load latest analysis for sentiment lookup
+        analysis = await get_latest_analysis(session)
+        by_asset_sentiment = (analysis.payload or {}).get("by_asset_sentiment", {}) if analysis and analysis.payload else {}
+
         q = select(ActiveTrade).options(selectinload(ActiveTrade.recommendation))
         result = await session.execute(q)
         now = datetime.now(timezone.utc)
@@ -205,6 +209,16 @@ async def job_update_active_trades() -> None:
                     trade.trade_phase = "closed_sl"
                 elif current_price <= rec.take_profit:
                     trade.trade_phase = "closed_tp"
+
+            # Signal flip detection: re-evaluate direction from current data
+            pair = get_sentiment_score_and_count(rec.asset_category, rec.asset_id, by_asset_sentiment)
+            current_sentiment = pair[0] if pair else None
+            current_signal = determine_direction(current_sentiment, snap)
+            flip_count = getattr(trade, "signal_flip_count", 0) or 0
+            if current_signal != direction:
+                trade.signal_flip_count = min(flip_count + 1, 10)
+            else:
+                trade.signal_flip_count = max(flip_count - 1, 0)
 
             trade.suggested_sl = sl
             trade.suggested_tp = tp

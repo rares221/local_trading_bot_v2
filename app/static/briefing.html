@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Daily briefing — Trading Bot</title>
+  <title>Daily Briefing — Trading Bot</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -13,94 +13,86 @@
   <nav class="nav">
     <a href="/dashboard">Dashboard</a>
     <a href="/recommendations">Recommendations</a>
-    <a href="/research">Research an asset</a>
-    <a href="/analysis">Market analysis</a>
+    <a href="/research">Research</a>
+    <a href="/analysis">Analysis</a>
     <a href="/active-trades">Active trades</a>
-    <a href="/briefing" class="active">Daily briefing</a>
-    <a href="/docs" target="_blank" rel="noopener">API docs</a>
+    <a href="/briefing" class="active">Briefing</a>
   </nav>
 
   <main class="app app--wide">
-    <h1 class="page-title">Daily briefing</h1>
-    <p class="page-desc">Heartbeat-style checklist: SPX/VIX/oil move, recommendations today. Runs once per day on schedule; you can run it now below.</p>
-    <p class="meta" id="meta">Loading…</p>
-    <section class="card" id="briefing-card" hidden>
-      <h2 class="section-title">Latest briefing</h2>
-      <pre id="briefing-text" class="block-summary" style="white-space: pre-wrap;"></pre>
+    <h1 class="page-title">Daily Briefing</h1>
+    <p class="page-desc">Quick morning checklist: key moves (SPX, VIX, oil), recommendation count, and notable signals. Runs once daily on schedule or on demand.</p>
+
+    <div id="loading" class="loading-overlay"><span class="spinner spinner--lg"></span> Loading briefing&hellip;</div>
+
+    <section class="card" id="briefing-card" style="display:none;">
+      <div class="flex items-center gap-2 mb-2">
+        <h2 class="section-title" style="margin:0;">Latest briefing</h2>
+        <span class="meta" id="briefing-time"></span>
+      </div>
+      <div id="briefing-text" class="block-summary"></div>
     </section>
-    <div id="no-briefing" class="meta" hidden>No briefing yet. Click "Run briefing now" to generate one.</div>
-    <div class="btn-group" style="margin-top: var(--space-2);">
-      <button type="button" class="btn btn--primary" id="run-now">Run briefing now</button>
+
+    <div id="no-briefing" class="alert alert--warning" style="display:none;">
+      No briefing yet. Click "Run briefing now" to generate one.
     </div>
-    <p class="disclaimer">Educational use only. Not financial advice.</p>
+
+    <div class="mt-2">
+      <button type="button" class="btn btn--primary" id="run-btn">
+        <span class="btn-label">Run briefing now</span>
+      </button>
+    </div>
+
+    <p class="disclaimer">Educational and research purposes only. Not financial advice.</p>
   </main>
 
   <script>
-    (function() {
-      const meta = document.getElementById('meta');
-      const card = document.getElementById('briefing-card');
-      const text = document.getElementById('briefing-text');
-      const noBriefing = document.getElementById('no-briefing');
-      const runBtn = document.getElementById('run-now');
+    function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+    const loadingEl = document.getElementById('loading');
+    const card = document.getElementById('briefing-card');
+    const textEl = document.getElementById('briefing-text');
+    const timeEl = document.getElementById('briefing-time');
+    const noEl = document.getElementById('no-briefing');
+    const runBtn = document.getElementById('run-btn');
 
-      function escapeHtml(s) {
-        const div = document.createElement('div');
-        div.textContent = s;
-        return div.innerHTML;
+    function showBriefing(data) {
+      if (data && data.content_text) {
+        card.style.display = 'block'; noEl.style.display = 'none';
+        textEl.textContent = data.content_text;
+        timeEl.textContent = data.created_at ? new Date(data.created_at).toLocaleString() : '';
+      } else {
+        card.style.display = 'none'; noEl.style.display = 'block';
       }
+    }
 
-      function showBriefing(data) {
-        if (data && data.content_text) {
-          meta.textContent = 'Created ' + (data.created_at || '');
-          card.hidden = false;
-          noBriefing.hidden = true;
-          text.textContent = data.content_text;
-        } else {
-          meta.textContent = '';
-          card.hidden = true;
-          noBriefing.hidden = false;
-        }
+    async function loadLatest() {
+      try {
+        const r = await fetch('/api/briefing/latest');
+        if (r.ok) { showBriefing(await r.json()); }
+        else { card.style.display = 'none'; noEl.style.display = 'block'; }
+      } catch (e) {
+        noEl.textContent = 'Failed to load: ' + e.message;
+        noEl.style.display = 'block';
       }
+      loadingEl.style.display = 'none';
+    }
 
-      async function loadLatest() {
-        try {
-          const r = await fetch('/api/briefing/latest');
-          if (r.ok) {
-            const data = await r.json();
-            showBriefing(data);
-          } else {
-            meta.textContent = '';
-            card.hidden = true;
-            noBriefing.hidden = false;
-          }
-        } catch (e) {
-          meta.textContent = '';
-          card.hidden = true;
-          noBriefing.hidden = false;
-          noBriefing.textContent = 'Failed to load: ' + e.message;
-        }
+    runBtn.addEventListener('click', async () => {
+      const label = runBtn.querySelector('.btn-label');
+      runBtn.disabled = true;
+      label.innerHTML = '<span class="spinner spinner--white"></span> Generating&hellip;';
+      try {
+        const r = await fetch('/api/briefing/run', { method: 'POST' });
+        const data = await r.json();
+        if (r.ok) { showBriefing(data); }
+        else { noEl.textContent = data.detail || 'Run failed.'; noEl.style.display = 'block'; }
+      } catch (e) {
+        noEl.textContent = 'Run failed: ' + e.message; noEl.style.display = 'block';
       }
+      runBtn.disabled = false; label.textContent = 'Run briefing now';
+    });
 
-      runBtn.addEventListener('click', async () => {
-        runBtn.disabled = true;
-        try {
-          const r = await fetch('/api/briefing/run', { method: 'POST' });
-          const data = await r.json();
-          if (r.ok) {
-            showBriefing(data);
-          } else {
-            noBriefing.textContent = data.detail || r.statusText || 'Run failed';
-            noBriefing.hidden = false;
-          }
-        } catch (e) {
-          noBriefing.textContent = 'Run failed: ' + e.message;
-          noBriefing.hidden = false;
-        }
-        runBtn.disabled = false;
-      });
-
-      loadLatest();
-    })();
+    loadLatest();
   </script>
 </body>
 </html>

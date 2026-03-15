@@ -73,7 +73,7 @@ async def run_analysis(session: AsyncSession) -> MarketAnalysis:
         }
 
     as_of = now
-    price_snapshot = get_price_snapshot()
+    price_snapshot = get_price_snapshot(extra_tags=set(by_asset_sentiment.keys()))
     summary_lines = [
         f"Market analysis as of {as_of.isoformat()}.",
         f"Items: {len(items)}.",

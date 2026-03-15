@@ -217,12 +217,60 @@ def get_sentiment_score_and_count(
     return (best_avg, total_count) if best_avg is not None else None
 
 
-def get_price_snapshot() -> dict[str, float]:
+_CRYPTO_SUFFIXES = ("-USD", "-USDT")
+_KNOWN_CRYPTO = frozenset({
+    "BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "DOT", "AVAX", "MATIC",
+    "LINK", "UNI", "ATOM", "LTC", "FIL", "NEAR", "APT", "ARB", "OP", "SHIB",
+    "HBAR", "ICP", "XLM", "ALGO", "VET", "MANA", "SAND",
+})
+
+
+def _looks_like_symbol(s: str) -> bool:
+    """Broader than is_likely_ticker: allows dots (BRK.B) and is not blocklist-filtered."""
+    if not s or len(s) < 1 or len(s) > 6:
+        return False
+    if s != s.upper():
+        return False
+    return all(c.isalpha() or c == '.' for c in s)
+
+
+def _try_price(tag: str) -> Optional[float]:
+    """Try multiple yfinance symbol variants for a sentiment tag."""
+    if tag.upper() in _KNOWN_CRYPTO:
+        for suffix in _CRYPTO_SUFFIXES:
+            p = get_cached_price(tag.upper() + suffix)
+            if p is not None and p > 0:
+                return p
+        return None
+    p = get_cached_price(tag)
+    if p is not None and p > 0:
+        return p
+    if "." in tag:
+        p = get_cached_price(tag.replace(".", "-"))
+        if p is not None and p > 0:
+            return p
+    return None
+
+
+def get_price_snapshot(extra_tags: Optional[set[str]] = None) -> dict[str, float]:
+    """
+    Price snapshot for the hardcoded universe + any extra sentiment tags that
+    look like tickers (e.g. AAPL, TSLA, BRK.B, BNB discovered from news).
+    """
     out: dict[str, float] = {}
     for _cat, asset_id, symbol, _tier in _all_assets():
         p = get_cached_price(symbol)
         if p is not None and p > 0:
             out[asset_id] = round(p, 2)
+    if extra_tags:
+        for tag in extra_tags:
+            if tag in out:
+                continue
+            if not _looks_like_symbol(tag):
+                continue
+            p = _try_price(tag)
+            if p is not None:
+                out[tag] = round(p, 2)
     return out
 
 

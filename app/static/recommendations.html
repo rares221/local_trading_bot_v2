@@ -13,182 +13,163 @@
   <nav class="nav">
     <a href="/dashboard">Dashboard</a>
     <a href="/recommendations" class="active">Recommendations</a>
-    <a href="/research">Research an asset</a>
-    <a href="/analysis">Market analysis</a>
+    <a href="/research">Research</a>
+    <a href="/analysis">Analysis</a>
     <a href="/active-trades">Active trades</a>
-    <a href="/briefing">Daily briefing</a>
-    <a href="/docs" target="_blank" rel="noopener">API docs</a>
+    <a href="/briefing">Briefing</a>
   </nav>
 
   <main class="app app--wide">
     <h1 class="page-title">Recommendations</h1>
-    <p class="page-desc">Today's batch by category. Use "Took it" or "Skipped" per row. Trades you take appear on <a href="/active-trades">Active trades</a>. (Workflow: run pipeline on Dashboard first.)</p>
+    <p class="page-desc">Today's trade ideas grouped by category. Mark each as "Took it" or "Skip". Run the pipeline from the <a href="/dashboard">Dashboard</a> first.</p>
 
-    <section class="card" id="stocks">
-      <h2 class="section-title">Stocks</h2>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr><th>Asset</th><th class="num">Buy</th><th class="num">SL</th><th class="num">TP</th><th>Risk</th><th>Status</th><th>Actions</th></tr>
-          </thead>
-          <tbody id="stocks-body"></tbody>
-        </table>
-      </div>
-    </section>
-    <section class="card" id="commodities">
-      <h2 class="section-title">Commodities</h2>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr><th>Asset</th><th class="num">Buy</th><th class="num">SL</th><th class="num">TP</th><th>Risk</th><th>Status</th><th>Actions</th></tr>
-          </thead>
-          <tbody id="commodities-body"></tbody>
-        </table>
-      </div>
-    </section>
-    <section class="card" id="other">
-      <h2 class="section-title">Other</h2>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr><th>Asset</th><th class="num">Buy</th><th class="num">SL</th><th class="num">TP</th><th>Risk</th><th>Status</th><th>Actions</th></tr>
-          </thead>
-          <tbody id="other-body"></tbody>
-        </table>
-      </div>
-    </section>
-    <section class="card" id="indices">
-      <h2 class="section-title">Indices</h2>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr><th>Asset</th><th class="num">Buy</th><th class="num">SL</th><th class="num">TP</th><th>Risk</th><th>Status</th><th>Actions</th></tr>
-          </thead>
-          <tbody id="indices-body"></tbody>
-        </table>
-      </div>
-    </section>
+    <div id="loading" class="loading-overlay"><span class="spinner spinner--lg"></span> Loading recommendations&hellip;</div>
+    <div id="content" style="display:none;">
+      <section class="card" id="stocks-section">
+        <h2 class="section-title">Stocks</h2>
+        <div class="table-wrap"><table><thead id="stocks-head"></thead><tbody id="stocks-body"></tbody></table></div>
+      </section>
+      <section class="card" id="commodities-section">
+        <h2 class="section-title">Commodities</h2>
+        <div class="table-wrap"><table><thead id="commodities-head"></thead><tbody id="commodities-body"></tbody></table></div>
+      </section>
+      <section class="card" id="indices-section">
+        <h2 class="section-title">Indices</h2>
+        <div class="table-wrap"><table><thead id="indices-head"></thead><tbody id="indices-body"></tbody></table></div>
+      </section>
+      <section class="card" id="other-section">
+        <h2 class="section-title">Other</h2>
+        <div class="table-wrap"><table><thead id="other-head"></thead><tbody id="other-body"></tbody></table></div>
+      </section>
+    </div>
 
-    <p class="disclaimer">Educational use only. Not financial advice.</p>
+    <p class="disclaimer">Educational and research purposes only. Not financial advice.</p>
   </main>
 
-  <!-- Modal: Show research (rationale_text) for a recommendation -->
-  <div id="research-modal" class="modal-overlay" role="dialog" aria-labelledby="research-modal-title" aria-modal="true" aria-hidden="true" hidden>
+  <!-- Research modal -->
+  <div id="research-modal" class="modal-overlay" role="dialog" aria-modal="true" aria-hidden="true" hidden>
     <div class="modal">
       <div class="modal__header">
-        <h2 id="research-modal-title" class="modal__title">Research</h2>
-        <button type="button" class="modal__close" id="research-modal-close" aria-label="Close">&times;</button>
+        <h2 id="modal-title" class="modal__title">Research</h2>
+        <button type="button" class="modal__close" id="modal-close" aria-label="Close">&times;</button>
       </div>
       <div class="modal__body">
-        <p id="research-modal-body" class="research-text"></p>
-        <p style="margin-top: var(--space-2);">
-          <button type="button" class="btn btn--secondary" id="research-modal-close-footer">Close</button>
-        </p>
+        <p id="modal-body" class="research-text"></p>
       </div>
     </div>
   </div>
 
   <script>
-    (function modal() {
-      function init() {
-        const overlay = document.getElementById('research-modal');
-        const titleEl = document.getElementById('research-modal-title');
-        const bodyEl = document.getElementById('research-modal-body');
-        const closeBtn = document.getElementById('research-modal-close');
-        const closeFooter = document.getElementById('research-modal-close-footer');
-        if (!overlay) return;
-        overlay.style.display = 'none';
-        async function showResearch(assetId, category, rationaleText) {
-          titleEl.textContent = 'Research: ' + assetId + ' (' + category + ')';
-          overlay.removeAttribute('hidden');
-          overlay.setAttribute('aria-hidden', 'false');
-          overlay.style.display = 'flex';
+    /* Modal */
+    const overlay = document.getElementById('research-modal');
+    const modalTitle = document.getElementById('modal-title');
+    const modalBody = document.getElementById('modal-body');
+    function closeModal() { overlay.hidden = true; overlay.style.display = 'none'; }
+    document.getElementById('modal-close').addEventListener('click', closeModal);
+    overlay.addEventListener('click', e => { if (e.target === overlay) closeModal(); });
+    document.addEventListener('keydown', e => { if (e.key === 'Escape' && !overlay.hidden) closeModal(); });
 
-          if (rationaleText && rationaleText.trim()) {
-            bodyEl.textContent = rationaleText.trim();
-            bodyEl.className = 'research-text';
-          } else {
-            bodyEl.textContent = 'Generating research via LLM...';
-            bodyEl.className = 'research-empty';
-            try {
-              const r = await fetch('/api/research/summary?asset_id=' + encodeURIComponent(assetId) + '&category=' + encodeURIComponent(category) + '&generate=true');
-              const data = await r.json();
-              if (data.summary && data.summary.trim()) {
-                bodyEl.textContent = data.summary.trim();
-                bodyEl.className = 'research-text';
-              } else {
-                bodyEl.textContent = 'No summary returned. Check that an LLM provider is configured (e.g. Ollama running).';
-                bodyEl.className = 'research-empty';
-              }
-            } catch (e) {
-              bodyEl.textContent = 'Failed to generate research: ' + e.message;
-              bodyEl.className = 'research-empty';
-            }
-          }
-        }
-        function closeModal() {
-          overlay.setAttribute('hidden', '');
-          overlay.setAttribute('aria-hidden', 'true');
-          overlay.style.display = 'none';
-        }
-        function onClose(e) {
-          if (e) { e.preventDefault(); e.stopPropagation(); }
-          closeModal();
-        }
-        if (closeBtn) closeBtn.addEventListener('click', onClose);
-        if (closeFooter) closeFooter.addEventListener('click', onClose);
-        overlay.addEventListener('click', function(e) {
-          if (e.target === overlay) closeModal();
-        });
-        document.addEventListener('keydown', function(e) {
-          if (e.key === 'Escape' && overlay.style.display === 'flex') { e.preventDefault(); closeModal(); }
-        });
-        window.showResearchModal = showResearch;
-      }
-      if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', init);
+    async function showResearch(assetId, category, text) {
+      modalTitle.textContent = assetId + ' (' + category + ')';
+      overlay.hidden = false; overlay.style.display = 'flex';
+      if (text && text.trim()) {
+        modalBody.textContent = text.trim();
+        modalBody.className = 'research-text';
       } else {
-        init();
+        modalBody.innerHTML = '<span class="spinner"></span> Generating research via LLM&hellip;';
+        modalBody.className = 'research-empty flex items-center gap-1';
+        try {
+          const r = await fetch('/api/research/summary?asset_id=' + encodeURIComponent(assetId) + '&category=' + encodeURIComponent(category) + '&generate=true');
+          const d = await r.json();
+          if (d.summary && d.summary.trim()) { modalBody.textContent = d.summary.trim(); modalBody.className = 'research-text'; }
+          else { modalBody.textContent = 'No summary returned. Check LLM provider on Dashboard.'; modalBody.className = 'research-empty'; }
+        } catch (e) { modalBody.textContent = 'Failed: ' + e.message; modalBody.className = 'research-empty'; }
       }
-    })();
+    }
 
-    function row(rec) {
+    function dirBadge(dir) {
+      if (dir === 'short') return '<span class="badge badge--red">SHORT</span>';
+      return '<span class="badge badge--green">LONG</span>';
+    }
+    function confBadge(score) {
+      if (score == null) return '<span class="badge badge--gray">—</span>';
+      const cls = score >= 70 ? 'badge--green' : score >= 40 ? 'badge--yellow' : 'badge--red';
+      return '<span class="badge ' + cls + '">' + score + '%</span>';
+    }
+    function statusBadge(s) {
+      if (s === 'taken') return '<span class="badge badge--green">Taken</span>';
+      if (s === 'skipped') return '<span class="badge badge--gray">Skipped</span>';
+      return '<span class="badge badge--blue">Pending</span>';
+    }
+    function fmtNum(v) { return v != null ? Number(v).toFixed(2) : '—'; }
+    function fmtRR(v) { return v != null ? Number(v).toFixed(1) + ':1' : '—'; }
+    function fmtExpiry(iso) {
+      if (!iso) return '—';
+      const exp = new Date(iso + 'T00:00:00');
+      const now = new Date(); now.setHours(0,0,0,0);
+      const days = Math.round((exp - now) / 86400000);
+      const label = days <= 0 ? 'today' : days === 1 ? '1 day' : days + ' days';
+      return exp.toLocaleDateString() + ' <span class="text-sm text-muted">(' + label + ')</span>';
+    }
+
+    const THEAD = '<tr><th>Asset</th><th>Dir</th><th class="num">Entry</th><th class="num">SL</th><th class="num">TP</th><th class="num">R:R</th><th>Conf</th><th>Risk</th><th>Expiry</th><th>Status</th><th>Actions</th></tr>';
+
+    function buildRow(rec) {
       const tr = document.createElement('tr');
-      const showResearchBtn = '<button type="button" class="btn btn-sm btn--secondary" data-show-research>Show research</button> ';
       const actions = rec.status === 'pending'
-        ? showResearchBtn + '<button type="button" class="btn btn-sm btn--primary" data-id="' + rec.id + '" data-do="took-it">Took it</button><button type="button" class="btn btn-sm btn--secondary" data-id="' + rec.id + '" data-do="skipped">Skipped</button>'
-        : showResearchBtn + rec.status;
-      tr.innerHTML = '<td>' + rec.asset_id + '</td><td class="num">' + rec.buy_in_price + '</td><td class="num">' + rec.stop_loss + '</td><td class="num">' + rec.take_profit + '</td><td>' + rec.risk_tier + '</td><td>' + rec.status + '</td><td>' + actions + '</td>';
-      tr.querySelectorAll('button[data-id]').forEach(b => {
-        b.addEventListener('click', async () => {
-          const id = b.getAttribute('data-id');
-          const do_ = b.getAttribute('data-do');
-          await fetch('/api/recommendations/' + id + '/' + (do_ === 'took-it' ? 'took-it' : 'skipped'), { method: 'POST' });
+        ? '<button class="btn btn-sm btn--primary" data-do="took-it">Took it</button><button class="btn btn-sm btn--secondary" data-do="skipped">Skip</button><button class="btn btn-sm btn--secondary" data-do="research">Research</button>'
+        : '<button class="btn btn-sm btn--secondary" data-do="research">Research</button>';
+      tr.innerHTML =
+        '<td class="font-semibold">' + rec.asset_id + '</td>' +
+        '<td>' + dirBadge(rec.direction) + '</td>' +
+        '<td class="num">' + fmtNum(rec.buy_in_price) + '</td>' +
+        '<td class="num">' + fmtNum(rec.stop_loss) + '</td>' +
+        '<td class="num">' + fmtNum(rec.take_profit) + '</td>' +
+        '<td class="num">' + fmtRR(rec.risk_reward) + '</td>' +
+        '<td>' + confBadge(rec.confidence_score) + '</td>' +
+        '<td><span class="badge badge--gray">' + (rec.risk_tier || '—') + '</span></td>' +
+        '<td class="text-sm">' + fmtExpiry(rec.expiry_date) + '</td>' +
+        '<td>' + statusBadge(rec.status) + '</td>' +
+        '<td><div style="display:inline-flex;gap:4px;white-space:nowrap;">' + actions + '</div></td>';
+      tr.querySelectorAll('button[data-do]').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const act = btn.dataset.do;
+          if (act === 'research') { showResearch(rec.asset_id, rec.asset_category, rec.rationale_text || ''); return; }
+          btn.disabled = true; btn.innerHTML = '<span class="spinner spinner--white"></span>';
+          await fetch('/api/recommendations/' + rec.id + '/' + act, { method: 'POST' });
           load();
         });
       });
-      tr.querySelectorAll('button[data-show-research]').forEach(b => {
-        b.addEventListener('click', () => window.showResearchModal(rec.asset_id, rec.asset_category, rec.rationale_text || ''));
-      });
       return tr;
     }
-    function render(tbodyId, items) {
-      const tbody = document.getElementById(tbodyId);
-      tbody.innerHTML = '';
+
+    function render(headId, bodyId, sectionId, items) {
+      const head = document.getElementById(headId);
+      const body = document.getElementById(bodyId);
+      const section = document.getElementById(sectionId);
+      head.innerHTML = THEAD;
+      body.innerHTML = '';
       if (!items || items.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="7" class="table-empty">None</td></tr>';
+        body.innerHTML = '<tr><td colspan="11" class="table-empty">No recommendations in this category</td></tr>';
         return;
       }
-      items.forEach(rec => tbody.appendChild(row(rec)));
+      items.forEach(rec => body.appendChild(buildRow(rec)));
     }
+
     async function load() {
-      const r = await fetch('/api/recommendations?group_by=category');
-      const data = await r.json();
-      const by = data.by_category || {};
-      render('stocks-body', by.stocks);
-      render('commodities-body', by.commodities);
-      render('other-body', by.other);
-      render('indices-body', by.indices);
+      try {
+        const r = await fetch('/api/recommendations?group_by=category');
+        const data = await r.json();
+        const by = data.by_category || {};
+        render('stocks-head', 'stocks-body', 'stocks-section', by.stocks);
+        render('commodities-head', 'commodities-body', 'commodities-section', by.commodities);
+        render('indices-head', 'indices-body', 'indices-section', by.indices);
+        render('other-head', 'other-body', 'other-section', by.other);
+      } catch (e) {
+        document.getElementById('content').innerHTML = '<div class="alert alert--error">Failed to load: ' + e.message + '</div>';
+      }
+      document.getElementById('loading').style.display = 'none';
+      document.getElementById('content').style.display = 'block';
     }
     load();
   </script>
