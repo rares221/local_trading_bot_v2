@@ -26,6 +26,8 @@ from app.services.briefing import run_briefing
 
 async def job_ingest_and_sentiment() -> None:
     """Fetch RSS feeds, save items, run sentiment and asset tagging."""
+    from app.services.ticker_resolver import reset_run_counter
+    reset_run_counter()
     async with async_session_factory() as session:
         items = fetch_all_feeds()
         saved = await save_feed_items(session, items)

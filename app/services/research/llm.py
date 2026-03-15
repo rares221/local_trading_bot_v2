@@ -178,6 +178,7 @@ async def generate_rationale(context: dict[str, Any]) -> str | None:
             return await _call_ollama(model, system, user, ollama_base_url)
         if provider_id == "openrouter":
             return await _call_openrouter(model, system, user, api_key or "")
-    except Exception:
-        pass
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("LLM call failed (%s/%s): %s", provider_id, model, exc)
     return None

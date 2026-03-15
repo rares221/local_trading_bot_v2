@@ -98,18 +98,33 @@
         const closeFooter = document.getElementById('research-modal-close-footer');
         if (!overlay) return;
         overlay.style.display = 'none';
-        function showResearch(assetId, category, rationaleText) {
+        async function showResearch(assetId, category, rationaleText) {
           titleEl.textContent = 'Research: ' + assetId + ' (' + category + ')';
+          overlay.removeAttribute('hidden');
+          overlay.setAttribute('aria-hidden', 'false');
+          overlay.style.display = 'flex';
+
           if (rationaleText && rationaleText.trim()) {
             bodyEl.textContent = rationaleText.trim();
             bodyEl.className = 'research-text';
           } else {
-            bodyEl.textContent = 'No research summary for this recommendation. Run the pipeline with an LLM configured, or use "Research an asset" to generate one on demand.';
+            bodyEl.textContent = 'Generating research via LLM...';
             bodyEl.className = 'research-empty';
+            try {
+              const r = await fetch('/api/research/summary?asset_id=' + encodeURIComponent(assetId) + '&category=' + encodeURIComponent(category) + '&generate=true');
+              const data = await r.json();
+              if (data.summary && data.summary.trim()) {
+                bodyEl.textContent = data.summary.trim();
+                bodyEl.className = 'research-text';
+              } else {
+                bodyEl.textContent = 'No summary returned. Check that an LLM provider is configured (e.g. Ollama running).';
+                bodyEl.className = 'research-empty';
+              }
+            } catch (e) {
+              bodyEl.textContent = 'Failed to generate research: ' + e.message;
+              bodyEl.className = 'research-empty';
+            }
           }
-          overlay.removeAttribute('hidden');
-          overlay.setAttribute('aria-hidden', 'false');
-          overlay.style.display = 'flex';
         }
         function closeModal() {
           overlay.setAttribute('hidden', '');

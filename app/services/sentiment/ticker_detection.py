@@ -1,6 +1,13 @@
 """
 Dynamic ticker detection from feed text. Extracts likely stock/ETF symbols so we can
 recommend any ticker that appears in the news, not just a fixed universe.
+
+Resolution order:
+  1. Hardcoded COMPANY_TO_TICKER (fast-path for ~100 top names)
+  2. All-caps regex for explicit ticker mentions (AAPL, MSFT, etc.)
+  3. Multi-word proper-noun extraction → ticker_resolver.resolve_name()
+     (persistent JSON cache → yfinance.Search for global markets)
+
 Blocklist: in-code defaults + optional data/blocklist.txt (one symbol per line; # = comment).
 """
 import re
@@ -8,20 +15,15 @@ from pathlib import Path
 from typing import List
 
 # In-code defaults: all-caps 2–5 letter tokens to exclude from ticker detection.
-# data/blocklist.txt can add more (one symbol per line; lines starting with # ignored).
 _DEFAULT_BLOCKLIST = frozenset({
     "USA", "US", "UK", "EU", "ETF", "SEC", "CEO", "CFO", "IPO", "FDA", "OPEC", "EIA",
     "API", "AI", "IT", "HR", "PR", "TV", "PC", "ID", "PM", "AM", "ET", "LP", "LLC",
     "NA", "NY", "LA", "DC", "HQ", "FY", "Q1", "Q2", "Q3", "Q4", "YTD", "R&D",
     "CNBC", "BBC", "NPR", "CNN", "FT", "WSJ", "USD", "EUR", "GBP", "JPY", "CAD",
     "LNG", "WTI", "Brent",
-    # Indices / venues / macro
     "FTSE", "NYSE", "VIX", "SPX", "NDX", "DAX", "DJI", "DXY", "CPI", "XAU", "FOMC",
-    # Trading / technical terms (often appear in headlines)
     "FVG", "ICT", "VWAP", "PIPS", "IFVG", "VASP",
-    # Crypto / stablecoins (yfinance symbol differs or no data)
     "USDT", "HBAR", "DOT",
-    # Common words / acronyms / no-data symbols (add more as logs appear)
     "IRA", "JONES", "LIKE", "LL", "LOVES", "NGM", "PCE", "PDL", "PGIM", "PIXEL",
     "SHARE", "SL", "SOL", "IEA", "CAPO", "CIO", "CISD", "DSCW", "GATE", "VALID", "WAIT",
 })
@@ -43,35 +45,129 @@ def get_blocklist() -> frozenset[str]:
     return frozenset(out)
 
 
-# Optional: company name -> ticker for when headline says "Tesla" not "TSLA"
+# ---------------------------------------------------------------------------
+# Layer 1: Hardcoded company name -> ticker (fast-path)
+# ---------------------------------------------------------------------------
+
 COMPANY_TO_TICKER: dict[str, str] = {
-    "tesla": "TSLA",
-    "apple": "AAPL",
-    "microsoft": "MSFT",
-    "amazon": "AMZN",
-    "google": "GOOGL",
-    "alphabet": "GOOGL",
-    "meta": "META",
-    "facebook": "META",
-    "nvidia": "NVDA",
-    "netflix": "NFLX",
-    "jpmorgan": "JPM",
-    "jpm": "JPM",
-    "berkshire": "BRK.B",
-    "exxon": "XOM",
-    "chevron": "CVX",
-    "shell": "SHEL",
-    "bp": "BP",
-    "newmont": "NEM",
-    "barrick": "GOLD",
+    # Tech mega-caps
+    "tesla": "TSLA", "apple": "AAPL", "microsoft": "MSFT", "amazon": "AMZN",
+    "google": "GOOGL", "alphabet": "GOOGL", "meta": "META", "facebook": "META",
+    "nvidia": "NVDA", "netflix": "NFLX", "adobe": "ADBE", "salesforce": "CRM",
+    "intel": "INTC", "amd": "AMD", "broadcom": "AVGO", "qualcomm": "QCOM",
+    "oracle": "ORCL", "ibm": "IBM", "cisco": "CSCO", "palantir": "PLTR",
+    "snowflake": "SNOW", "uber": "UBER", "airbnb": "ABNB", "spotify": "SPOT",
+    "paypal": "PYPL", "shopify": "SHOP", "coinbase": "COIN",
+    # Finance / banks (US)
+    "jpmorgan": "JPM", "jp morgan": "JPM", "goldman sachs": "GS", "goldman": "GS",
+    "morgan stanley": "MS", "bank of america": "BAC", "citigroup": "C", "citi": "C",
+    "wells fargo": "WFC", "blackrock": "BLK", "charles schwab": "SCHW",
+    "visa": "V", "mastercard": "MA", "american express": "AXP", "amex": "AXP",
+    "berkshire": "BRK.B", "berkshire hathaway": "BRK.B",
+    "royal bank": "RY", "td bank": "TD", "toronto-dominion": "TD",
+    # Healthcare / pharma
+    "johnson & johnson": "JNJ", "pfizer": "PFE", "moderna": "MRNA",
+    "unitedhealth": "UNH", "eli lilly": "LLY", "novo nordisk": "NVO",
+    "abbott": "ABT", "merck": "MRK", "abbvie": "ABBV",
+    # Energy / oil
+    "exxon": "XOM", "exxonmobil": "XOM", "chevron": "CVX",
+    "shell": "SHEL", "royal dutch shell": "SHEL",
+    "bp": "BP", "conocophillips": "COP", "conoco": "COP",
+    "schlumberger": "SLB", "halliburton": "HAL",
+    "marathon": "MPC", "valero": "VLO", "pioneer": "PXD",
+    # Mining / metals
+    "newmont": "NEM", "barrick": "GOLD", "barrick gold": "GOLD",
+    "freeport": "FCX", "freeport-mcmoran": "FCX",
+    "rio tinto": "RIO", "bhp": "BHP", "vale": "VALE",
+    # Consumer / retail
+    "walmart": "WMT", "costco": "COST", "target": "TGT", "home depot": "HD",
+    "nike": "NKE", "starbucks": "SBUX", "mcdonald": "MCD", "mcdonalds": "MCD",
+    "coca-cola": "KO", "coca cola": "KO", "pepsi": "PEP", "pepsico": "PEP",
+    "procter & gamble": "PG", "procter": "PG", "disney": "DIS", "walt disney": "DIS",
+    # Industrials / defense
+    "boeing": "BA", "lockheed": "LMT", "lockheed martin": "LMT",
+    "raytheon": "RTX", "caterpillar": "CAT", "deere": "DE", "john deere": "DE",
+    "general electric": "GE", "honeywell": "HON", "3m": "MMM",
+    # Autos
+    "ford": "F", "general motors": "GM", "rivian": "RIVN", "lucid": "LCID",
+    # Telecom / media
+    "at&t": "T", "verizon": "VZ", "t-mobile": "TMUS", "comcast": "CMCSA",
+    # ── European ─────────────────────────────────────────────────
+    "nestle": "NESN.SW", "nestlé": "NESN.SW",
+    "lvmh": "MC.PA", "louis vuitton": "MC.PA",
+    "sap": "SAP.DE", "siemens": "SIE.DE", "basf": "BAS.DE", "bayer": "BAYN.DE",
+    "asml": "ASML.AS", "unilever": "ULVR.L", "astrazeneca": "AZN.L",
+    "hsbc": "HSBA.L", "barclays": "BARC.L", "deutsche bank": "DBK.DE",
+    "volkswagen": "VOW3.DE", "bmw": "BMW.DE", "mercedes": "MBG.DE", "daimler": "MBG.DE",
+    "total": "TTE.PA", "totalenergies": "TTE.PA",
+    "roche": "ROG.SW", "novartis": "NOVN.SW",
+    "banco santander": "SAN.MC", "santander": "SAN.MC",
+    "bnp paribas": "BNP.PA", "bnp": "BNP.PA",
+    "ing": "INGA.AS", "philips": "PHIA.AS",
+    # ── Asian ────────────────────────────────────────────────────
+    "toyota": "TM", "sony": "SONY", "honda": "HMC",
+    "samsung": "005930.KS", "hyundai": "005380.KS",
+    "alibaba": "BABA", "tencent": "0700.HK", "baidu": "BIDU",
+    "jd.com": "JD", "xiaomi": "1810.HK", "byd": "1211.HK",
+    "softbank": "9984.T", "mitsubishi": "8058.T", "hitachi": "6501.T",
+    "taiwan semiconductor": "TSM", "tsmc": "TSM",
+    "reliance": "RELIANCE.NS", "tata": "TCS.NS", "infosys": "INFY",
+    # Commodities (name mentions in headlines)
+    "crude oil": "CL=F", "brent crude": "BZ=F", "wti": "CL=F",
+    "gold": "GC=F", "silver": "SI=F", "copper": "HG=F",
+    "natural gas": "NG=F", "nat gas": "NG=F",
+    "platinum": "PL=F", "palladium": "PA=F",
+    "iron ore": "TIO=F", "wheat": "ZW=F", "corn": "ZC=F", "soybeans": "ZS=F",
+    # Indices (name mentions)
+    "s&p 500": "^GSPC", "s&p": "^GSPC", "dow jones": "^DJI", "dow": "^DJI",
+    "nasdaq": "^IXIC", "russell": "^RUT", "russell 2000": "^RUT",
+    "ftse": "^FTSE", "ftse 100": "^FTSE", "dax": "^GDAXI",
+    "nikkei": "^N225", "hang seng": "^HSI", "shanghai": "000001.SS",
+    "kospi": "^KS11", "sensex": "^BSESN", "nifty": "^NSEI",
+    "cac 40": "^FCHI", "stoxx": "^STOXX50E", "euro stoxx": "^STOXX50E",
+    "asx": "^AXJO", "ibovespa": "^BVSP",
 }
+
+
+# ---------------------------------------------------------------------------
+# Regex patterns
+# ---------------------------------------------------------------------------
 
 # 2–5 letter all-caps word (standalone)
 TICKER_PATTERN = re.compile(r"\b([A-Z]{2,5})\b")
 
+# Multi-word proper nouns: sequences of 2–5 capitalized words.
+# Matches "Royal Bank of Canada", "Goldman Sachs", "Novo Nordisk" etc.
+# Allows lowercase connectors: of, and, the, &, de, du, del, van, von
+_CONNECTORS = {"of", "and", "the", "&", "de", "du", "del", "van", "von", "di", "la", "le"}
+_PROPER_WORD = re.compile(
+    r"\b([A-Z][a-z]+(?:\s+(?:[A-Z][a-z]+|" + "|".join(re.escape(c) for c in _CONNECTORS) + r")){1,4})\b"
+)
+
+
+def _extract_proper_nouns(text: str) -> list[str]:
+    """
+    Extract multi-word proper noun phrases from text.
+    Returns lowercase phrases suitable for resolver lookup.
+    """
+    if not text:
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for m in _PROPER_WORD.finditer(text):
+        phrase = m.group(1).strip().lower()
+        if phrase not in seen and len(phrase) >= 4:
+            seen.add(phrase)
+            out.append(phrase)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 def is_likely_ticker(s: str) -> bool:
-    """True if s looks like a ticker (2–5 all-caps letters, not in blocklist). Used by engine for dynamic ideas."""
+    """True if s looks like a ticker (2–5 all-caps letters, not in blocklist)."""
     if not s or len(s) < 2 or len(s) > 5:
         return False
     if s != s.upper():
@@ -83,34 +179,46 @@ def is_likely_ticker(s: str) -> bool:
 
 def resolve_company_to_ticker(query: str) -> list[dict]:
     """
-    Resolve a company name (or partial) to ticker(s) using COMPANY_TO_TICKER.
-    Returns list of {"name": str, "ticker": str} for matches (query substring in name or name in query).
+    Resolve a company name (or partial) to ticker(s).
+    Uses hardcoded map first, then dynamic resolver.
+    Returns list of {"name": str, "ticker": str}.
     """
     if not query or not query.strip():
         return []
     q = query.strip().lower()
     out: list[dict] = []
     seen: set[str] = set()
+
+    # Hardcoded matches
     for name, ticker in COMPANY_TO_TICKER.items():
         if name in q or q in name:
             if ticker not in seen:
                 seen.add(ticker)
                 out.append({"name": name, "ticker": ticker})
+
+    # Dynamic resolver fallback
+    if not out:
+        from app.services.ticker_resolver import resolve_name
+        sym = resolve_name(q)
+        if sym:
+            out.append({"name": q, "ticker": sym})
+
     return out
 
 
 def detect_tickers(text: str) -> List[str]:
     """
     Extract likely ticker symbols from text. Returns deduplicated list.
-    - All-caps 2–5 letter tokens (excluding blocklist)
-    - Company names mapped to tickers (e.g. Tesla -> TSLA)
+    1. Hardcoded company name -> ticker (lowercase match)
+    2. All-caps 2–5 letter tokens (excluding blocklist)
+    3. Multi-word proper nouns -> dynamic resolver (yfinance.Search with cache)
     """
     if not text or not text.strip():
         return []
     seen: set[str] = set()
     out: list[str] = []
 
-    # 1) Company name -> ticker (lowercase match)
+    # 1) Hardcoded company name -> ticker (fast-path)
     lower = text.lower()
     for name, ticker in COMPANY_TO_TICKER.items():
         if name in lower and ticker not in seen:
@@ -125,5 +233,18 @@ def detect_tickers(text: str) -> List[str]:
             continue
         seen.add(sym)
         out.append(sym)
+
+    # 3) Multi-word proper nouns -> dynamic resolver
+    proper_nouns = _extract_proper_nouns(text)
+    if proper_nouns:
+        from app.services.ticker_resolver import resolve_name
+        for phrase in proper_nouns:
+            # Skip if already matched via hardcoded
+            if phrase in COMPANY_TO_TICKER:
+                continue
+            sym = resolve_name(phrase)
+            if sym and sym not in seen:
+                seen.add(sym)
+                out.append(sym)
 
     return out
