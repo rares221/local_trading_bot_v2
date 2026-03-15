@@ -52,68 +52,83 @@ async def job_run_analysis() -> None:
 
 async def job_daily_batch() -> None:
     """
-    Produce up to 5 recommendations per category for today.
+    Produce up to 10 recommendations per category for today (5 in risk-off).
     Uses ATR-based SL/TP, long/short direction, and expiry estimation.
     """
     batch_id = date.today().isoformat()
-    async with async_session_factory() as session:
-        q = select(Recommendation).where(
-            Recommendation.batch_id == batch_id, Recommendation.status == "pending"
-        ).limit(1)
-        result = await session.execute(q)
-        if result.scalars().first():
-            return
-        analysis = await get_latest_analysis(session)
-        if not analysis:
-            return
-        q_taken = select(Recommendation.asset_category, Recommendation.asset_id).where(
-            Recommendation.status == "taken"
-        ).distinct()
-        result_taken = await session.execute(q_taken)
-        exclude_taken = {(row[0], row[1]) for row in result_taken.all()}
-        from app.core.preferences import get_preferred_risk
-        by_asset_sentiment = (analysis.payload or {}).get("by_asset_sentiment") or None
-        candidates = build_daily_candidates(
-            max_count=5,
-            by_asset_sentiment=by_asset_sentiment,
-            preferred_risk=get_preferred_risk(),
-            tie_seed=batch_id,
-            exclude_taken=exclude_taken,
-        )
-        if not candidates:
-            return
-        now = datetime.now(timezone.utc)
-        from app.services.research import build_research_context, generate_rationale
-        for c in candidates:
-            rationale_text = None
-            try:
-                ctx = await build_research_context(session, c.asset_id, c.asset_category)
-                ctx["buy_in_price"] = c.buy_in_price
-                ctx["direction"] = c.direction
-                rationale_text = await generate_rationale(ctx)
-            except Exception:
-                pass
-            rec = Recommendation(
-                id=str(uuid4()),
-                created_at=now,
-                batch_id=batch_id,
-                asset_category=c.asset_category,
-                asset_id=c.asset_id,
-                buy_in_price=c.buy_in_price,
-                stop_loss=c.stop_loss,
-                take_profit=c.take_profit,
-                expiry_date=c.expiry_date,
-                rationale_ref=analysis.id,
-                rationale_text=rationale_text,
-                risk_tier=c.risk_tier,
-                direction=c.direction,
-                confidence_score=c.confidence_score,
-                risk_reward=c.risk_reward,
-                volatility_notes=c.volatility_notes,
-                status="pending",
+    print(f"[BATCH] Starting daily batch for {batch_id}")
+    try:
+        async with async_session_factory() as session:
+            q = select(Recommendation).where(
+                Recommendation.batch_id == batch_id, Recommendation.status == "pending"
+            ).limit(1)
+            result = await session.execute(q)
+            if result.scalars().first():
+                print("[BATCH] Pending recs already exist for today — skipping")
+                return
+            analysis = await get_latest_analysis(session)
+            if not analysis:
+                print("[BATCH] No analysis found — run the full pipeline first")
+                return
+            print(f"[BATCH] Analysis found (id={analysis.id})")
+            q_taken = select(Recommendation.asset_category, Recommendation.asset_id).where(
+                Recommendation.status == "taken"
+            ).distinct()
+            result_taken = await session.execute(q_taken)
+            exclude_taken = {(row[0], row[1]) for row in result_taken.all()}
+            from app.core.preferences import get_preferred_risk
+            by_asset_sentiment = (analysis.payload or {}).get("by_asset_sentiment") or None
+            print(f"[BATCH] Sentiment tags: {len(by_asset_sentiment) if by_asset_sentiment else 0}, excluded taken: {len(exclude_taken)}")
+            candidates = build_daily_candidates(
+                max_count=10,
+                by_asset_sentiment=by_asset_sentiment,
+                preferred_risk=get_preferred_risk(),
+                tie_seed=batch_id,
+                exclude_taken=exclude_taken,
             )
-            session.add(rec)
-        await session.commit()
+            print(f"[BATCH] Candidates built: {len(candidates)}")
+            for c in candidates:
+                print(f"  [{c.asset_category}] {c.asset_id} dir={c.direction} conf={c.confidence_score} rr={c.risk_reward}")
+            if not candidates:
+                print("[BATCH] No candidates passed filters — nothing to save")
+                return
+            now = datetime.now(timezone.utc)
+            from app.services.research import build_research_context, generate_rationale
+            for c in candidates:
+                rationale_text = None
+                try:
+                    ctx = await build_research_context(session, c.asset_id, c.asset_category)
+                    ctx["buy_in_price"] = c.buy_in_price
+                    ctx["direction"] = c.direction
+                    rationale_text = await generate_rationale(ctx)
+                except Exception as exc:
+                    print(f"  [BATCH] LLM rationale failed for {c.asset_id}: {exc}")
+                rec = Recommendation(
+                    id=str(uuid4()),
+                    created_at=now,
+                    batch_id=batch_id,
+                    asset_category=c.asset_category,
+                    asset_id=c.asset_id,
+                    buy_in_price=c.buy_in_price,
+                    stop_loss=c.stop_loss,
+                    take_profit=c.take_profit,
+                    expiry_date=c.expiry_date,
+                    rationale_ref=analysis.id,
+                    rationale_text=rationale_text,
+                    risk_tier=c.risk_tier,
+                    direction=c.direction,
+                    confidence_score=c.confidence_score,
+                    risk_reward=c.risk_reward,
+                    volatility_notes=c.volatility_notes,
+                    status="pending",
+                )
+                session.add(rec)
+            await session.commit()
+            print(f"[BATCH] Saved {len(candidates)} recommendations")
+    except Exception as exc:
+        print(f"[BATCH] ERROR: {exc}")
+        import traceback
+        traceback.print_exc()
 
 
 async def job_update_active_trades() -> None:

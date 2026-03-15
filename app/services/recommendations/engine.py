@@ -55,6 +55,19 @@ SENTIMENT_TAG_TO_ASSETS: dict[str, list[tuple[str, str]]] = {
     "NDX": [("indices", "NDX")],
     "NASDAQ": [("indices", "NDX")],
     "FTSE": [("indices", "FTSE")],
+    "DAX": [("indices", "DAX")],
+    "CAC": [("indices", "CAC")],
+    "STOXX": [("indices", "STOXX")],
+    "Euro Stoxx": [("indices", "STOXX")],
+    "Nikkei": [("indices", "Nikkei")],
+    "HangSeng": [("indices", "HangSeng")],
+    "Hang Seng": [("indices", "HangSeng")],
+    "Shanghai": [("indices", "Shanghai")],
+    "Kospi": [("indices", "Kospi")],
+    "Sensex": [("indices", "Sensex")],
+    "ASX": [("indices", "ASX")],
+    "RUT": [("indices", "RUT")],
+    "Russell": [("indices", "RUT")],
     "VIX": [("indices", "VIX")],
 }
 
@@ -81,10 +94,24 @@ ASSETS_BY_CATEGORY = {
         ("ETH", "ETH-USD", "aggressive"),
     ],
     "indices": [
+        # US
         ("SPX", "^GSPC", "moderate"),
         ("DJI", "^DJI", "moderate"),
         ("NDX", "^IXIC", "moderate"),
+        ("RUT", "^RUT", "moderate"),
+        # Europe
         ("FTSE", "^FTSE", "moderate"),
+        ("DAX", "^GDAXI", "moderate"),
+        ("CAC", "^FCHI", "moderate"),
+        ("STOXX", "^STOXX50E", "moderate"),
+        # Asia-Pacific
+        ("Nikkei", "^N225", "moderate"),
+        ("HangSeng", "^HSI", "moderate"),
+        ("Shanghai", "000001.SS", "aggressive"),
+        ("Kospi", "^KS11", "moderate"),
+        ("Sensex", "^BSESN", "moderate"),
+        ("ASX", "^AXJO", "moderate"),
+        # Volatility
         ("VIX", "^VIX", "aggressive"),
     ],
 }
@@ -468,7 +495,7 @@ def _candidates_for_pairs(
 
 def build_daily_candidates_for_category(
     category: str,
-    max_count: int = 5,
+    max_count: int = 10,
     by_asset_sentiment: Optional[dict] = None,
     preferred_risk: str = "moderate",
     tie_seed: Optional[str] = None,
@@ -512,7 +539,10 @@ def build_daily_candidates_for_category(
     chosen_ids = {c.asset_id for c in idea_candidates[:effective_max]}
     result = idea_candidates[:effective_max]
 
-    # Backfill from universe (also gated)
+    print(f"[ENGINE][{category}] idea_candidates after gate (min_conf={min_confidence}): {len(idea_candidates)}")
+    # Backfill from universe — use a lower confidence floor since these are
+    # curated tradeable assets where technicals alone carry enough signal.
+    backfill_min_conf = max(20, min_confidence - 15)
     if len(result) < effective_max:
         items = ASSETS_BY_CATEGORY.get(category, [])
         rest: list[Candidate] = []
@@ -522,18 +552,23 @@ def build_daily_candidates_for_category(
             if RISK_TIER_ORDER.get(risk_tier, 99) > max_risk_level:
                 continue
             cand = _build_candidate(category, asset_id, symbol, risk_tier, by_asset_sentiment, market_ctx)
-            if cand and cand.confidence_score >= min_confidence:
+            if not cand:
+                print(f"[ENGINE][{category}] {asset_id} ({symbol}): no price data — skipped")
+            elif cand.confidence_score < backfill_min_conf:
+                print(f"[ENGINE][{category}] {asset_id}: conf={cand.confidence_score} < {backfill_min_conf} — skipped")
+            else:
                 rest.append(cand)
         rest.sort(key=lambda c: (-c._score, hash((tie_seed or "", c.asset_id)) % 10000))
         for c in rest:
             if len(result) >= effective_max:
                 break
             result.append(c)
+    print(f"[ENGINE][{category}] final: {len(result)} candidates (max={effective_max})")
     return result
 
 
 def build_daily_candidates(
-    max_count: int = 5,
+    max_count: int = 10,
     by_asset_sentiment: Optional[dict] = None,
     preferred_risk: str = "moderate",
     tie_seed: Optional[str] = None,
