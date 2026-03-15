@@ -118,12 +118,13 @@ def _migrate_engine_v2_v3(sync_conn) -> None:
         ("risk_reward",      "REAL",        ""),
         ("volatility_notes", "TEXT",        ""),
     ])
-    # active_trades: trade lifecycle (v3)
+    # active_trades: trade lifecycle (v3) + signal flip tracking
     _ensure_columns(sync_conn, "active_trades", [
-        ("trade_phase",  "VARCHAR(24)", "'open'"),
-        ("breakeven_hit","BOOLEAN",     "0"),
-        ("highest_price","REAL",        ""),
-        ("lowest_price", "REAL",        ""),
+        ("trade_phase",       "VARCHAR(24)", "'open'"),
+        ("breakeven_hit",     "BOOLEAN",     "0"),
+        ("highest_price",     "REAL",        ""),
+        ("lowest_price",      "REAL",        ""),
+        ("signal_flip_count", "INTEGER",     "0"),
     ])
 
 

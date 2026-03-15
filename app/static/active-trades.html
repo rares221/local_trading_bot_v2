@@ -3,89 +3,217 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Active trades — Trading Bot</title>
+  <title>Active Trades — Trading Bot</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/css/common.css">
+  <style>
+    .trade-cards { display: flex; flex-direction: column; gap: var(--space-3); }
+
+    .trade-card {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: var(--radius); box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+    .trade-card--closed { opacity: .7; }
+
+    .trade-header {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+      padding: var(--space-2) var(--space-3);
+      border-bottom: 1px solid var(--border); background: var(--secondary);
+    }
+    .trade-asset {
+      font-size: 1.1rem; font-weight: 700; letter-spacing: -.02em;
+      margin-right: auto;
+    }
+    .trade-category {
+      font-size: 12px; color: var(--muted-foreground); font-weight: 500;
+      text-transform: uppercase; letter-spacing: .04em;
+    }
+    .badge-group {
+      display: inline-flex; flex-direction: column; align-items: center; gap: 1px;
+    }
+    .badge-label {
+      font-size: 9px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: .06em; color: var(--muted-foreground); line-height: 1;
+    }
+
+    .trade-metrics {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+      gap: 1px; background: var(--border);
+    }
+    .metric {
+      background: var(--card); padding: 14px var(--space-2);
+      display: flex; flex-direction: column; gap: 2px;
+    }
+    .metric-label {
+      font-size: 11px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: .05em; color: var(--muted-foreground);
+    }
+    .metric-value {
+      font-size: 1rem; font-weight: 600;
+      font-variant-numeric: tabular-nums; font-family: var(--font-mono);
+      color: var(--foreground);
+    }
+    .metric-value--muted { color: var(--muted-foreground); font-weight: 400; }
+
+    .trade-footer {
+      padding: var(--space-1) var(--space-3);
+      border-top: 1px solid var(--border);
+      display: flex; align-items: center; gap: var(--space-2);
+    }
+
+    .history-panel {
+      padding: var(--space-2) var(--space-3) var(--space-3);
+      border-top: 1px solid var(--border); background: var(--secondary);
+    }
+    .history-panel table { font-size: 13px; max-width: 520px; background: var(--card); border-radius: var(--radius); overflow: hidden; }
+  </style>
 </head>
 <body>
   <nav class="nav">
     <a href="/dashboard">Dashboard</a>
     <a href="/recommendations">Recommendations</a>
-    <a href="/research">Research an asset</a>
-    <a href="/analysis">Market analysis</a>
+    <a href="/research">Research</a>
+    <a href="/analysis">Analysis</a>
     <a href="/active-trades" class="active">Active trades</a>
-    <a href="/briefing">Daily briefing</a>
-    <a href="/docs" target="_blank" rel="noopener">API docs</a>
+    <a href="/briefing">Briefing</a>
   </nav>
 
   <main class="app app--wide">
-    <h1 class="page-title">Active trades</h1>
-    <p class="page-desc">Trades you marked as "Took it". Original SL/TP are from when you took the trade (never overwritten). Suggested SL/TP are from the latest pipeline run so you can compare.</p>
-    <div class="alert alert--info" style="margin-bottom: var(--space-2);">
-      <strong>Original vs suggested.</strong> Your original stop-loss and take-profit are fixed. Every ~2h the app computes suggested levels from the latest price; they appear in the table and in the per-trade history so you can see all runs and timestamps.
+    <h1 class="page-title">Active Trades</h1>
+    <p class="page-desc">Trades you marked as "Took it". Original levels are locked from the initial recommendation. Suggested levels recalculate from the latest market data every ~2 hours.</p>
+
+    <div class="flex items-center gap-2 mb-3">
+      <button type="button" id="refresh-btn" class="btn btn--primary">
+        <span class="btn-label">Update &amp; refresh</span>
+      </button>
+      <span class="text-sm text-muted">Recalculates SL/TP from latest prices, evaluates signal alignment, then reloads.</span>
     </div>
-    <p style="margin-bottom: var(--space-2);">
-      <button type="button" id="refresh-btn" class="btn btn--secondary">Refresh list</button>
-    </p>
-    <div id="content"></div>
-    <p class="disclaimer">Educational use only. Not financial advice.</p>
+
+    <div id="loading" class="loading-overlay"><span class="spinner spinner--lg"></span> Loading trades&hellip;</div>
+    <div id="content" style="display:none;"></div>
+    <p class="disclaimer">Educational and research purposes only. Not financial advice.</p>
   </main>
 
   <script>
-    async function load() {
+    function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+    function fmtNum(v) { return v != null ? Number(v).toFixed(2) : '—'; }
+    function fmtDate(iso) { return iso ? new Date(iso).toLocaleDateString() : '—'; }
+    function fmtTime(iso) { return iso ? new Date(iso).toLocaleString() : '—'; }
+
+    function phaseBadge(phase) {
+      const cls = { open:'badge--blue', partial_tp:'badge--yellow', trailing:'badge--green', closed_sl:'badge--red', closed_tp:'badge--green' };
+      const lbl = { open:'Open', partial_tp:'Partial TP', trailing:'Trailing', closed_sl:'Closed (SL)', closed_tp:'Closed (TP)' };
+      return '<span class="badge ' + (cls[phase]||'badge--gray') + '">' + (lbl[phase]||phase) + '</span>';
+    }
+    function dirBadge(dir) {
+      return dir === 'short'
+        ? '<span class="badge badge--red">SHORT</span>'
+        : '<span class="badge badge--green">LONG</span>';
+    }
+    function signalBadge(count) {
+      if (!count || count < 2) return '<span class="badge badge--green" title="Current technicals and sentiment agree with the trade direction">Aligned</span>';
+      if (count >= 3) return '<span class="badge badge--red" title="Signal has disagreed for ' + count + ' consecutive checks — consider reviewing this position">⚠ Flipped (' + count + ')</span>';
+      return '<span class="badge badge--yellow" title="Signal weakened for ' + count + ' consecutive checks">Weakening</span>';
+    }
+
+    function buildCard(t, idx) {
+      const levels = t.levels || [];
+      const isClosed = t.trade_phase && t.trade_phase.startsWith('closed');
+      const be = t.breakeven_hit ? ' <span class="badge badge--green" style="font-size:10px">BE</span>' : '';
+
+      let h = '<div class="trade-card' + (isClosed ? ' trade-card--closed' : '') + '">';
+
+      // Header
+      h += '<div class="trade-header">';
+      h += '  <span class="trade-asset">' + esc(t.asset_id || '') + '</span>';
+      if (t.asset_category) h += ' <span class="trade-category">' + esc(t.asset_category) + '</span>';
+      h += '  <span class="badge-group"><span class="badge-label">Direction</span>' + dirBadge(t.direction) + '</span>';
+      h += '  <span class="badge-group"><span class="badge-label">Signal</span>' + signalBadge(t.signal_flip_count) + '</span>';
+      h += '  <span class="badge-group"><span class="badge-label">Phase</span>' + phaseBadge(t.trade_phase) + be + '</span>';
+      h += '</div>';
+
+      // Metrics grid
+      h += '<div class="trade-metrics">';
+      h += metricCell('Entry Price', fmtNum(t.buy_in_price));
+      h += metricCell('Original Stop Loss', fmtNum(t.original_sl));
+      h += metricCell('Original Take Profit', fmtNum(t.original_tp));
+      h += metricCell('Suggested Stop Loss', fmtNum(t.suggested_sl), !t.suggested_sl);
+      h += metricCell('Suggested Take Profit', fmtNum(t.suggested_tp), !t.suggested_tp);
+      h += metricCell('Expiry Date', fmtDate(t.expiry), !t.expiry);
+      h += '</div>';
+
+      // Footer with history toggle
+      if (levels.length > 0) {
+        h += '<div class="trade-footer">';
+        h += '  <button class="btn btn-sm btn--secondary" data-idx="' + idx + '">Show level history (' + levels.length + ' updates)</button>';
+        h += '  <span class="text-sm text-muted">SL/TP changes over time</span>';
+        h += '</div>';
+        h += '<div class="history-panel" id="hist-' + idx + '" style="display:none;">';
+        h += '  <table><thead><tr><th>Time</th><th>Source</th><th class="num">Stop Loss</th><th class="num">Take Profit</th></tr></thead><tbody>';
+        levels.forEach(L => {
+          h += '<tr><td class="text-sm">' + fmtTime(L.created_at) + '</td>';
+          h += '<td class="text-sm">' + esc(L.source||'') + '</td>';
+          h += '<td class="num">' + fmtNum(L.sl) + '</td>';
+          h += '<td class="num">' + fmtNum(L.tp) + '</td></tr>';
+        });
+        h += '</tbody></table></div>';
+      }
+
+      h += '</div>';
+      return h;
+    }
+
+    function metricCell(label, value, muted) {
+      return '<div class="metric"><span class="metric-label">' + label + '</span>'
+        + '<span class="metric-value' + (muted ? ' metric-value--muted' : '') + '">' + value + '</span></div>';
+    }
+
+    async function load(updateFirst) {
       const content = document.getElementById('content');
+      const loading = document.getElementById('loading');
       const btn = document.getElementById('refresh-btn');
-      if (btn) btn.disabled = true;
+      btn.disabled = true;
+      btn.querySelector('.btn-label').innerHTML = '<span class="spinner"></span> ' + (updateFirst ? 'Updating levels&hellip;' : 'Loading');
+      if (updateFirst) {
+        try { await fetch('/api/actions/update-active-trades', { method: 'POST' }); } catch (e) { /* proceed anyway */ }
+      }
       try {
         const r = await fetch('/api/active-trades');
-        if (!r.ok) {
-          content.innerHTML = '<div class="alert alert--error" role="alert">Failed to load active trades.</div>';
-          return;
-        }
+        if (!r.ok) { content.innerHTML = '<div class="alert alert--error">Failed to load active trades.</div>'; return; }
         const data = await r.json();
         const items = data.items || [];
         if (items.length === 0) {
-          content.innerHTML = '<div class="empty-state"><p>No active trades. Mark recommendations as "Took it" on the Recommendations page.</p><a href="/recommendations" class="btn btn--primary">Go to Recommendations</a></div>';
+          content.innerHTML = '<div class="empty-state"><p>No active trades yet.</p><p class="text-sm text-muted">Mark recommendations as "Took it" on the <a href="/recommendations">Recommendations</a> page.</p></div>';
+          content.style.display = 'block'; loading.style.display = 'none';
+          btn.disabled = false; btn.querySelector('.btn-label').textContent = 'Update & refresh';
           return;
         }
-        let html = '<div class="table-wrap"><table class="active-trades-table"><thead><tr><th>Asset</th><th class="num">Buy-in</th><th>Taken at</th><th class="num">Original SL</th><th class="num">Original TP</th><th class="num">Suggested SL</th><th class="num">Suggested TP</th><th>Suggested at</th><th>History</th></tr></thead><tbody>';
-        items.forEach((t, idx) => {
-          const levels = t.levels || [];
-          const suggestedAt = t.suggested_at ? new Date(t.suggested_at).toLocaleString() : '—';
-          const historyCell = levels.length > 0
-            ? '<button type="button" class="btn btn-sm btn--secondary" data-toggle-history="' + idx + '">Show</button>'
-            : '—';
-          html += '<tr><td>' + (t.asset_id || '') + '</td><td class="num">' + (t.buy_in_price ?? '') + '</td><td>' + (t.user_taken_at || '') + '</td><td class="num">' + (t.original_sl ?? '') + '</td><td class="num">' + (t.original_tp ?? '') + '</td><td class="num">' + (t.suggested_sl != null ? t.suggested_sl : '—') + '</td><td class="num">' + (t.suggested_tp != null ? t.suggested_tp : '—') + '</td><td>' + suggestedAt + '</td><td>' + historyCell + '</td></tr>';
-          if (levels.length > 0) {
-            html += '<tr id="history-row-' + idx + '" class="history-row" style="display:none;"><td colspan="9"><div class="levels-history"><table class="levels-table"><thead><tr><th>Run time</th><th>Source</th><th class="num">SL</th><th class="num">TP</th></tr></thead><tbody>';
-            levels.forEach(L => {
-              const runTime = L.created_at ? new Date(L.created_at).toLocaleString() : '';
-              html += '<tr><td>' + runTime + '</td><td>' + (L.source || '') + '</td><td class="num">' + L.sl + '</td><td class="num">' + L.tp + '</td></tr>';
-            });
-            html += '</tbody></table></div></td></tr>';
-          }
-        });
-        html += '</tbody></table></div>';
+        let html = '<div class="trade-cards">';
+        items.forEach((t, idx) => { html += buildCard(t, idx); });
+        html += '</div>';
         content.innerHTML = html;
-        content.querySelectorAll('button[data-toggle-history]').forEach(btn => {
-          btn.addEventListener('click', function() {
-            const idx = this.getAttribute('data-toggle-history');
-            const row = document.getElementById('history-row-' + idx);
-            if (!row) return;
-            const show = row.style.display === 'none';
-            row.style.display = show ? 'table-row' : 'none';
-            btn.textContent = show ? 'Hide' : 'Show';
+
+        content.querySelectorAll('button[data-idx]').forEach(b => {
+          b.addEventListener('click', function() {
+            const panel = document.getElementById('hist-' + this.dataset.idx);
+            if (!panel) return;
+            const show = panel.style.display === 'none';
+            panel.style.display = show ? 'block' : 'none';
+            const count = (items[this.dataset.idx].levels||[]).length;
+            this.textContent = show ? 'Hide level history' : 'Show level history (' + count + ' updates)';
           });
         });
       } catch (e) {
-        content.innerHTML = '<div class="alert alert--error" role="alert">Request failed: ' + e.message + '</div>';
+        content.innerHTML = '<div class="alert alert--error">Failed: ' + esc(e.message) + '</div>';
       }
-      if (btn) btn.disabled = false;
+      content.style.display = 'block'; loading.style.display = 'none';
+      btn.disabled = false; btn.querySelector('.btn-label').textContent = 'Update & refresh';
     }
-    document.getElementById('refresh-btn')?.addEventListener('click', load);
-    load();
+    document.getElementById('refresh-btn').addEventListener('click', () => load(true));
+    load(false);
   </script>
 </body>
 </html>

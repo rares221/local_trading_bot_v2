@@ -286,6 +286,7 @@ async def list_active_trades(db: AsyncSession = Depends(get_db)) -> dict[str, An
             "breakeven_hit": getattr(t, "breakeven_hit", False),
             "highest_price": getattr(t, "highest_price", None),
             "lowest_price": getattr(t, "lowest_price", None),
+            "signal_flip_count": getattr(t, "signal_flip_count", 0) or 0,
             "levels": [
                 {"sl": L.sl, "tp": L.tp, "created_at": L.created_at.isoformat(), "source": L.source}
                 for L in levels_sorted
@@ -382,7 +383,7 @@ async def action_run_pipeline_once() -> dict[str, Any]:
 @router.post("/actions/refresh-todays-batch")
 async def action_refresh_todays_batch() -> dict[str, Any]:
     """Clear today's pending/skipped recommendations (and their active trades); keep taken trades. Then re-run daily batch."""
-    from app.jobs.scheduler import job_daily_batch
+    from app.jobs.scheduler import job_daily_batch, job_update_active_trades
     from sqlalchemy import select, delete
     from app.core.database import async_session_factory
     batch_id = date.today().isoformat()
@@ -404,7 +405,8 @@ async def action_refresh_todays_batch() -> dict[str, Any]:
         )
         await session.commit()
     await job_daily_batch()
-    return _with_disclaimer({"ok": True, "message": f"Today's batch ({batch_id}) refreshed. Taken trades kept."})
+    await job_update_active_trades()
+    return _with_disclaimer({"ok": True, "message": f"Today's batch ({batch_id}) refreshed. Active trades updated."})
 
 
 @router.post("/actions/clear-todays-batch")
@@ -431,6 +433,14 @@ async def action_clear_todays_batch() -> dict[str, Any]:
         )
         await session.commit()
     return _with_disclaimer({"ok": True, "message": f"Today's batch ({batch_id}) cleared. Taken trades kept."})
+
+
+@router.post("/actions/update-active-trades")
+async def action_update_active_trades() -> dict[str, Any]:
+    """Run the active trades update now: recalculate SL/TP, track phases, add history levels."""
+    from app.jobs.scheduler import job_update_active_trades
+    await job_update_active_trades()
+    return _with_disclaimer({"ok": True, "message": "Active trades updated with latest prices and levels."})
 
 
 @router.post("/actions/purge-all")

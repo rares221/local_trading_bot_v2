@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Research an asset — Trading Bot</title>
+  <title>Research — Trading Bot</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -13,155 +13,141 @@
   <nav class="nav">
     <a href="/dashboard">Dashboard</a>
     <a href="/recommendations">Recommendations</a>
-    <a href="/research" class="active">Research an asset</a>
-    <a href="/analysis">Market analysis</a>
+    <a href="/research" class="active">Research</a>
+    <a href="/analysis">Analysis</a>
     <a href="/active-trades">Active trades</a>
-    <a href="/briefing">Daily briefing</a>
-    <a href="/docs" target="_blank" rel="noopener">API docs</a>
+    <a href="/briefing">Briefing</a>
   </nav>
 
   <main class="app app--wide">
-    <h1 class="page-title">Research an asset</h1>
-    <p class="page-desc">Get a short research summary (why this idea might make sense and main risk) for any asset, independent of today's recommendations. Uses the same context (sentiment, price, headlines) and LLM as the batch.</p>
+    <h1 class="page-title">Research an Asset</h1>
+    <p class="page-desc">Get a short LLM-generated research summary for any asset — independent of today's batch. Uses sentiment, price data, and recent headlines.</p>
 
     <section class="card">
-      <h2 class="section-title">Look up an asset</h2>
-      <div class="form-group" style="max-width: 320px;">
-        <label for="asset-id">Asset</label>
-        <div style="display: flex; gap: var(--space-1); align-items: center;">
-          <input type="text" id="asset-id" class="input" placeholder="e.g. XOM, Apple, WTI" aria-label="Asset id, ticker, or company name">
-          <button type="button" class="btn btn--secondary" id="resolve-name" title="Resolve company name to ticker">Resolve</button>
+      <h2 class="section-title">Look up</h2>
+      <div class="flex gap-3" style="flex-wrap:wrap;">
+        <div class="form-group" style="flex:1;min-width:200px;">
+          <label for="asset-id">Asset (ticker or name)</label>
+          <div class="flex gap-1 items-center">
+            <input type="text" id="asset-id" class="input" placeholder="e.g. AAPL, Gold, Siemens" style="max-width:240px;">
+            <button type="button" class="btn btn--secondary btn-sm" id="resolve-btn">Resolve</button>
+          </div>
+          <p id="resolve-hint" class="meta mt-1" style="display:none;"></p>
         </div>
-        <p id="resolve-hint" class="meta" style="margin-top: var(--space-1); display: none;"></p>
+        <div class="form-group" style="min-width:140px;">
+          <label for="category">Category</label>
+          <select id="category" class="input" style="max-width:180px;">
+            <option value="stocks">Stocks</option>
+            <option value="commodities">Commodities</option>
+            <option value="indices">Indices</option>
+            <option value="other">Other</option>
+          </select>
+        </div>
       </div>
-      <div class="form-group" style="max-width: 240px;">
-        <label for="category">Category</label>
-        <select id="category" class="input" aria-label="Asset category">
-          <option value="stocks">Stocks</option>
-          <option value="commodities">Commodities</option>
-          <option value="other">Other</option>
-          <option value="indices">Indices</option>
-        </select>
-      </div>
-      <div class="btn-group btn-group--row" style="margin-top: var(--space-2);">
-        <button type="button" class="btn btn--primary" id="get-research">Get research</button>
-      </div>
+      <button type="button" class="btn btn--primary mt-2" id="get-btn">
+        <span class="btn-label">Get research</span>
+      </button>
     </section>
 
-    <section class="card" id="result-card" hidden>
+    <section class="card" id="result-card" style="display:none;">
       <h2 class="section-title" id="result-title">Research result</h2>
-      <div id="result-loading" class="meta" hidden>Loading…</div>
-      <div id="result-summary" hidden>
-        <p class="research-summary-label">Summary</p>
-        <p id="result-summary-text" class="block-summary research-text"></p>
+      <div id="result-loading" class="loading-overlay" style="display:none;"><span class="spinner spinner--lg"></span> Generating research&hellip;</div>
+      <div id="result-summary" style="display:none;">
+        <p class="meta" style="font-weight:600;margin-bottom:4px;">Summary</p>
+        <div id="result-text" class="block-summary"></div>
       </div>
-      <details id="result-context-wrap" class="meta" style="margin-top: var(--space-2);" hidden>
-        <summary style="cursor: pointer;">Context (sentiment, price, headlines)</summary>
-        <pre id="result-context-json" class="block-payload" style="margin-top: var(--space-1);"></pre>
+      <div id="result-empty" class="alert alert--warning" style="display:none;">No summary returned. Check that an LLM provider is configured on the <a href="/dashboard">Dashboard</a>.</div>
+      <details id="result-context" style="margin-top:var(--space-2);display:none;">
+        <summary style="cursor:pointer;font-weight:600;font-size:14px;">Context (sentiment, price, headlines)</summary>
+        <pre id="result-json" class="block-payload mt-1"></pre>
       </details>
-      <p id="result-empty" class="research-empty meta" hidden>No summary returned. Check that an LLM provider is configured (e.g. OPENAI_API_KEY or Ollama running).</p>
     </section>
 
-    <p class="disclaimer">Educational use only. Not financial advice.</p>
+    <p class="disclaimer">Educational and research purposes only. Not financial advice.</p>
   </main>
 
   <script>
-    (function() {
-      const assetInput = document.getElementById('asset-id');
-      const categorySelect = document.getElementById('category');
-      const getBtn = document.getElementById('get-research');
-      const resultCard = document.getElementById('result-card');
-      const resultTitle = document.getElementById('result-title');
-      const resultLoading = document.getElementById('result-loading');
-      const resultSummary = document.getElementById('result-summary');
-      const resultSummaryText = document.getElementById('result-summary-text');
-      const resultContextWrap = document.getElementById('result-context-wrap');
-      const resultContextJson = document.getElementById('result-context-json');
-      const resultEmpty = document.getElementById('result-empty');
+    function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+    const assetInput = document.getElementById('asset-id');
+    const catSelect = document.getElementById('category');
+    const resolveBtn = document.getElementById('resolve-btn');
+    const resolveHint = document.getElementById('resolve-hint');
+    const getBtn = document.getElementById('get-btn');
+    const resultCard = document.getElementById('result-card');
+    const resultTitle = document.getElementById('result-title');
+    const resultLoading = document.getElementById('result-loading');
+    const resultSummary = document.getElementById('result-summary');
+    const resultText = document.getElementById('result-text');
+    const resultEmpty = document.getElementById('result-empty');
+    const resultContext = document.getElementById('result-context');
+    const resultJson = document.getElementById('result-json');
 
-      function showResult(assetId, category) {
-        resultCard.hidden = false;
-        resultTitle.textContent = 'Research: ' + assetId + ' (' + category + ')';
-        resultSummary.hidden = true;
-        resultContextWrap.hidden = true;
-        resultEmpty.hidden = true;
-      }
-
-      function showLoading(show) {
-        resultLoading.hidden = !show;
-      }
-
-      function showSummary(text) {
-        resultSummary.hidden = false;
-        resultSummaryText.textContent = text || '';
-        resultEmpty.hidden = !!text;
-      }
-
-      function showContext(ctx) {
-        resultContextWrap.hidden = !ctx;
-        if (ctx) resultContextJson.textContent = JSON.stringify(ctx, null, 2);
-      }
-
-      const resolveBtn = document.getElementById('resolve-name');
-      const resolveHint = document.getElementById('resolve-hint');
-
-      resolveBtn.addEventListener('click', async () => {
-        const raw = (assetInput.value || '').trim();
-        if (!raw) { assetInput.focus(); return; }
-        try {
-          const r = await fetch('/api/research/resolve?q=' + encodeURIComponent(raw));
-          const data = await r.json();
-          const matches = (data.matches || []);
-          resolveHint.style.display = 'block';
-          if (matches.length === 0) {
-            resolveHint.textContent = 'No match for "' + raw + '". Enter a ticker (e.g. AAPL) or try another name.';
-            resolveHint.style.color = 'var(--muted, #666)';
-          } else if (matches.length === 1) {
-            assetInput.value = matches[0].ticker;
-            resolveHint.textContent = '\u2192 ' + matches[0].name + ' \u2192 ' + matches[0].ticker;
-            resolveHint.style.color = '';
-          } else {
-            resolveHint.textContent = 'Matches: ' + matches.map(function(m) { return m.name + ' (' + m.ticker + ')'; }).join(', ') + '. Using first: ' + matches[0].ticker;
-            assetInput.value = matches[0].ticker;
-            resolveHint.style.color = '';
-          }
-        } catch (e) {
-          resolveHint.style.display = 'block';
-          resolveHint.textContent = 'Resolve failed: ' + e.message;
-          resolveHint.style.color = 'var(--error, #c00)';
+    resolveBtn.addEventListener('click', async () => {
+      const raw = assetInput.value.trim();
+      if (!raw) { assetInput.focus(); return; }
+      resolveBtn.disabled = true; resolveBtn.innerHTML = '<span class="spinner"></span>';
+      resolveHint.style.display = 'block';
+      try {
+        const r = await fetch('/api/research/resolve?q=' + encodeURIComponent(raw));
+        const d = await r.json();
+        const m = d.matches || [];
+        if (m.length === 0) {
+          resolveHint.textContent = 'No match for "' + raw + '". Try a ticker symbol instead.';
+          resolveHint.style.color = 'var(--warning-text)';
+        } else if (m.length === 1) {
+          assetInput.value = m[0].ticker;
+          resolveHint.textContent = m[0].name + ' \u2192 ' + m[0].ticker;
+          resolveHint.style.color = '';
+        } else {
+          assetInput.value = m[0].ticker;
+          resolveHint.textContent = 'Matches: ' + m.map(x => x.name + ' (' + x.ticker + ')').join(', ') + '. Using: ' + m[0].ticker;
+          resolveHint.style.color = '';
         }
-      });
+      } catch (e) {
+        resolveHint.textContent = 'Resolve failed: ' + e.message;
+        resolveHint.style.color = 'var(--error-text)';
+      }
+      resolveBtn.disabled = false; resolveBtn.textContent = 'Resolve';
+    });
 
-      getBtn.addEventListener('click', async () => {
-        const assetId = (assetInput.value || '').trim();
-        const category = categorySelect.value;
-        if (!assetId) {
-          assetInput.focus();
-          return;
+    getBtn.addEventListener('click', async () => {
+      const assetId = assetInput.value.trim();
+      if (!assetId) { assetInput.focus(); return; }
+      const category = catSelect.value;
+
+      resultCard.style.display = 'block';
+      resultTitle.textContent = assetId + ' (' + category + ')';
+      resultLoading.style.display = 'flex';
+      resultSummary.style.display = 'none';
+      resultEmpty.style.display = 'none';
+      resultContext.style.display = 'none';
+
+      const label = getBtn.querySelector('.btn-label');
+      getBtn.disabled = true; label.innerHTML = '<span class="spinner spinner--white"></span> Working&hellip;';
+
+      try {
+        const r = await fetch('/api/research/summary?asset_id=' + encodeURIComponent(assetId) + '&category=' + encodeURIComponent(category) + '&generate=true');
+        const d = await r.json();
+        resultLoading.style.display = 'none';
+        if (d.context) {
+          resultContext.style.display = 'block';
+          resultJson.textContent = JSON.stringify(d.context, null, 2);
         }
-        showResult(assetId, category);
-        showLoading(true);
-        showSummary('');
-        showContext(null);
-        try {
-          const r = await fetch('/api/research/summary?asset_id=' + encodeURIComponent(assetId) + '&category=' + encodeURIComponent(category) + '&generate=true');
-          const data = await r.json();
-          showLoading(false);
-          if (data.context) showContext(data.context);
-          if (data.summary) {
-            showSummary(data.summary);
-          } else {
-            showSummary('');
-            resultEmpty.hidden = false;
-          }
-        } catch (e) {
-          showLoading(false);
-          showSummary('');
-          resultEmpty.textContent = 'Request failed: ' + e.message;
-          resultEmpty.hidden = false;
+        if (d.summary && d.summary.trim()) {
+          resultSummary.style.display = 'block';
+          resultText.textContent = d.summary.trim();
+        } else {
+          resultEmpty.style.display = 'block';
         }
-      });
-    })();
+      } catch (e) {
+        resultLoading.style.display = 'none';
+        resultEmpty.style.display = 'block';
+        resultEmpty.textContent = 'Request failed: ' + e.message;
+      }
+      getBtn.disabled = false; label.textContent = 'Get research';
+    });
+
+    assetInput.addEventListener('keydown', e => { if (e.key === 'Enter') getBtn.click(); });
   </script>
 </body>
 </html>

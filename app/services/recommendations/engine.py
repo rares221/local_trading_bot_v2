@@ -55,6 +55,19 @@ SENTIMENT_TAG_TO_ASSETS: dict[str, list[tuple[str, str]]] = {
     "NDX": [("indices", "NDX")],
     "NASDAQ": [("indices", "NDX")],
     "FTSE": [("indices", "FTSE")],
+    "DAX": [("indices", "DAX")],
+    "CAC": [("indices", "CAC")],
+    "STOXX": [("indices", "STOXX")],
+    "Euro Stoxx": [("indices", "STOXX")],
+    "Nikkei": [("indices", "Nikkei")],
+    "HangSeng": [("indices", "HangSeng")],
+    "Hang Seng": [("indices", "HangSeng")],
+    "Shanghai": [("indices", "Shanghai")],
+    "Kospi": [("indices", "Kospi")],
+    "Sensex": [("indices", "Sensex")],
+    "ASX": [("indices", "ASX")],
+    "RUT": [("indices", "RUT")],
+    "Russell": [("indices", "RUT")],
     "VIX": [("indices", "VIX")],
 }
 
@@ -81,10 +94,24 @@ ASSETS_BY_CATEGORY = {
         ("ETH", "ETH-USD", "aggressive"),
     ],
     "indices": [
+        # US
         ("SPX", "^GSPC", "moderate"),
         ("DJI", "^DJI", "moderate"),
         ("NDX", "^IXIC", "moderate"),
+        ("RUT", "^RUT", "moderate"),
+        # Europe
         ("FTSE", "^FTSE", "moderate"),
+        ("DAX", "^GDAXI", "moderate"),
+        ("CAC", "^FCHI", "moderate"),
+        ("STOXX", "^STOXX50E", "moderate"),
+        # Asia-Pacific
+        ("Nikkei", "^N225", "moderate"),
+        ("HangSeng", "^HSI", "moderate"),
+        ("Shanghai", "000001.SS", "aggressive"),
+        ("Kospi", "^KS11", "moderate"),
+        ("Sensex", "^BSESN", "moderate"),
+        ("ASX", "^AXJO", "moderate"),
+        # Volatility
         ("VIX", "^VIX", "aggressive"),
     ],
 }
@@ -217,12 +244,60 @@ def get_sentiment_score_and_count(
     return (best_avg, total_count) if best_avg is not None else None
 
 
-def get_price_snapshot() -> dict[str, float]:
+_CRYPTO_SUFFIXES = ("-USD", "-USDT")
+_KNOWN_CRYPTO = frozenset({
+    "BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "DOT", "AVAX", "MATIC",
+    "LINK", "UNI", "ATOM", "LTC", "FIL", "NEAR", "APT", "ARB", "OP", "SHIB",
+    "HBAR", "ICP", "XLM", "ALGO", "VET", "MANA", "SAND",
+})
+
+
+def _looks_like_symbol(s: str) -> bool:
+    """Broader than is_likely_ticker: allows dots (BRK.B) and is not blocklist-filtered."""
+    if not s or len(s) < 1 or len(s) > 6:
+        return False
+    if s != s.upper():
+        return False
+    return all(c.isalpha() or c == '.' for c in s)
+
+
+def _try_price(tag: str) -> Optional[float]:
+    """Try multiple yfinance symbol variants for a sentiment tag."""
+    if tag.upper() in _KNOWN_CRYPTO:
+        for suffix in _CRYPTO_SUFFIXES:
+            p = get_cached_price(tag.upper() + suffix)
+            if p is not None and p > 0:
+                return p
+        return None
+    p = get_cached_price(tag)
+    if p is not None and p > 0:
+        return p
+    if "." in tag:
+        p = get_cached_price(tag.replace(".", "-"))
+        if p is not None and p > 0:
+            return p
+    return None
+
+
+def get_price_snapshot(extra_tags: Optional[set[str]] = None) -> dict[str, float]:
+    """
+    Price snapshot for the hardcoded universe + any extra sentiment tags that
+    look like tickers (e.g. AAPL, TSLA, BRK.B, BNB discovered from news).
+    """
     out: dict[str, float] = {}
     for _cat, asset_id, symbol, _tier in _all_assets():
         p = get_cached_price(symbol)
         if p is not None and p > 0:
             out[asset_id] = round(p, 2)
+    if extra_tags:
+        for tag in extra_tags:
+            if tag in out:
+                continue
+            if not _looks_like_symbol(tag):
+                continue
+            p = _try_price(tag)
+            if p is not None:
+                out[tag] = round(p, 2)
     return out
 
 
@@ -420,7 +495,7 @@ def _candidates_for_pairs(
 
 def build_daily_candidates_for_category(
     category: str,
-    max_count: int = 5,
+    max_count: int = 10,
     by_asset_sentiment: Optional[dict] = None,
     preferred_risk: str = "moderate",
     tie_seed: Optional[str] = None,
@@ -464,7 +539,10 @@ def build_daily_candidates_for_category(
     chosen_ids = {c.asset_id for c in idea_candidates[:effective_max]}
     result = idea_candidates[:effective_max]
 
-    # Backfill from universe (also gated)
+    print(f"[ENGINE][{category}] idea_candidates after gate (min_conf={min_confidence}): {len(idea_candidates)}")
+    # Backfill from universe — use a lower confidence floor since these are
+    # curated tradeable assets where technicals alone carry enough signal.
+    backfill_min_conf = max(20, min_confidence - 15)
     if len(result) < effective_max:
         items = ASSETS_BY_CATEGORY.get(category, [])
         rest: list[Candidate] = []
@@ -474,18 +552,23 @@ def build_daily_candidates_for_category(
             if RISK_TIER_ORDER.get(risk_tier, 99) > max_risk_level:
                 continue
             cand = _build_candidate(category, asset_id, symbol, risk_tier, by_asset_sentiment, market_ctx)
-            if cand and cand.confidence_score >= min_confidence:
+            if not cand:
+                print(f"[ENGINE][{category}] {asset_id} ({symbol}): no price data — skipped")
+            elif cand.confidence_score < backfill_min_conf:
+                print(f"[ENGINE][{category}] {asset_id}: conf={cand.confidence_score} < {backfill_min_conf} — skipped")
+            else:
                 rest.append(cand)
         rest.sort(key=lambda c: (-c._score, hash((tie_seed or "", c.asset_id)) % 10000))
         for c in rest:
             if len(result) >= effective_max:
                 break
             result.append(c)
+    print(f"[ENGINE][{category}] final: {len(result)} candidates (max={effective_max})")
     return result
 
 
 def build_daily_candidates(
-    max_count: int = 5,
+    max_count: int = 10,
     by_asset_sentiment: Optional[dict] = None,
     preferred_risk: str = "moderate",
     tie_seed: Optional[str] = None,

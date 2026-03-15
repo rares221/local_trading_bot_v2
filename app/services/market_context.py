@@ -320,10 +320,10 @@ class MarketContext:
         return 45
 
     def max_recommendations_per_category(self) -> int:
-        """risk_off: cap at 3 per category instead of 5."""
+        """risk_off: cap at 5 per category instead of 10."""
         if self.regime.regime == "risk_off":
-            return 3
-        return 5
+            return 5
+        return 10
 
     def describe(self) -> str:
         parts = [self.regime.description]

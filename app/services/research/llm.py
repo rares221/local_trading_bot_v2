@@ -14,9 +14,10 @@ from app.services.research.providers import (
 
 SYSTEM_PROMPT = (
     "You are a concise trading research assistant. In 2–4 sentences only, "
-    "explain why this trade idea (long or short) might make sense and the main risk. "
-    "Reference the direction, key technicals, sentiment, market regime, and multi-timeframe alignment. "
-    "Note if the trade is aligned with or against the broader market trend. "
+    "explain why this SPECIFIC trade direction (the Direction field provided) might make sense and the main risk. "
+    "CRITICAL: If Direction is 'short', frame the rationale around why the asset may decline — "
+    "do NOT argue for a long/bullish position. If Direction is 'long', argue why it may rise. "
+    "Reference key technicals, sentiment, and market conditions. "
     "No disclaimers; factual and neutral."
 )
 

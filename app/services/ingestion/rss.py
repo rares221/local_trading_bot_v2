@@ -68,28 +68,40 @@ def fetch_all_feeds() -> list[dict]:
 
 
 async def save_feed_items(session: AsyncSession, items: list[dict]) -> int:
-    """Upsert feed items (by id). Returns count saved."""
+    """Insert new feed items, skipping any that already exist (by id). Returns count saved."""
+    from sqlalchemy import select as sa_select
+    from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
     now = datetime.now(timezone.utc)
-    saved = 0
+    seen_ids: set[str] = set()
+    to_insert: list[dict] = []
     for it in items:
-        existing = await session.get(FeedItem, it["id"])
-        if existing:
+        fid = it["id"]
+        if fid in seen_ids:
             continue
-        feed_item = FeedItem(
-            id=it["id"],
-            title=it["title"],
-            description=it.get("description") or None,
-            content=it.get("content") or None,
-            link=it["link"],
-            published=it["published"],
-            category=it["category"],
-            source=it.get("source", ""),
-            fetched_at=now,
-            keywords=it.get("keywords") or None,
-            is_processed=False,
-            sentiment_score=None,
-            asset_tags=None,
-        )
-        session.add(feed_item)
-        saved += 1
-    return saved
+        seen_ids.add(fid)
+        to_insert.append({
+            "id": fid,
+            "title": it["title"],
+            "description": it.get("description") or None,
+            "content": it.get("content") or None,
+            "link": it["link"],
+            "published": it["published"],
+            "category": it["category"],
+            "source": it.get("source", ""),
+            "fetched_at": now,
+            "keywords": it.get("keywords") or None,
+            "is_processed": False,
+            "sentiment_score": None,
+            "asset_tags": None,
+        })
+    if not to_insert:
+        return 0
+    existing_q = await session.execute(
+        sa_select(FeedItem.id).where(FeedItem.id.in_([r["id"] for r in to_insert]))
+    )
+    existing_ids = {row[0] for row in existing_q.fetchall()}
+    new_items = [r for r in to_insert if r["id"] not in existing_ids]
+    for row in new_items:
+        session.add(FeedItem(**row))
+    return len(new_items)
