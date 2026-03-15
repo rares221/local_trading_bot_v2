@@ -1,0 +1,834 @@
+"""
+Technical analysis module v2: ATR, RSI, MACD, Bollinger Bands, ADX, Stochastic,
+OBV, Support/Resistance (swing high/low), Fibonacci retracements, confidence score.
+Pure pandas/numpy — no external TA library needed.
+"""
+from __future__ import annotations
+
+import logging
+import math
+from dataclasses import dataclass, field
+from typing import Optional
+
+import numpy as np
+import pandas as pd
+import yfinance as yf
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Price / OHLCV cache
+# ---------------------------------------------------------------------------
+
+_ohlcv_cache: dict[str, pd.DataFrame] = {}
+
+
+def clear_cache() -> None:
+    _ohlcv_cache.clear()
+
+
+def fetch_ohlcv(symbol: str, period: str = "90d") -> Optional[pd.DataFrame]:
+    """Fetch OHLCV history from yfinance with caching. Returns None on failure."""
+    if symbol in _ohlcv_cache:
+        cached = _ohlcv_cache[symbol]
+        return cached if not cached.empty else None
+    log = logging.getLogger("yfinance")
+    old_level = log.level
+    log.setLevel(logging.WARNING)
+    try:
+        ticker = yf.Ticker(symbol)
+        df = ticker.history(period=period)
+        if df is None or df.empty or "Close" not in df.columns:
+            _ohlcv_cache[symbol] = pd.DataFrame()
+            return None
+        _ohlcv_cache[symbol] = df
+        return df
+    except Exception:
+        _ohlcv_cache[symbol] = pd.DataFrame()
+        return None
+    finally:
+        log.setLevel(old_level)
+
+
+def get_cached_price(symbol: str) -> Optional[float]:
+    df = fetch_ohlcv(symbol)
+    if df is None or df.empty:
+        return None
+    return float(df["Close"].iloc[-1])
+
+
+# ---------------------------------------------------------------------------
+# Core indicators
+# ---------------------------------------------------------------------------
+
+def calc_atr(df: pd.DataFrame, period: int = 14) -> Optional[float]:
+    if len(df) < period + 1:
+        return None
+    high, low, close = df["High"], df["Low"], df["Close"].shift(1)
+    tr = pd.concat([high - low, (high - close).abs(), (low - close).abs()], axis=1).max(axis=1)
+    val = tr.rolling(window=period).mean().iloc[-1]
+    return float(val) if pd.notna(val) else None
+
+
+def calc_rsi(df: pd.DataFrame, period: int = 14) -> Optional[float]:
+    if len(df) < period + 1:
+        return None
+    delta = df["Close"].diff()
+    gain = delta.clip(lower=0)
+    loss = (-delta).clip(lower=0)
+    avg_gain = gain.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    rsi = 100 - (100 / (1 + rs))
+    val = rsi.iloc[-1]
+    return float(val) if pd.notna(val) else None
+
+
+def calc_macd(
+    df: pd.DataFrame, fast: int = 12, slow: int = 26, signal: int = 9
+) -> Optional[tuple[float, float, float]]:
+    if len(df) < slow + signal:
+        return None
+    close = df["Close"]
+    ema_fast = close.ewm(span=fast, adjust=False).mean()
+    ema_slow = close.ewm(span=slow, adjust=False).mean()
+    macd_line = ema_fast - ema_slow
+    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+    hist = macd_line - signal_line
+    m, s, h = macd_line.iloc[-1], signal_line.iloc[-1], hist.iloc[-1]
+    if any(pd.isna(x) for x in (m, s, h)):
+        return None
+    return (float(m), float(s), float(h))
+
+
+def calc_bollinger(
+    df: pd.DataFrame, period: int = 20, std_dev: float = 2.0
+) -> Optional[tuple[float, float, float]]:
+    if len(df) < period:
+        return None
+    close = df["Close"]
+    sma = close.rolling(window=period).mean()
+    std = close.rolling(window=period).std()
+    u, m, l_ = (sma + std_dev * std).iloc[-1], sma.iloc[-1], (sma - std_dev * std).iloc[-1]
+    if any(pd.isna(x) for x in (u, m, l_)):
+        return None
+    return (float(u), float(m), float(l_))
+
+
+def calc_avg_daily_move(df: pd.DataFrame, period: int = 20) -> Optional[float]:
+    if len(df) < period + 1:
+        return None
+    pct = df["Close"].pct_change().abs().dropna().tail(period)
+    return float(pct.mean()) if len(pct) > 0 else None
+
+
+# ---------------------------------------------------------------------------
+# New indicators: ADX, Stochastic, OBV
+# ---------------------------------------------------------------------------
+
+def calc_adx(df: pd.DataFrame, period: int = 14) -> Optional[tuple[float, float, float]]:
+    """ADX, +DI, -DI. Returns (adx, plus_di, minus_di) or None."""
+    if len(df) < period * 2 + 1:
+        return None
+    high, low, close = df["High"], df["Low"], df["Close"]
+    plus_dm = high.diff().clip(lower=0)
+    minus_dm = (-low.diff()).clip(lower=0)
+    # Zero out whichever is smaller
+    plus_dm[plus_dm < minus_dm] = 0
+    minus_dm[minus_dm < plus_dm] = 0
+
+    tr = pd.concat([
+        high - low, (high - close.shift(1)).abs(), (low - close.shift(1)).abs()
+    ], axis=1).max(axis=1)
+
+    atr = tr.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
+    plus_di = 100 * (plus_dm.ewm(alpha=1 / period, min_periods=period, adjust=False).mean() / atr)
+    minus_di = 100 * (minus_dm.ewm(alpha=1 / period, min_periods=period, adjust=False).mean() / atr)
+    dx = 100 * ((plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan))
+    adx = dx.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
+
+    a, p, m = adx.iloc[-1], plus_di.iloc[-1], minus_di.iloc[-1]
+    if any(pd.isna(x) for x in (a, p, m)):
+        return None
+    return (float(a), float(p), float(m))
+
+
+def calc_stochastic(
+    df: pd.DataFrame, k_period: int = 14, d_period: int = 3
+) -> Optional[tuple[float, float]]:
+    """Stochastic Oscillator (%K, %D). Returns (k, d) or None."""
+    if len(df) < k_period + d_period:
+        return None
+    low_min = df["Low"].rolling(window=k_period).min()
+    high_max = df["High"].rolling(window=k_period).max()
+    denom = high_max - low_min
+    k = 100 * ((df["Close"] - low_min) / denom.replace(0, np.nan))
+    d = k.rolling(window=d_period).mean()
+    kv, dv = k.iloc[-1], d.iloc[-1]
+    if any(pd.isna(x) for x in (kv, dv)):
+        return None
+    return (float(kv), float(dv))
+
+
+def calc_obv(df: pd.DataFrame) -> Optional[tuple[float, float]]:
+    """On-Balance Volume. Returns (obv, obv_slope_5d) or None."""
+    if len(df) < 6 or "Volume" not in df.columns:
+        return None
+    direction = np.sign(df["Close"].diff())
+    obv = (direction * df["Volume"]).cumsum()
+    if obv.isna().all():
+        return None
+    current = float(obv.iloc[-1])
+    slope = float(obv.iloc[-1] - obv.iloc[-5]) if len(obv) >= 5 else 0
+    return (current, slope)
+
+
+# ---------------------------------------------------------------------------
+# Support / Resistance detection (swing high/low method)
+# ---------------------------------------------------------------------------
+
+def detect_support_resistance(
+    df: pd.DataFrame, window: int = 5, max_levels: int = 5
+) -> tuple[list[float], list[float]]:
+    """
+    Detect support and resistance levels using swing highs/lows.
+    Returns (supports, resistances) sorted by proximity to current price.
+    """
+    if len(df) < window * 2 + 1:
+        return [], []
+    highs = df["High"].values
+    lows = df["Low"].values
+    price = float(df["Close"].iloc[-1])
+
+    resistances: list[float] = []
+    supports: list[float] = []
+
+    for i in range(window, len(df) - window):
+        # Swing high: higher than `window` bars on each side
+        if all(highs[i] >= highs[i - j] for j in range(1, window + 1)) and \
+           all(highs[i] >= highs[i + j] for j in range(1, window + 1)):
+            resistances.append(float(highs[i]))
+        # Swing low
+        if all(lows[i] <= lows[i - j] for j in range(1, window + 1)) and \
+           all(lows[i] <= lows[i + j] for j in range(1, window + 1)):
+            supports.append(float(lows[i]))
+
+    # Deduplicate close levels (within 0.5% of each other)
+    def _dedup(levels: list[float]) -> list[float]:
+        if not levels:
+            return []
+        levels.sort()
+        result = [levels[0]]
+        for lv in levels[1:]:
+            if abs(lv - result[-1]) / max(result[-1], 0.01) > 0.005:
+                result.append(lv)
+        return result
+
+    supports = _dedup(supports)
+    resistances = _dedup(resistances)
+
+    # Sort by proximity to current price
+    supports.sort(key=lambda s: abs(s - price))
+    resistances.sort(key=lambda r: abs(r - price))
+
+    return supports[:max_levels], resistances[:max_levels]
+
+
+# ---------------------------------------------------------------------------
+# Fibonacci retracement levels
+# ---------------------------------------------------------------------------
+
+def calc_fibonacci_levels(
+    df: pd.DataFrame, lookback: int = 50
+) -> Optional[dict[str, float]]:
+    """
+    Fibonacci retracement levels from the recent swing range.
+    Returns dict with keys: '0%', '23.6%', '38.2%', '50%', '61.8%', '78.6%', '100%'.
+    """
+    if len(df) < lookback:
+        return None
+    recent = df.tail(lookback)
+    high = float(recent["High"].max())
+    low = float(recent["Low"].min())
+    diff = high - low
+    if diff <= 0:
+        return None
+    return {
+        "0%": round(high, 4),
+        "23.6%": round(high - diff * 0.236, 4),
+        "38.2%": round(high - diff * 0.382, 4),
+        "50%": round(high - diff * 0.5, 4),
+        "61.8%": round(high - diff * 0.618, 4),
+        "78.6%": round(high - diff * 0.786, 4),
+        "100%": round(low, 4),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Composite snapshot (extended)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class TechnicalSnapshot:
+    symbol: str
+    price: float
+    atr: Optional[float] = None
+    atr_pct: Optional[float] = None
+    rsi: Optional[float] = None
+    macd: Optional[tuple[float, float, float]] = None
+    bollinger: Optional[tuple[float, float, float]] = None
+    adx: Optional[tuple[float, float, float]] = None  # (adx, +di, -di)
+    stochastic: Optional[tuple[float, float]] = None   # (%K, %D)
+    obv: Optional[tuple[float, float]] = None           # (value, slope_5d)
+    supports: list[float] = field(default_factory=list)
+    resistances: list[float] = field(default_factory=list)
+    fibonacci: Optional[dict[str, float]] = None
+    avg_daily_move: Optional[float] = None
+    trend_bias: str = "neutral"
+    trend_strength: str = "weak"  # "weak" | "moderate" | "strong"
+
+    @property
+    def is_overbought(self) -> bool:
+        return self.rsi is not None and self.rsi > 70
+
+    @property
+    def is_oversold(self) -> bool:
+        return self.rsi is not None and self.rsi < 30
+
+    @property
+    def macd_bullish(self) -> bool:
+        return self.macd is not None and self.macd[2] > 0
+
+    @property
+    def macd_bearish(self) -> bool:
+        return self.macd is not None and self.macd[2] < 0
+
+    @property
+    def adx_trending(self) -> bool:
+        return self.adx is not None and self.adx[0] > 25
+
+    @property
+    def adx_strong_trend(self) -> bool:
+        return self.adx is not None and self.adx[0] > 40
+
+    @property
+    def stoch_overbought(self) -> bool:
+        return self.stochastic is not None and self.stochastic[0] > 80
+
+    @property
+    def stoch_oversold(self) -> bool:
+        return self.stochastic is not None and self.stochastic[0] < 20
+
+    @property
+    def obv_confirming_up(self) -> bool:
+        return self.obv is not None and self.obv[1] > 0
+
+    @property
+    def obv_confirming_down(self) -> bool:
+        return self.obv is not None and self.obv[1] < 0
+
+    @property
+    def near_upper_band(self) -> bool:
+        if self.bollinger is None:
+            return False
+        upper, mid, lower = self.bollinger
+        bw = upper - lower
+        return bw > 0 and (self.price - mid) / bw > 0.35
+
+    @property
+    def near_lower_band(self) -> bool:
+        if self.bollinger is None:
+            return False
+        upper, mid, lower = self.bollinger
+        bw = upper - lower
+        return bw > 0 and (mid - self.price) / bw > 0.35
+
+    def nearest_support_below(self) -> Optional[float]:
+        for s in sorted(self.supports, reverse=True):
+            if s < self.price:
+                return s
+        return None
+
+    def nearest_resistance_above(self) -> Optional[float]:
+        for r in sorted(self.resistances):
+            if r > self.price:
+                return r
+        return None
+
+    def nearest_support_above(self) -> Optional[float]:
+        for s in sorted(self.supports):
+            if s > self.price:
+                return s
+        return None
+
+    def nearest_resistance_below(self) -> Optional[float]:
+        for r in sorted(self.resistances, reverse=True):
+            if r < self.price:
+                return r
+        return None
+
+
+def build_snapshot(symbol: str) -> Optional[TechnicalSnapshot]:
+    """Build full technical snapshot for one symbol."""
+    df = fetch_ohlcv(symbol)
+    if df is None or df.empty or len(df) < 5:
+        return None
+
+    price = float(df["Close"].iloc[-1])
+    if price <= 0:
+        return None
+
+    atr = calc_atr(df)
+    atr_pct = (atr / price) if atr else None
+    rsi = calc_rsi(df)
+    macd = calc_macd(df)
+    bollinger = calc_bollinger(df)
+    adx = calc_adx(df)
+    stochastic = calc_stochastic(df)
+    obv = calc_obv(df)
+    supports, resistances = detect_support_resistance(df)
+    fibonacci = calc_fibonacci_levels(df)
+    avg_daily = calc_avg_daily_move(df)
+
+    # Trend bias from all indicators
+    bull, bear = 0, 0
+
+    if rsi is not None:
+        if rsi > 55:
+            bull += 1
+        elif rsi < 45:
+            bear += 1
+    if macd is not None:
+        (bull if macd[2] > 0 else bear).__class__  # dummy; real logic below
+        if macd[2] > 0:
+            bull += 1
+        else:
+            bear += 1
+    if bollinger is not None:
+        upper, mid, lower = bollinger
+        if price > mid:
+            bull += 1
+        elif price < mid:
+            bear += 1
+    if adx is not None:
+        _, plus_di, minus_di = adx
+        if plus_di > minus_di:
+            bull += 1
+        elif minus_di > plus_di:
+            bear += 1
+    if stochastic is not None:
+        k, _ = stochastic
+        if k > 55:
+            bull += 1
+        elif k < 45:
+            bear += 1
+    if obv is not None:
+        if obv[1] > 0:
+            bull += 1
+        elif obv[1] < 0:
+            bear += 1
+
+    if bull > bear:
+        trend_bias = "bullish"
+    elif bear > bull:
+        trend_bias = "bearish"
+    else:
+        trend_bias = "neutral"
+
+    # Trend strength from ADX
+    if adx is not None:
+        adx_val = adx[0]
+        if adx_val >= 40:
+            trend_strength = "strong"
+        elif adx_val >= 25:
+            trend_strength = "moderate"
+        else:
+            trend_strength = "weak"
+    else:
+        trend_strength = "weak"
+
+    def _r(v, d=4):
+        return round(v, d) if v is not None else None
+
+    return TechnicalSnapshot(
+        symbol=symbol,
+        price=round(price, 4),
+        atr=_r(atr),
+        atr_pct=_r(atr_pct, 6),
+        rsi=_r(rsi, 2),
+        macd=tuple(round(x, 4) for x in macd) if macd else None,
+        bollinger=tuple(round(x, 4) for x in bollinger) if bollinger else None,
+        adx=tuple(round(x, 2) for x in adx) if adx else None,
+        stochastic=tuple(round(x, 2) for x in stochastic) if stochastic else None,
+        obv=obv,
+        supports=[round(s, 2) for s in supports],
+        resistances=[round(r, 2) for r in resistances],
+        fibonacci=fibonacci,
+        avg_daily_move=_r(avg_daily, 6),
+        trend_bias=trend_bias,
+        trend_strength=trend_strength,
+    )
+
+
+# ---------------------------------------------------------------------------
+# ATR + S/R aware SL/TP
+# ---------------------------------------------------------------------------
+
+ATR_MULTIPLIERS = {
+    "conservative": (1.5, 2.5),
+    "moderate":     (2.0, 3.5),
+    "aggressive":   (3.0, 5.0),
+}
+
+FALLBACK_SL_TP = {
+    "conservative": (0.015, 0.03),
+    "moderate":     (0.02, 0.04),
+    "aggressive":   (0.03, 0.06),
+}
+
+
+def compute_atr_levels(
+    price: float,
+    risk_tier: str,
+    snapshot: Optional[TechnicalSnapshot] = None,
+    direction: str = "long",
+) -> tuple[float, float]:
+    """
+    Compute (stop_loss, take_profit) using ATR + support/resistance awareness.
+    For longs: SL snaps to nearest support below (if closer than ATR level).
+    For shorts: SL snaps to nearest resistance above.
+    TP considers Fibonacci levels and nearest S/R.
+    """
+    # Base ATR levels
+    if snapshot and snapshot.atr and snapshot.atr > 0:
+        sl_mult, tp_mult = ATR_MULTIPLIERS.get(risk_tier, ATR_MULTIPLIERS["moderate"])
+        atr = snapshot.atr
+        if direction == "short":
+            sl_base = price + atr * sl_mult
+            tp_base = price - atr * tp_mult
+        else:
+            sl_base = price - atr * sl_mult
+            tp_base = price + atr * tp_mult
+    else:
+        sl_pct, tp_pct = FALLBACK_SL_TP.get(risk_tier, FALLBACK_SL_TP["moderate"])
+        if direction == "short":
+            sl_base = price * (1 + sl_pct)
+            tp_base = price * (1 - tp_pct)
+        else:
+            sl_base = price * (1 - sl_pct)
+            tp_base = price * (1 + tp_pct)
+
+    sl, tp = sl_base, tp_base
+
+    # S/R-aware adjustment
+    if snapshot:
+        if direction == "long":
+            # SL: snap to nearest support below price if it provides a tighter stop
+            support = snapshot.nearest_support_below()
+            if support is not None and support < price:
+                # Place SL slightly below the support (0.2% buffer)
+                sr_sl = support * 0.998
+                # Only use if it's between the ATR-based SL and price (tighter but not too tight)
+                min_sl = price * 0.995  # never tighter than 0.5%
+                if sr_sl > sl_base and sr_sl < min_sl:
+                    pass  # too tight, keep ATR level
+                elif sr_sl > sl_base:
+                    sl = sr_sl
+
+            # TP: consider nearest resistance above for a realistic target
+            resistance = snapshot.nearest_resistance_above()
+            if resistance is not None and resistance > price:
+                # Use resistance as TP if it's between price and ATR-based TP
+                if resistance < tp_base:
+                    tp = resistance * 0.998  # just below resistance
+        else:  # short
+            resistance = snapshot.nearest_resistance_above()
+            if resistance is not None and resistance > price:
+                sr_sl = resistance * 1.002
+                max_sl = price * 1.005
+                if sr_sl < sl_base and sr_sl > max_sl:
+                    pass
+                elif sr_sl < sl_base:
+                    sl = sr_sl
+
+            support = snapshot.nearest_support_below()
+            if support is not None and support < price:
+                if support > tp_base:
+                    tp = support * 1.002
+
+    return round(sl, 2), round(tp, 2)
+
+
+def estimate_expiry_days(
+    price: float,
+    take_profit: float,
+    snapshot: Optional[TechnicalSnapshot] = None,
+    min_days: int = 1,
+    max_days: int = 30,
+) -> int:
+    if not snapshot or not snapshot.avg_daily_move or snapshot.avg_daily_move <= 0:
+        return max_days // 2
+    distance_pct = abs(take_profit - price) / price if price > 0 else 0
+    if distance_pct <= 0:
+        return min_days
+    estimated = math.ceil(distance_pct / snapshot.avg_daily_move)
+    return max(min_days, min(estimated, max_days))
+
+
+# ---------------------------------------------------------------------------
+# Direction determination (enhanced with ADX, Stochastic, OBV)
+# ---------------------------------------------------------------------------
+
+def determine_direction(
+    sentiment_avg: Optional[float],
+    snapshot: Optional[TechnicalSnapshot] = None,
+) -> str:
+    """
+    Decide long vs short. Sentiment 30%, Technicals 70%.
+    Technicals: RSI, MACD, Bollinger, ADX (+DI vs -DI), Stochastic, OBV.
+    """
+    score = 0.0
+
+    if sentiment_avg is not None:
+        score += sentiment_avg * 0.3
+
+    if snapshot:
+        tech_score = 0.0
+        signals = 0
+
+        if snapshot.rsi is not None:
+            signals += 1
+            if snapshot.rsi > 55:
+                tech_score += 1.0
+            elif snapshot.rsi < 45:
+                tech_score -= 1.0
+            else:
+                tech_score += (snapshot.rsi - 50) / 50
+
+        if snapshot.macd is not None:
+            signals += 1
+            tech_score += 1.0 if snapshot.macd[2] > 0 else -1.0
+
+        if snapshot.bollinger is not None:
+            signals += 1
+            upper, mid, lower = snapshot.bollinger
+            bw = upper - lower
+            if bw > 0:
+                tech_score += max(-1, min(1, (snapshot.price - mid) / bw * 2))
+
+        if snapshot.adx is not None:
+            signals += 1
+            _, plus_di, minus_di = snapshot.adx
+            if plus_di > minus_di:
+                tech_score += 1.0
+            elif minus_di > plus_di:
+                tech_score -= 1.0
+
+        if snapshot.stochastic is not None:
+            signals += 1
+            k, _ = snapshot.stochastic
+            if k > 55:
+                tech_score += 0.8
+            elif k < 45:
+                tech_score -= 0.8
+
+        if snapshot.obv is not None:
+            signals += 1
+            tech_score += 0.6 if snapshot.obv[1] > 0 else -0.6
+
+        if signals > 0:
+            score += (tech_score / signals) * 0.7
+
+    return "long" if score >= 0 else "short"
+
+
+# ---------------------------------------------------------------------------
+# Confidence score (0–100%)
+# ---------------------------------------------------------------------------
+
+def compute_confidence(
+    sentiment_avg: Optional[float],
+    sentiment_count: int,
+    snapshot: Optional[TechnicalSnapshot] = None,
+    direction: str = "long",
+) -> int:
+    """
+    Confidence score 0–100. Measures how many indicators agree with the direction
+    and how strongly. Higher = more conviction.
+
+    Weights: ADX trend strength 15%, RSI alignment 15%, MACD alignment 15%,
+    Stochastic alignment 10%, OBV confirmation 10%, Bollinger position 10%,
+    Sentiment alignment 15%, Mention volume 10%.
+    """
+    points = 0.0
+    max_points = 0.0
+
+    is_long = direction == "long"
+
+    # Sentiment alignment (15 pts)
+    max_points += 15
+    if sentiment_avg is not None:
+        if (is_long and sentiment_avg > 0) or (not is_long and sentiment_avg < 0):
+            points += min(15, abs(sentiment_avg) * 15)
+
+    # Mention volume (10 pts) — more mentions = more confidence
+    max_points += 10
+    if sentiment_count > 0:
+        points += min(10, math.log1p(sentiment_count) * 3)
+
+    if not snapshot:
+        return max(0, min(100, int(points / max_points * 100))) if max_points > 0 else 0
+
+    # ADX trend strength (15 pts)
+    max_points += 15
+    if snapshot.adx is not None:
+        adx_val, plus_di, minus_di = snapshot.adx
+        trend_aligns = (is_long and plus_di > minus_di) or (not is_long and minus_di > plus_di)
+        if trend_aligns:
+            if adx_val >= 40:
+                points += 15
+            elif adx_val >= 25:
+                points += 10
+            elif adx_val >= 15:
+                points += 5
+
+    # RSI alignment (15 pts)
+    max_points += 15
+    if snapshot.rsi is not None:
+        if is_long:
+            if 40 <= snapshot.rsi <= 70:
+                points += 15  # healthy bull territory
+            elif snapshot.rsi < 30:
+                points += 12  # oversold bounce potential
+            elif snapshot.rsi < 40:
+                points += 8
+        else:
+            if 30 <= snapshot.rsi <= 60:
+                points += 15
+            elif snapshot.rsi > 70:
+                points += 12
+            elif snapshot.rsi > 60:
+                points += 8
+
+    # MACD alignment (15 pts)
+    max_points += 15
+    if snapshot.macd is not None:
+        _, _, hist = snapshot.macd
+        if (is_long and hist > 0) or (not is_long and hist < 0):
+            points += 15
+        elif abs(hist) / max(snapshot.price, 1) < 0.001:
+            points += 5  # near crossover
+
+    # Stochastic alignment (10 pts)
+    max_points += 10
+    if snapshot.stochastic is not None:
+        k, d = snapshot.stochastic
+        if is_long:
+            if 20 <= k <= 80 and k > d:
+                points += 10
+            elif k < 20:
+                points += 7  # oversold, bullish potential
+        else:
+            if 20 <= k <= 80 and k < d:
+                points += 10
+            elif k > 80:
+                points += 7
+
+    # OBV confirmation (10 pts)
+    max_points += 10
+    if snapshot.obv is not None:
+        if (is_long and snapshot.obv[1] > 0) or (not is_long and snapshot.obv[1] < 0):
+            points += 10
+
+    # Bollinger position (10 pts)
+    max_points += 10
+    if snapshot.bollinger is not None:
+        upper, mid, lower = snapshot.bollinger
+        if is_long:
+            if snapshot.price > mid and not snapshot.near_upper_band:
+                points += 10
+            elif snapshot.near_lower_band:
+                points += 8  # bounce potential
+        else:
+            if snapshot.price < mid and not snapshot.near_lower_band:
+                points += 10
+            elif snapshot.near_upper_band:
+                points += 8
+
+    return max(0, min(100, int(points / max_points * 100))) if max_points > 0 else 0
+
+
+# ---------------------------------------------------------------------------
+# Combined ranking score
+# ---------------------------------------------------------------------------
+
+def compute_technical_score(
+    sentiment_avg: Optional[float],
+    sentiment_count: int,
+    snapshot: Optional[TechnicalSnapshot] = None,
+) -> float:
+    """
+    Combined ranking score. Higher = stronger signal. Range roughly -3 to +4.
+    Enhanced with ADX, Stochastic, OBV, and trend strength.
+    """
+    score = 0.0
+
+    if sentiment_avg is not None:
+        score += sentiment_avg * 1.5
+
+    if sentiment_count > 0:
+        score += min(0.5, math.log1p(sentiment_count) * 0.15)
+
+    if not snapshot:
+        return score
+
+    # RSI extremes
+    if snapshot.rsi is not None:
+        if snapshot.rsi > 70 or snapshot.rsi < 30:
+            score += 0.5
+        elif snapshot.rsi > 60 or snapshot.rsi < 40:
+            score += 0.2
+
+    # MACD momentum
+    if snapshot.macd is not None:
+        price = snapshot.price if snapshot.price > 0 else 1
+        score += min(0.4, abs(snapshot.macd[2]) / price * 100)
+
+    # Bollinger extremes
+    if snapshot.near_upper_band or snapshot.near_lower_band:
+        score += 0.3
+
+    # ADX: strong trends get a boost
+    if snapshot.adx is not None:
+        adx_val = snapshot.adx[0]
+        if adx_val >= 40:
+            score += 0.6
+        elif adx_val >= 25:
+            score += 0.3
+
+    # Stochastic extremes
+    if snapshot.stochastic is not None:
+        k, _ = snapshot.stochastic
+        if k > 80 or k < 20:
+            score += 0.3
+
+    # OBV momentum
+    if snapshot.obv is not None and snapshot.obv[1] != 0:
+        score += 0.2
+
+    return round(score, 4)
+
+
+# ---------------------------------------------------------------------------
+# Risk:Reward ratio
+# ---------------------------------------------------------------------------
+
+def calc_risk_reward(
+    price: float, stop_loss: float, take_profit: float
+) -> Optional[float]:
+    """Risk:Reward ratio. E.g. 2.5 means reward is 2.5x the risk."""
+    risk = abs(price - stop_loss)
+    reward = abs(take_profit - price)
+    if risk <= 0:
+        return None
+    return round(reward / risk, 2)

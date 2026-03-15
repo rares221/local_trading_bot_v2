@@ -2,7 +2,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.core.config import settings
@@ -30,18 +30,8 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
 @app.get("/")
-async def root() -> dict[str, str]:
-    return {
-        "app": settings.app_name,
-        "dashboard": "/dashboard",
-        "recommendations": "/recommendations",
-        "research": "/research",
-        "analysis": "/analysis",
-        "active_trades": "/active-trades",
-        "briefing": "/briefing",
-        "docs": "/docs",
-        "health": "/api/health",
-    }
+async def root() -> RedirectResponse:
+    return RedirectResponse(url="/dashboard")
 
 
 def _read_static(name: str) -> str:

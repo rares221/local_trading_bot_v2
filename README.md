@@ -85,6 +85,16 @@ make stop    # stop and remove the container
 
 **Docker on Windows:** Add Docker’s `bin` folder to your user PATH (e.g. `C:\Program Files\Docker\Docker\resources\bin`) so `docker` and `docker compose` work in the terminal. Alternatively use the project’s `start.bat` / `stop.bat` if they call Docker by full path.
 
+**Using Podman instead of Docker:** Point the Docker CLI at Podman so `docker compose` and `make` use Podman. In a terminal where both `docker` and `podman` are on PATH (e.g. after installing Podman Desktop or Podman CLI):
+
+```bash
+# Create a Docker context that uses Podman’s socket (pipe name may vary)
+docker context create podman --docker "host=npipe:////./pipe/podman-machine-default"
+docker context use podman
+```
+
+Then `make build`, `make start`, and `docker compose` use Podman. To see the exact pipe name: `podman machine inspect --format '{{.ConnectionInfo.PodmanInfo.PodmanPipe.Path}}'` (use that path in the `host=` value). To switch back to Docker later: `docker context use default`.
+
 ---
 
 ## API overview

@@ -1,6 +1,6 @@
 """
-APScheduler jobs: ingestion + sentiment, analysis run, daily recommendation batch, active-trade updates.
-Aligned with PLAN_MODE: one daily batch (≤5); update job only refreshes active trades.
+APScheduler jobs: ingestion + sentiment, analysis run, daily recommendation batch,
+active-trade updates (ATR-based trailing), daily briefing, feed cleanup.
 """
 from datetime import datetime, timezone, date, timedelta
 from uuid import uuid4
@@ -18,7 +18,9 @@ from app.models.market_analysis import MarketAnalysis
 from app.services.ingestion import fetch_all_feeds, save_feed_items
 from app.services.sentiment import score_sentiment, tag_assets, detect_tickers
 from app.services.analysis import run_analysis, get_latest_analysis
-from app.services.recommendations import build_daily_candidates, compute_sl_tp_for_price, get_asset_price_and_risk
+from app.services.recommendations import build_daily_candidates, get_asset_price_and_risk
+from app.services.recommendations.engine import get_yf_symbol, compute_sl_tp_for_price
+from app.services.technicals import build_snapshot, compute_atr_levels, clear_cache
 from app.services.briefing import run_briefing
 
 
@@ -27,7 +29,6 @@ async def job_ingest_and_sentiment() -> None:
     async with async_session_factory() as session:
         items = fetch_all_feeds()
         saved = await save_feed_items(session, items)
-        # Enrich existing items with sentiment (simple: recent unprocessed)
         q = select(FeedItem).where(FeedItem.is_processed == False).limit(500)
         result = await session.execute(q)
         for it in result.scalars().all():
@@ -49,21 +50,23 @@ async def job_run_analysis() -> None:
 
 async def job_daily_batch() -> None:
     """
-    Produce up to 5 recommendations for today (PLAN_MODE).
-    Stub: creates placeholder recs if we have analysis; real engine later.
+    Produce up to 5 recommendations per category for today.
+    Uses ATR-based SL/TP, long/short direction, and expiry estimation.
     """
     batch_id = date.today().isoformat()
     async with async_session_factory() as session:
-        # Guard: do not add more pending if today already has pending recommendations (PLAN_MODE C3). Taken ones can coexist with a new set.
-        q = select(Recommendation).where(Recommendation.batch_id == batch_id, Recommendation.status == "pending").limit(1)
+        q = select(Recommendation).where(
+            Recommendation.batch_id == batch_id, Recommendation.status == "pending"
+        ).limit(1)
         result = await session.execute(q)
         if result.scalars().first():
             return
         analysis = await get_latest_analysis(session)
         if not analysis:
             return
-        # Do not create new pending recs for assets that already have a taken recommendation (§5.4)
-        q_taken = select(Recommendation.asset_category, Recommendation.asset_id).where(Recommendation.status == "taken").distinct()
+        q_taken = select(Recommendation.asset_category, Recommendation.asset_id).where(
+            Recommendation.status == "taken"
+        ).distinct()
         result_taken = await session.execute(q_taken)
         exclude_taken = {(row[0], row[1]) for row in result_taken.all()}
         from app.core.preferences import get_preferred_risk
@@ -84,6 +87,7 @@ async def job_daily_batch() -> None:
             try:
                 ctx = await build_research_context(session, c.asset_id, c.asset_category)
                 ctx["buy_in_price"] = c.buy_in_price
+                ctx["direction"] = c.direction
                 rationale_text = await generate_rationale(ctx)
             except Exception:
                 pass
@@ -96,10 +100,14 @@ async def job_daily_batch() -> None:
                 buy_in_price=c.buy_in_price,
                 stop_loss=c.stop_loss,
                 take_profit=c.take_profit,
-                expiry_date=None,
+                expiry_date=c.expiry_date,
                 rationale_ref=analysis.id,
                 rationale_text=rationale_text,
                 risk_tier=c.risk_tier,
+                direction=c.direction,
+                confidence_score=c.confidence_score,
+                risk_reward=c.risk_reward,
+                volatility_notes=c.volatility_notes,
                 status="pending",
             )
             session.add(rec)
@@ -108,9 +116,13 @@ async def job_daily_batch() -> None:
 
 async def job_update_active_trades() -> None:
     """
-    Suggest new SL/TP from latest price; do not overwrite user's original levels.
-    Writes to suggested_sl/suggested_tp/suggested_at and appends to levels history.
+    Professional trade management lifecycle for active trades:
+    1. OPEN phase: Track price movement, compute ATR trailing SL/TP
+    2. At 1R profit (risk = |entry - SL|): suggest moving SL to breakeven -> PARTIAL_TP phase
+    3. TRAILING phase: SL only moves favorably, trail behind structure
+    4. If price hits TP or SL -> mark CLOSED
     """
+    clear_cache()
     async with async_session_factory() as session:
         q = select(ActiveTrade).options(selectinload(ActiveTrade.recommendation))
         result = await session.execute(q)
@@ -119,12 +131,79 @@ async def job_update_active_trades() -> None:
             rec = trade.recommendation
             if not rec:
                 continue
-            price_risk = get_asset_price_and_risk(rec.asset_category, rec.asset_id)
-            if not price_risk:
+            symbol = get_yf_symbol(rec.asset_category, rec.asset_id)
+            if not symbol:
                 trade.last_updated = now
                 continue
-            price, _ = price_risk
-            sl, tp = compute_sl_tp_for_price(price, rec.risk_tier)
+            snap = build_snapshot(symbol)
+            if not snap or snap.price <= 0:
+                trade.last_updated = now
+                continue
+
+            direction = getattr(rec, "direction", "long") or "long"
+            current_price = snap.price
+            entry_price = rec.buy_in_price
+            original_sl = trade.current_sl
+            risk = abs(entry_price - original_sl)
+            phase = getattr(trade, "trade_phase", "open") or "open"
+
+            # Track extreme prices for trailing
+            if direction == "long":
+                if trade.highest_price is None or current_price > trade.highest_price:
+                    trade.highest_price = current_price
+            else:
+                if trade.lowest_price is None or current_price < trade.lowest_price:
+                    trade.lowest_price = current_price
+
+            # Phase transitions
+            if phase == "open" and risk > 0:
+                # Check if we've reached 1R profit (reward = risk distance)
+                if direction == "long" and current_price >= entry_price + risk:
+                    trade.trade_phase = "partial_tp"
+                    phase = "partial_tp"
+                elif direction == "short" and current_price <= entry_price - risk:
+                    trade.trade_phase = "partial_tp"
+                    phase = "partial_tp"
+
+            if phase == "partial_tp" and not trade.breakeven_hit:
+                # Move SL to breakeven (entry price + small buffer)
+                buffer = risk * 0.05  # 5% of risk as buffer above breakeven
+                if direction == "long":
+                    trade.breakeven_hit = True
+                    # SL moves to entry + buffer
+                    sl_breakeven = round(entry_price + buffer, 2)
+                    if trade.suggested_sl is None or sl_breakeven > trade.suggested_sl:
+                        trade.suggested_sl = sl_breakeven
+                else:
+                    trade.breakeven_hit = True
+                    sl_breakeven = round(entry_price - buffer, 2)
+                    if trade.suggested_sl is None or sl_breakeven < trade.suggested_sl:
+                        trade.suggested_sl = sl_breakeven
+                trade.trade_phase = "trailing"
+                phase = "trailing"
+
+            # ATR-based trailing (all phases)
+            sl, tp = compute_atr_levels(current_price, rec.risk_tier, snapshot=snap, direction=direction)
+
+            # SL only moves in favorable direction
+            if trade.suggested_sl is not None:
+                if direction == "long":
+                    sl = max(sl, trade.suggested_sl)
+                else:
+                    sl = min(sl, trade.suggested_sl)
+
+            # Phase check: if current price has hit TP or SL, mark closed
+            if direction == "long":
+                if current_price <= (trade.suggested_sl or original_sl):
+                    trade.trade_phase = "closed_sl"
+                elif current_price >= rec.take_profit:
+                    trade.trade_phase = "closed_tp"
+            else:
+                if current_price >= (trade.suggested_sl or original_sl):
+                    trade.trade_phase = "closed_sl"
+                elif current_price <= rec.take_profit:
+                    trade.trade_phase = "closed_tp"
+
             trade.suggested_sl = sl
             trade.suggested_tp = tp
             trade.suggested_at = now
@@ -134,21 +213,21 @@ async def job_update_active_trades() -> None:
                 sl=sl,
                 tp=tp,
                 created_at=now,
-                source="scheduled_update",
+                source=f"scheduled_update_{phase}",
             )
             session.add(level)
         await session.commit()
 
 
 async def job_daily_briefing() -> None:
-    """Run daily briefing checklist and store result (heartbeat-style)."""
+    """Run daily briefing checklist and store result."""
     async with async_session_factory() as session:
         await run_briefing(session)
         await session.commit()
 
 
 async def job_cleanup_feed_items() -> None:
-    """Delete feed_items older than feed_max_age_days. Keeps DB size bounded."""
+    """Delete feed_items older than feed_max_age_days."""
     async with async_session_factory() as session:
         cutoff = datetime.now(timezone.utc) - timedelta(days=settings.feed_max_age_days)
         await session.execute(delete(FeedItem).where(FeedItem.fetched_at < cutoff))
@@ -156,23 +235,20 @@ async def job_cleanup_feed_items() -> None:
 
 
 def start_scheduler() -> AsyncIOScheduler:
-    """Schedule jobs. Call from main after uvicorn or run in worker."""
+    """Schedule jobs."""
     scheduler = AsyncIOScheduler()
-    # Ingestion + sentiment: every 2h (align with plan)
     scheduler.add_job(
         job_ingest_and_sentiment,
         "interval",
         hours=settings.analysis_run_interval_hours,
         id="ingest_sentiment",
     )
-    # Analysis: every 2h
     scheduler.add_job(
         job_run_analysis,
         "interval",
         hours=settings.analysis_run_interval_hours,
         id="run_analysis",
     )
-    # Daily batch: once per day at configured hour
     scheduler.add_job(
         job_daily_batch,
         "cron",
@@ -180,7 +256,6 @@ def start_scheduler() -> AsyncIOScheduler:
         minute=0,
         id="daily_batch",
     )
-    # Daily briefing: once per day (e.g. after batch; same hour + 1 or fixed 8:00)
     briefing_hour = min(23, (settings.daily_batch_hour + 1) % 24)
     scheduler.add_job(
         job_daily_briefing,
@@ -189,14 +264,12 @@ def start_scheduler() -> AsyncIOScheduler:
         minute=5,
         id="daily_briefing",
     )
-    # Active trades update: every 2h
     scheduler.add_job(
         job_update_active_trades,
         "interval",
         hours=settings.update_active_trades_interval_hours,
         id="update_active_trades",
     )
-    # Feed-item cleanup: daily (delete items older than feed_max_age_days)
     scheduler.add_job(
         job_cleanup_feed_items,
         "cron",

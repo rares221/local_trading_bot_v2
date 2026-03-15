@@ -5,7 +5,7 @@ from datetime import datetime, date
 from typing import Optional
 from uuid import uuid4
 
-from sqlalchemy import DateTime, Date, String, Float, ForeignKey, Text, Index
+from sqlalchemy import Boolean, DateTime, Date, Integer, String, Float, ForeignKey, Text, Index
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.base import Base
 
@@ -25,6 +25,9 @@ class Recommendation(Base):
     rationale_ref: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)  # analysis run id or report ref
     rationale_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # Option B: LLM-generated "why and risk"
     risk_tier: Mapped[str] = mapped_column(String(32), nullable=False)  # conservative | moderate | aggressive
+    direction: Mapped[str] = mapped_column(String(8), nullable=False, default="long")  # long | short
+    confidence_score: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # 0–100
+    risk_reward: Mapped[Optional[float]] = mapped_column(Float, nullable=True)  # e.g. 2.5
     volatility_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")  # pending | taken | skipped
 
@@ -48,6 +51,11 @@ class ActiveTrade(Base):
     suggested_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     expiry: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     last_updated: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # Trade management lifecycle: open -> partial_tp -> trailing -> closed
+    trade_phase: Mapped[str] = mapped_column(String(24), nullable=False, default="open")
+    breakeven_hit: Mapped[bool] = mapped_column(default=False)
+    highest_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)  # for longs
+    lowest_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)   # for shorts
 
     recommendation: Mapped["Recommendation"] = relationship("Recommendation", back_populates="active_trade")
     levels: Mapped[list["ActiveTradeLevel"]] = relationship(

@@ -90,6 +90,43 @@ def _migrate_active_trades_and_levels(sync_conn) -> None:
         )
 
 
+def _ensure_columns(sync_conn, table: str, columns: list[tuple[str, str, str]]) -> None:
+    """
+    Generic column adder. For each (name, sql_type, default_expr) tuple,
+    ALTERs the table if the column doesn't exist yet.
+    default_expr can be empty string for nullable columns.
+    """
+    result = sync_conn.execute(text(f"PRAGMA table_info({table})"))
+    rows = result.fetchall()
+    if not rows:
+        return
+    existing = {row[1] for row in rows}
+    for col, typ, default in columns:
+        if col not in existing:
+            stmt = f"ALTER TABLE {table} ADD COLUMN {col} {typ}"
+            if default:
+                stmt += f" DEFAULT {default}"
+            sync_conn.execute(text(stmt))
+
+
+def _migrate_engine_v2_v3(sync_conn) -> None:
+    """Add columns introduced in Engine v2.1 and v3."""
+    # recommendations: direction, confidence_score, risk_reward, volatility_notes
+    _ensure_columns(sync_conn, "recommendations", [
+        ("direction",        "VARCHAR(8)",  "'long'"),
+        ("confidence_score", "INTEGER",     ""),
+        ("risk_reward",      "REAL",        ""),
+        ("volatility_notes", "TEXT",        ""),
+    ])
+    # active_trades: trade lifecycle (v3)
+    _ensure_columns(sync_conn, "active_trades", [
+        ("trade_phase",  "VARCHAR(24)", "'open'"),
+        ("breakeven_hit","BOOLEAN",     "0"),
+        ("highest_price","REAL",        ""),
+        ("lowest_price", "REAL",        ""),
+    ])
+
+
 async def init_db() -> None:
     import app.models  # noqa: F401 - register all models with Base.metadata
 
@@ -98,6 +135,7 @@ async def init_db() -> None:
         await conn.run_sync(_add_rationale_text_column_if_missing)
         await conn.run_sync(_migrate_daily_briefings)
         await conn.run_sync(_migrate_active_trades_and_levels)
+        await conn.run_sync(_migrate_engine_v2_v3)
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:

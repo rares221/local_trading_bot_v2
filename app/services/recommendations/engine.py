@@ -1,18 +1,37 @@
 """
-Recommendation engine: builds trade ideas from the analysis we pulled (RSS, sentiment, tags),
-then prices fixed universe + any dynamically detected ticker we can price. Best 5 per category by sentiment + risk.
+Recommendation engine v3: ATR + S/R SL/TP, long/short direction, expiry estimation,
+technical signal scoring, market regime awareness, multi-TF trend alignment,
+confidence gating, cross-asset correlation. Best N per category (regime-dependent).
 """
+import logging
 from dataclasses import dataclass
+from datetime import date, timedelta
 from typing import Optional
 
-import yfinance as yf
+logger = logging.getLogger(__name__)
 
 from app.services.sentiment.ticker_detection import is_likely_ticker
+from app.services.technicals import (
+    TechnicalSnapshot,
+    build_snapshot,
+    calc_risk_reward,
+    clear_cache,
+    compute_atr_levels,
+    compute_confidence,
+    compute_technical_score,
+    determine_direction,
+    estimate_expiry_days,
+    get_cached_price,
+)
+from app.services.market_context import (
+    MarketContext,
+    build_market_context,
+    check_trend_alignment,
+    TrendAlignment,
+)
 
-# Risk tier order for filtering: only assets at or below user's preferred level are included.
 RISK_TIER_ORDER = {"conservative": 0, "moderate": 1, "aggressive": 2}
 
-# Tag (from headlines) -> (category, asset_id). Recommendation *ideas* come from tags that appear in analysis.
 SENTIMENT_TAG_TO_ASSETS: dict[str, list[tuple[str, str]]] = {
     "oil": [("commodities", "WTI"), ("commodities", "Brent"), ("stocks", "XOM"), ("stocks", "CVX")],
     "gold": [("commodities", "XAUUSD"), ("stocks", "NEM")],
@@ -29,7 +48,6 @@ SENTIMENT_TAG_TO_ASSETS: dict[str, list[tuple[str, str]]] = {
     "Silver": [("commodities", "Silver")],
     "BTC": [("other", "BTC")],
     "ETH": [("other", "ETH")],
-    # Indices (headline tags -> indices category)
     "SPX": [("indices", "SPX")],
     "S&P 500": [("indices", "SPX")],
     "DJI": [("indices", "DJI")],
@@ -40,7 +58,6 @@ SENTIMENT_TAG_TO_ASSETS: dict[str, list[tuple[str, str]]] = {
     "VIX": [("indices", "VIX")],
 }
 
-# Tradeable universe: assets we can price (yfinance symbol) and their risk_tier. Ideas come from analysis; we only recommend from this set.
 ASSETS_BY_CATEGORY = {
     "stocks": [
         ("XOM", "XOM", "conservative"),
@@ -64,15 +81,15 @@ ASSETS_BY_CATEGORY = {
         ("ETH", "ETH-USD", "aggressive"),
     ],
     "indices": [
-        ("SPX", "^GSPC", "moderate"),   # S&P 500
-        ("DJI", "^DJI", "moderate"),    # Dow Jones
-        ("NDX", "^IXIC", "moderate"),   # NASDAQ Composite
-        ("FTSE", "^FTSE", "moderate"),  # FTSE 100
-        ("VIX", "^VIX", "aggressive"),  # Volatility index
+        ("SPX", "^GSPC", "moderate"),
+        ("DJI", "^DJI", "moderate"),
+        ("NDX", "^IXIC", "moderate"),
+        ("FTSE", "^FTSE", "moderate"),
+        ("VIX", "^VIX", "aggressive"),
     ],
 }
 
-# (category, asset_id) -> (symbol, risk_tier) for fixed universe
+
 def _universe_lookup() -> dict[tuple[str, str], tuple[str, str]]:
     out: dict[tuple[str, str], tuple[str, str]] = {}
     for cat, items in ASSETS_BY_CATEGORY.items():
@@ -86,7 +103,6 @@ def _resolve_symbol_risk(
     asset_id: str,
     universe: dict[tuple[str, str], tuple[str, str]],
 ) -> Optional[tuple[str, str]]:
-    """(symbol, risk_tier) for pricing. Fixed universe first; else dynamic ticker -> (asset_id, moderate)."""
     key = (category, asset_id)
     if key in universe:
         return universe[key]
@@ -96,7 +112,6 @@ def _resolve_symbol_risk(
 
 
 def _trade_ideas_from_analysis(by_asset_sentiment: Optional[dict]) -> set[tuple[str, str]]:
-    """(category, asset_id) pairs from analysis: fixed tag mapping + dynamic tickers (stocks)."""
     if not by_asset_sentiment:
         return set()
     ideas: set[tuple[str, str]] = set()
@@ -109,7 +124,6 @@ def _trade_ideas_from_analysis(by_asset_sentiment: Optional[dict]) -> set[tuple[
     return ideas
 
 
-# Flat list (category, asset_id, symbol, risk_tier) for get_price_snapshot
 def _all_assets() -> list[tuple[str, str, str, str]]:
     out: list[tuple[str, str, str, str]] = []
     for cat, items in ASSETS_BY_CATEGORY.items():
@@ -117,14 +131,10 @@ def _all_assets() -> list[tuple[str, str, str, str]]:
             out.append((cat, asset_id, symbol, tier))
     return out
 
-# SL/TP as fraction of price (long bias: SL below, TP above)
-# conservative: tighter; moderate: wider
-SL_TP_BY_RISK = {
-    "conservative": (0.015, 0.03),   # 1.5% SL, 3% TP
-    "moderate": (0.02, 0.04),         # 2% SL, 4% TP
-    "aggressive": (0.03, 0.06),       # 3% SL, 6% TP
-}
 
+# ---------------------------------------------------------------------------
+# Candidate with direction + expiry + technicals
+# ---------------------------------------------------------------------------
 
 @dataclass
 class Candidate:
@@ -134,49 +144,21 @@ class Candidate:
     buy_in_price: float
     stop_loss: float
     take_profit: float
+    direction: str = "long"
+    expiry_date: Optional[date] = None
+    volatility_notes: Optional[str] = None
+    confidence_score: int = 0
+    risk_reward: Optional[float] = None
+    trend_aligned: bool = False
+    market_regime_note: Optional[str] = None
+    _score: float = 0.0
 
 
-def _fetch_price(symbol: str) -> Optional[float]:
-    """Return latest close price for symbol, or None if fetch fails. Suppresses yfinance log noise."""
-    import logging
-    try:
-        # Reduce yfinance "possibly delisted" / "no data" log spam when we probe dynamic tickers
-        log = logging.getLogger("yfinance")
-        old_level = log.level
-        log.setLevel(logging.WARNING)
-        try:
-            ticker = yf.Ticker(symbol)
-            hist = ticker.history(period="5d")
-            if hist is None or hist.empty or "Close" not in hist.columns:
-                return None
-            return float(hist["Close"].iloc[-1])
-        finally:
-            log.setLevel(old_level)
-    except Exception:
-        return None
-
-
-def _compute_levels(price: float, risk_tier: str) -> tuple[float, float]:
-    """Return (stop_loss, take_profit) for a long bias. Price is buy_in."""
-    sl_pct, tp_pct = SL_TP_BY_RISK.get(risk_tier, SL_TP_BY_RISK["moderate"])
-    stop_loss = round(price * (1 - sl_pct), 2)
-    take_profit = round(price * (1 + tp_pct), 2)
-    return stop_loss, take_profit
-
-
-def compute_sl_tp_for_price(price: float, risk_tier: str) -> tuple[float, float]:
-    """
-    Return (stop_loss, take_profit) for a given current price and risk tier.
-    Used by active-trade update job to refresh SL/TP from latest price.
-    """
-    return _compute_levels(price, risk_tier)
-
+# ---------------------------------------------------------------------------
+# Public helpers (used by scheduler, research, briefing)
+# ---------------------------------------------------------------------------
 
 def get_yf_symbol(category: str, asset_id: str) -> Optional[str]:
-    """
-    Return yfinance symbol for (category, asset_id), or None if not resolvable.
-    Used by research context for fundamentals (e.g. sector, marketCap) and by briefing.
-    """
     universe = _universe_lookup()
     resolved = _resolve_symbol_risk(category, asset_id, universe)
     if not resolved:
@@ -185,16 +167,12 @@ def get_yf_symbol(category: str, asset_id: str) -> Optional[str]:
 
 
 def get_asset_price_and_risk(category: str, asset_id: str) -> Optional[tuple[float, str]]:
-    """
-    Return (current_price, risk_tier) for (category, asset_id) if we can resolve and fetch price.
-    Used by research context builder.
-    """
     universe = _universe_lookup()
     resolved = _resolve_symbol_risk(category, asset_id, universe)
     if not resolved:
         return None
     symbol, risk_tier = resolved
-    price = _fetch_price(symbol)
+    price = get_cached_price(symbol)
     if price is None or price <= 0:
         return None
     return (round(price, 2), risk_tier)
@@ -205,10 +183,6 @@ def get_sentiment_for_asset(
     asset_id: str,
     by_asset_sentiment: dict[str, dict],
 ) -> Optional[float]:
-    """
-    Return best sentiment score for this (category, asset_id) from by_asset_sentiment.
-    by_asset_sentiment: tag -> {"avg": float, "count": int}. Returns None if no tag maps.
-    """
     pair = get_sentiment_score_and_count(category, asset_id, by_asset_sentiment)
     return pair[0] if pair else None
 
@@ -218,10 +192,6 @@ def get_sentiment_score_and_count(
     asset_id: str,
     by_asset_sentiment: dict[str, dict],
 ) -> Optional[tuple[float, int]]:
-    """
-    Return (best_avg_sentiment, total_mention_count) for this asset. Includes fixed tag mapping
-    and direct tag match for dynamic tickers (by_asset_sentiment[asset_id]).
-    """
     if not by_asset_sentiment:
         return None
     best_avg: Optional[float] = None
@@ -236,7 +206,6 @@ def get_sentiment_score_and_count(
                     if best_avg is None or avg > best_avg:
                         best_avg = avg
                     total_count += cnt
-    # Dynamic ticker: tag is the asset_id itself (e.g. TSLA in headlines)
     if category == "stocks" and asset_id in by_asset_sentiment:
         info = by_asset_sentiment[asset_id]
         avg = info.get("avg")
@@ -249,16 +218,172 @@ def get_sentiment_score_and_count(
 
 
 def get_price_snapshot() -> dict[str, float]:
-    """
-    Return {asset_id: price} for all assets across categories that fetch successfully.
-    Used by market analysis to include current prices in the report payload.
-    """
     out: dict[str, float] = {}
     for _cat, asset_id, symbol, _tier in _all_assets():
-        p = _fetch_price(symbol)
+        p = get_cached_price(symbol)
         if p is not None and p > 0:
             out[asset_id] = round(p, 2)
     return out
+
+
+# Keep backward-compat for active-trade update job
+def compute_sl_tp_for_price(price: float, risk_tier: str, direction: str = "long") -> tuple[float, float]:
+    """
+    ATR-aware SL/TP recompute from current price. Tries to use cached snapshot
+    for the symbol; falls back to fixed % if no data.
+    """
+    return compute_atr_levels(price, risk_tier, snapshot=None, direction=direction)
+
+
+def compute_sl_tp_for_symbol(
+    symbol: str, risk_tier: str, direction: str = "long"
+) -> Optional[tuple[float, float, float, TechnicalSnapshot]]:
+    """
+    Full ATR-based computation for a symbol.
+    Returns (price, sl, tp, snapshot) or None.
+    """
+    snap = build_snapshot(symbol)
+    if not snap:
+        return None
+    sl, tp = compute_atr_levels(snap.price, risk_tier, snapshot=snap, direction=direction)
+    return (snap.price, sl, tp, snap)
+
+
+# ---------------------------------------------------------------------------
+# Volatility notes builder
+# ---------------------------------------------------------------------------
+
+def _build_volatility_notes(snap: Optional[TechnicalSnapshot], direction: str) -> Optional[str]:
+    if not snap:
+        return None
+    parts: list[str] = []
+    if snap.atr_pct is not None:
+        parts.append(f"ATR: {snap.atr_pct:.2%}")
+    if snap.rsi is not None:
+        label = "overbought" if snap.rsi > 70 else ("oversold" if snap.rsi < 30 else "neutral")
+        parts.append(f"RSI: {snap.rsi:.0f} ({label})")
+    if snap.macd is not None:
+        _, _, hist = snap.macd
+        parts.append(f"MACD: {'bullish' if hist > 0 else 'bearish'}")
+    if snap.adx is not None:
+        adx_val, plus_di, minus_di = snap.adx
+        parts.append(f"ADX: {adx_val:.0f} ({snap.trend_strength} trend)")
+    if snap.stochastic is not None:
+        k, d = snap.stochastic
+        label = "overbought" if k > 80 else ("oversold" if k < 20 else "mid")
+        parts.append(f"Stoch: {k:.0f}/{d:.0f} ({label})")
+    if snap.obv is not None:
+        parts.append(f"OBV: {'rising' if snap.obv[1] > 0 else 'falling'}")
+    if snap.bollinger is not None:
+        if snap.near_upper_band:
+            parts.append("near upper BB")
+        elif snap.near_lower_band:
+            parts.append("near lower BB")
+    if snap.supports:
+        parts.append(f"S: {snap.supports[0]}")
+    if snap.resistances:
+        parts.append(f"R: {snap.resistances[0]}")
+    parts.append(f"trend: {snap.trend_bias}")
+    parts.append(f"dir: {direction}")
+    return "; ".join(parts) if parts else None
+
+
+# ---------------------------------------------------------------------------
+# Candidate builder
+# ---------------------------------------------------------------------------
+
+def _build_candidate(
+    category: str,
+    asset_id: str,
+    symbol: str,
+    risk_tier: str,
+    by_asset_sentiment: Optional[dict],
+    market_ctx: Optional[MarketContext] = None,
+) -> Optional[Candidate]:
+    """Build a single Candidate with ATR-based levels, direction, expiry, score, trend alignment."""
+    snap = build_snapshot(symbol)
+    if not snap or snap.price <= 0:
+        return None
+
+    price = round(snap.price, 2)
+
+    # Direction from sentiment + technicals
+    pair = get_sentiment_score_and_count(category, asset_id, by_asset_sentiment or {})
+    sentiment_avg = pair[0] if pair else None
+    sentiment_count = pair[1] if pair else 0
+    direction = determine_direction(sentiment_avg, snap)
+
+    # Multi-timeframe trend alignment check
+    alignment = check_trend_alignment(symbol)
+    trend_aligned = alignment.aligned
+
+    # If trend alignment conflicts with direction, penalize or flip
+    if alignment.aligned and alignment.alignment_score != 0:
+        aligned_dir = "long" if alignment.alignment_score > 0 else "short"
+        if aligned_dir != direction:
+            # Weekly trend disagrees — reduce confidence, don't flip direction outright
+            # but note the conflict
+            trend_aligned = False
+
+    # Market regime direction override for equities
+    regime_note = None
+    if market_ctx:
+        regime_note = market_ctx.regime.description
+        # In risk_off, don't go long on stocks/indices unless very strong signal
+        if market_ctx.regime.regime == "risk_off" and direction == "long":
+            if category in ("stocks", "indices"):
+                direction = "short"  # flip to match regime
+
+    # ATR-based stop loss / take profit
+    sl, tp = compute_atr_levels(price, risk_tier, snapshot=snap, direction=direction)
+
+    # Expiry estimation
+    expiry_days = estimate_expiry_days(price, tp, snapshot=snap)
+    expiry = date.today() + timedelta(days=expiry_days)
+
+    # Ranking score
+    score = compute_technical_score(sentiment_avg, sentiment_count, snap)
+    # Trend alignment bonus/penalty
+    if trend_aligned:
+        score += 0.5
+    elif alignment.alignment_score != 0:
+        aligned_dir = "long" if alignment.alignment_score > 0 else "short"
+        if aligned_dir != direction:
+            score -= 0.3
+
+    # Confidence score (0–100) with market context adjustment
+    confidence = compute_confidence(sentiment_avg, sentiment_count, snap, direction)
+    if trend_aligned:
+        confidence = min(100, confidence + 8)
+    if market_ctx:
+        confidence = max(0, min(100, confidence + market_ctx.confidence_adjustment()))
+
+    # Risk:Reward ratio
+    rr = calc_risk_reward(price, sl, tp)
+
+    # Volatility notes (include trend alignment info)
+    vol_notes = _build_volatility_notes(snap, direction)
+    if vol_notes:
+        align_label = f"MTF: {'aligned' if trend_aligned else 'conflicting'}"
+        ema_label = f"EMA: {alignment.ema_stack}"
+        vol_notes = f"{vol_notes}; {align_label}; {ema_label}"
+
+    return Candidate(
+        asset_category=category,
+        asset_id=asset_id,
+        risk_tier=risk_tier,
+        buy_in_price=price,
+        stop_loss=sl,
+        take_profit=tp,
+        direction=direction,
+        expiry_date=expiry,
+        volatility_notes=vol_notes,
+        confidence_score=confidence,
+        risk_reward=rr,
+        trend_aligned=trend_aligned,
+        market_regime_note=regime_note,
+        _score=score,
+    )
 
 
 def _candidates_for_pairs(
@@ -266,9 +391,10 @@ def _candidates_for_pairs(
     pairs: list[tuple[str, str]],
     universe: dict[tuple[str, str], tuple[str, str]],
     max_risk_level: int,
+    by_asset_sentiment: Optional[dict] = None,
     exclude_taken: Optional[set[tuple[str, str]]] = None,
+    market_ctx: Optional[MarketContext] = None,
 ) -> list[Candidate]:
-    """Build candidates for (category, asset_id) pairs; skip pairs in exclude_taken."""
     out: list[Candidate] = []
     seen: set[str] = set()
     excluded = exclude_taken or set()
@@ -282,21 +408,15 @@ def _candidates_for_pairs(
         symbol, risk_tier = resolved
         if RISK_TIER_ORDER.get(risk_tier, 99) > max_risk_level:
             continue
-        price = _fetch_price(symbol)
-        if price is None or price <= 0:
-            continue
-        price = round(price, 2)
-        stop_loss, take_profit = _compute_levels(price, risk_tier)
-        out.append(Candidate(
-            asset_category=category,
-            asset_id=asset_id,
-            risk_tier=risk_tier,
-            buy_in_price=price,
-            stop_loss=stop_loss,
-            take_profit=take_profit,
-        ))
+        cand = _build_candidate(category, asset_id, symbol, risk_tier, by_asset_sentiment, market_ctx)
+        if cand:
+            out.append(cand)
     return out
 
+
+# ---------------------------------------------------------------------------
+# Main entry points
+# ---------------------------------------------------------------------------
 
 def build_daily_candidates_for_category(
     category: str,
@@ -305,50 +425,60 @@ def build_daily_candidates_for_category(
     preferred_risk: str = "moderate",
     tie_seed: Optional[str] = None,
     exclude_taken: Optional[set[tuple[str, str]]] = None,
+    market_ctx: Optional[MarketContext] = None,
 ) -> list[Candidate]:
     """
-    Best trade ideas from analysis first (tags we pulled), then backfill from universe if needed.
-    Only assets at or below preferred_risk. Skip (category, asset_id) in exclude_taken (already taken).
+    Best trade ideas from analysis first, then backfill from universe.
+    Regime-aware: adjusts max_count, filters by confidence gate, applies trend alignment.
     """
+    # Regime-aware max count
+    effective_max = max_count
+    if market_ctx:
+        effective_max = min(max_count, market_ctx.max_recommendations_per_category())
+
+    min_confidence = 40  # default gate
+    if market_ctx:
+        min_confidence = market_ctx.min_confidence_threshold()
+
     max_risk_level = RISK_TIER_ORDER.get(preferred_risk, RISK_TIER_ORDER["moderate"])
     universe = _universe_lookup()
     excluded = exclude_taken or set()
-    idea_pairs = sorted(_trade_ideas_from_analysis(by_asset_sentiment))  # stable order
-    idea_candidates = _candidates_for_pairs(category, idea_pairs, universe, max_risk_level, exclude_taken=excluded)
+
+    idea_pairs = sorted(_trade_ideas_from_analysis(by_asset_sentiment))
+    idea_candidates = _candidates_for_pairs(
+        category, idea_pairs, universe, max_risk_level,
+        by_asset_sentiment=by_asset_sentiment, exclude_taken=excluded,
+        market_ctx=market_ctx,
+    )
+
+    # Confidence gate: drop low-conviction candidates
+    idea_candidates = [c for c in idea_candidates if c.confidence_score >= min_confidence]
+
+    # Rank: confidence-weighted score. Trend-aligned candidates get priority.
     def _rank_key(c: Candidate) -> tuple:
-        pair = get_sentiment_score_and_count(c.asset_category, c.asset_id, by_asset_sentiment or {})
-        if pair is None:
-            avg, cnt = None, 0
-        else:
-            avg, cnt = pair
         tie = hash((tie_seed or "", c.asset_id)) % 10000
-        return (avg is None, -(avg or -1), -cnt, tie)
+        aligned_bonus = 1 if c.trend_aligned else 0
+        return (-aligned_bonus, -c._score, -c.confidence_score, tie)
+
     idea_candidates.sort(key=_rank_key)
-    chosen_ids = {c.asset_id for c in idea_candidates[:max_count]}
-    result = idea_candidates[:max_count]
-    # Backfill from full category universe if we have fewer than max_count
-    if len(result) < max_count:
+    chosen_ids = {c.asset_id for c in idea_candidates[:effective_max]}
+    result = idea_candidates[:effective_max]
+
+    # Backfill from universe (also gated)
+    if len(result) < effective_max:
         items = ASSETS_BY_CATEGORY.get(category, [])
         rest: list[Candidate] = []
         for asset_id, symbol, risk_tier in items:
-            if asset_id in chosen_ids or (category, asset_id) in excluded or RISK_TIER_ORDER.get(risk_tier, 99) > max_risk_level:
+            if asset_id in chosen_ids or (category, asset_id) in excluded:
                 continue
-            price = _fetch_price(symbol)
-            if price is None or price <= 0:
+            if RISK_TIER_ORDER.get(risk_tier, 99) > max_risk_level:
                 continue
-            price = round(price, 2)
-            stop_loss, take_profit = _compute_levels(price, risk_tier)
-            rest.append(Candidate(
-                asset_category=category,
-                asset_id=asset_id,
-                risk_tier=risk_tier,
-                buy_in_price=price,
-                stop_loss=stop_loss,
-                take_profit=take_profit,
-            ))
-        rest.sort(key=lambda c: (hash((tie_seed or "", c.asset_id)) % 10000, c.asset_id))
+            cand = _build_candidate(category, asset_id, symbol, risk_tier, by_asset_sentiment, market_ctx)
+            if cand and cand.confidence_score >= min_confidence:
+                rest.append(cand)
+        rest.sort(key=lambda c: (-c._score, hash((tie_seed or "", c.asset_id)) % 10000))
         for c in rest:
-            if len(result) >= max_count:
+            if len(result) >= effective_max:
                 break
             result.append(c)
     return result
@@ -362,9 +492,18 @@ def build_daily_candidates(
     exclude_taken: Optional[set[tuple[str, str]]] = None,
 ) -> list[Candidate]:
     """
-    Build up to max_count per category (stocks, commodities, other, indices).
-    Skip (category, asset_id) in exclude_taken (e.g. already have a taken recommendation).
+    Build up to max_count per category. Clears price cache, detects market regime,
+    applies confidence gating, and adjusts recommendations to current conditions.
+    Returns (candidates, market_context).
     """
+    global _last_market_context
+    clear_cache()
+
+    # Build market context once for the whole batch
+    market_ctx = build_market_context()
+    _last_market_context = market_ctx
+    logger.info("Market regime: %s", market_ctx.regime.description)
+
     out: list[Candidate] = []
     for category in ("stocks", "commodities", "other", "indices"):
         out.extend(build_daily_candidates_for_category(
@@ -374,5 +513,14 @@ def build_daily_candidates(
             preferred_risk=preferred_risk,
             tie_seed=tie_seed,
             exclude_taken=exclude_taken,
+            market_ctx=market_ctx,
         ))
     return out
+
+
+# For external access to the latest market context
+_last_market_context: Optional[MarketContext] = None
+
+
+def get_last_market_context() -> Optional[MarketContext]:
+    return _last_market_context

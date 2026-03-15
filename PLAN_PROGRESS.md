@@ -239,6 +239,55 @@ We **adopt Option B (emulate)** in the app: no dependency on running Dexter; one
 
 ---
 
+### Engine v2 — ATR-based logic upgrade
+
+| Item | Status | Notes |
+|------|--------|--------|
+| **ATR-based SL/TP** | Done | `app/services/technicals.py`: ATR multipliers by risk tier replace fixed %; falls back to fixed % when no price history |
+| **Long/short direction** | Done | `determine_direction()` combines sentiment (30%) + technicals (70%: RSI, MACD, BB, ADX, Stochastic, OBV); `direction` field on Recommendation |
+| **Expiry date estimation** | Done | Based on avg daily % move vs TP distance; clamped 1–30 days |
+| **Technical indicators (core)** | Done | Pure pandas/numpy: ATR(14), RSI(14), MACD(12/26/9), Bollinger(20,2σ) |
+| **Combined ranking score** | Done | `compute_technical_score()`: sentiment magnitude + mention count + RSI extremes + MACD + Bollinger + ADX strength + Stochastic + OBV |
+| **Time-decay sentiment** | Done | `aggregate.py`: exponential decay (24h half-life) so recent headlines weigh more |
+| **Price caching** | Done | `technicals.py`: OHLCV 90d cache per batch run; `clear_cache()` at batch start |
+| **ATR-based trailing SL/TP** | Done | Active-trade update uses fresh `TechnicalSnapshot`; SL only moves favorably |
+| **Volatility notes** | Done | Each rec stores ATR%, RSI, MACD, ADX, Stochastic, OBV, BB, S/R, trend bias |
+| **Direction in API & research** | Done | All responses include `direction`; LLM prompt references direction + technicals |
+
+### Engine v2.1 — Advanced indicators, S/R, confidence
+
+| Item | Status | Notes |
+|------|--------|--------|
+| **ADX (Average Directional Index)** | Done | Trend strength (weak/moderate/strong); +DI vs -DI for direction. ADX > 25 = trending, > 40 = strong |
+| **Stochastic Oscillator (%K/%D)** | Done | Overbought/oversold confirmation alongside RSI; 14-period K, 3-period D |
+| **OBV (On-Balance Volume)** | Done | Volume confirms price direction; 5-day slope for momentum |
+| **Support/Resistance detection** | Done | Swing high/low method (window=5); deduplication within 0.5%; sorted by proximity |
+| **Fibonacci retracement levels** | Done | 50-bar lookback; 0%, 23.6%, 38.2%, 50%, 61.8%, 78.6%, 100% levels |
+| **S/R-aware SL/TP placement** | Done | Long SL snaps below nearest support (with buffer); TP considers nearest resistance; vice versa for shorts |
+| **Confidence score (0–100%)** | Done | Weighted: ADX trend 15%, RSI 15%, MACD 15%, Sentiment 15%, Stochastic 10%, OBV 10%, Bollinger 10%, Mentions 10% |
+| **Risk:Reward ratio** | Done | Explicit R:R on each rec (e.g. 2.5 = reward is 2.5× the risk) |
+| **Confidence + R:R in model** | Done | `confidence_score` (Integer), `risk_reward` (Float) columns on Recommendation |
+| **Enhanced API responses** | Done | `_rec_to_item` includes confidence_score, risk_reward, direction, volatility_notes |
+
+### Engine v3 — Professional trading methodology
+
+| Item | Status | Notes |
+|------|--------|--------|
+| **Market regime detection** | Done | `app/services/market_context.py`: SPX SMA50/SMA200 trend + VIX level → risk_on / cautious / risk_off. Adjusts max recs, confidence threshold, direction bias |
+| **Multi-timeframe trend alignment** | Done | `check_trend_alignment()`: daily EMA 20/50 trend vs weekly SMA 200 slope → aligned / conflicting. Aligned trades get +8 confidence and ranking priority |
+| **EMA stack filter** | Done | EMA 20 > 50 > SMA 200 = bullish stack; reverse = bearish stack. Added to volatility_notes |
+| **Confidence gating** | Done | Regime-dependent threshold: risk_on=35, cautious=45, risk_off=55. Low-conviction candidates dropped before ranking |
+| **Regime-dependent rec count** | Done | risk_off caps at 3/category (vs 5). Fewer recommendations = fewer opportunities to get wrong |
+| **Cross-asset correlation** | Done | Gold/USD, SPX/VIX, Gold/SPX 5-day return divergence detection. Warnings reduce confidence by -5 |
+| **Direction override (risk_off)** | Done | In risk_off regime, stock/index longs are flipped to short to match market conditions |
+| **Trade lifecycle phases** | Done | open → partial_tp (at 1R profit) → trailing (SL to breakeven) → closed_sl/closed_tp |
+| **Breakeven stop logic** | Done | At 1R profit, SL moves to entry + 5% buffer. Eliminates downside on remaining position |
+| **Extreme price tracking** | Done | `highest_price` / `lowest_price` on ActiveTrade for trailing reference |
+| **Market context API** | Done | `GET /api/market/context`: regime, VIX, SPX trend, correlations, direction bias, thresholds |
+| **LLM prompt upgrade** | Done | Rationale now references market regime and multi-timeframe alignment |
+
+---
+
 ## 11. One-line summary
 
-Phase 1 and Phase 2 core are done; **feed-item cleanup** and **Practical Order** (richer research context, company→ticker resolve, daily briefing) are done. Next: CSV export (when needed), MCP/UI optional.
+Phase 1 and Phase 2 core are done; **Engine v3** (regime detection, multi-TF alignment, EMA stack, confidence gating, cross-asset correlations, professional trade lifecycle with breakeven stops) is done. Next: UI refresh, CSV export (when needed), MCP optional.

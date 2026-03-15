@@ -14,7 +14,9 @@ from app.services.research.providers import (
 
 SYSTEM_PROMPT = (
     "You are a concise trading research assistant. In 2–4 sentences only, "
-    "explain why this trade idea might make sense and the main risk. "
+    "explain why this trade idea (long or short) might make sense and the main risk. "
+    "Reference the direction, key technicals, sentiment, market regime, and multi-timeframe alignment. "
+    "Note if the trade is aligned with or against the broader market trend. "
     "No disclaimers; factual and neutral."
 )
 
@@ -26,13 +28,17 @@ def _format_user_content(context: dict[str, Any]) -> str:
     headlines = context.get("headlines") or []
     asset = context.get("asset_id", "this asset")
     fundamentals = context.get("fundamentals") or {}
-    parts = [f"Asset: {asset}."]
+    direction = context.get("direction", "long")
+    parts = [f"Asset: {asset}.", f"Direction: {direction}."]
     if sentiment is not None:
-        parts.append(f"Recent sentiment (avg): {sentiment:.3f}.")
+        parts.append(f"Recent sentiment (weighted avg): {sentiment:.3f}.")
     if price is not None:
         parts.append(f"Current/reference price: {price}.")
     if risk:
         parts.append(f"Risk tier: {risk}.")
+    vol_notes = context.get("volatility_notes")
+    if vol_notes:
+        parts.append(f"Technicals: {vol_notes}.")
     if fundamentals:
         fparts = []
         if fundamentals.get("sector"):

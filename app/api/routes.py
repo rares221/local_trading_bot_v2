@@ -158,6 +158,10 @@ def _rec_to_item(r: Recommendation) -> dict:
         "take_profit": r.take_profit,
         "expiry_date": r.expiry_date.isoformat() if r.expiry_date else None,
         "risk_tier": r.risk_tier,
+        "direction": getattr(r, "direction", "long") or "long",
+        "confidence_score": getattr(r, "confidence_score", None),
+        "risk_reward": getattr(r, "risk_reward", None),
+        "volatility_notes": getattr(r, "volatility_notes", None),
         "status": r.status,
         "rationale_text": getattr(r, "rationale_text", None),
     }
@@ -266,7 +270,10 @@ async def list_active_trades(db: AsyncSession = Depends(get_db)) -> dict[str, An
             "id": t.id,
             "recommendation_id": t.recommendation_id,
             "asset_id": rec.asset_id if rec else None,
+            "asset_category": rec.asset_category if rec else None,
             "buy_in_price": rec.buy_in_price if rec else None,
+            "direction": getattr(rec, "direction", "long") if rec else "long",
+            "risk_tier": rec.risk_tier if rec else None,
             "user_taken_at": t.user_taken_at.isoformat(),
             "original_sl": t.current_sl,
             "original_tp": t.current_tp,
@@ -275,12 +282,45 @@ async def list_active_trades(db: AsyncSession = Depends(get_db)) -> dict[str, An
             "suggested_at": t.suggested_at.isoformat() if t.suggested_at else None,
             "expiry": t.expiry.isoformat() if t.expiry else None,
             "last_updated": t.last_updated.isoformat(),
+            "trade_phase": getattr(t, "trade_phase", "open"),
+            "breakeven_hit": getattr(t, "breakeven_hit", False),
+            "highest_price": getattr(t, "highest_price", None),
+            "lowest_price": getattr(t, "lowest_price", None),
             "levels": [
                 {"sl": L.sl, "tp": L.tp, "created_at": L.created_at.isoformat(), "source": L.source}
                 for L in levels_sorted
             ],
         })
     return _with_disclaimer({"items": items})
+
+
+@router.get("/market/context")
+async def get_market_context() -> dict[str, Any]:
+    """Current market regime, cross-asset correlations, and trading conditions."""
+    from app.services.market_context import build_market_context
+    ctx = build_market_context()
+    return _with_disclaimer({
+        "regime": ctx.regime.regime,
+        "regime_description": ctx.regime.description,
+        "spx_trend": ctx.regime.spx_trend,
+        "vix_level": ctx.regime.vix_level,
+        "vix_regime": ctx.regime.vix_regime,
+        "direction_bias": ctx.regime_direction_bias,
+        "should_reduce_exposure": ctx.should_reduce_exposure,
+        "min_confidence_threshold": ctx.min_confidence_threshold(),
+        "max_recommendations_per_category": ctx.max_recommendations_per_category(),
+        "correlation_signals": [
+            {
+                "pair": cs.pair_name,
+                "a": cs.asset_a, "a_dir": cs.a_direction,
+                "b": cs.asset_b, "b_dir": cs.b_direction,
+                "diverging": cs.diverging,
+                "signal": cs.signal,
+            }
+            for cs in ctx.correlation_signals
+        ],
+        "has_divergence_warning": ctx.has_divergence_warning,
+    })
 
 
 @router.get("/health")
