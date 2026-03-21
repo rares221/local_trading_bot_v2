@@ -191,6 +191,7 @@ async def job_update_active_trades() -> None:
                 if getattr(trade, "outcome", None) is None:
                     trade.outcome = "expired"
                     trade.outcome_at = now
+                    trade.closing_price = current_price
                 phase = "closed_expired"
 
             # Track extreme prices for trailing
@@ -245,22 +246,26 @@ async def job_update_active_trades() -> None:
                     if getattr(trade, "outcome", None) is None:
                         trade.outcome = "hit_sl"
                         trade.outcome_at = now
+                        trade.closing_price = current_price
                 elif current_price >= rec.take_profit:
                     trade.trade_phase = "closed_tp"
                     if getattr(trade, "outcome", None) is None:
                         trade.outcome = "hit_tp"
                         trade.outcome_at = now
+                        trade.closing_price = current_price
             else:
                 if current_price >= (trade.suggested_sl or original_sl):
                     trade.trade_phase = "closed_sl"
                     if getattr(trade, "outcome", None) is None:
                         trade.outcome = "hit_sl"
                         trade.outcome_at = now
+                        trade.closing_price = current_price
                 elif current_price <= rec.take_profit:
                     trade.trade_phase = "closed_tp"
                     if getattr(trade, "outcome", None) is None:
                         trade.outcome = "hit_tp"
                         trade.outcome_at = now
+                        trade.closing_price = current_price
 
             # Signal flip detection: re-evaluate direction from current data (regime-aware)
             pair = get_sentiment_score_and_count(rec.asset_category, rec.asset_id, by_asset_sentiment)

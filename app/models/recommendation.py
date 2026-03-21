@@ -61,6 +61,7 @@ class ActiveTrade(Base):
     # Outcome logging: hit_tp | hit_sl | expired | manual (for calibration / Brier later)
     outcome: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
     outcome_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    closing_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)  # Price when outcome occurred
 
     recommendation: Mapped["Recommendation"] = relationship("Recommendation", back_populates="active_trade")
     levels: Mapped[list["ActiveTradeLevel"]] = relationship(

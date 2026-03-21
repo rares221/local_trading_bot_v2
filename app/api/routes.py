@@ -289,8 +289,14 @@ async def mark_skipped(
 
 
 @router.get("/active-trades")
-async def list_active_trades(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
-    """List active trades with original SL/TP (when taken), suggested SL/TP (latest run), and full levels history."""
+async def list_active_trades(
+    include_closed: bool = False,
+    db: AsyncSession = Depends(get_db)
+) -> dict[str, Any]:
+    """
+    List active trades with original SL/TP (when taken), suggested SL/TP (latest run), and full levels history.
+    By default, excludes closed trades (use include_closed=true to show all).
+    """
     from sqlalchemy.orm import selectinload
 
     q = (
@@ -298,6 +304,10 @@ async def list_active_trades(db: AsyncSession = Depends(get_db)) -> dict[str, An
         .options(selectinload(ActiveTrade.recommendation), selectinload(ActiveTrade.levels))
         .order_by(ActiveTrade.user_taken_at.desc())
     )
+    
+    # Filter out closed trades unless explicitly requested
+    if not include_closed:
+        q = q.where(~ActiveTrade.trade_phase.startswith("closed"))
     result = await db.execute(q)
     trades = result.scalars().unique().all()
     items = []
@@ -330,6 +340,7 @@ async def list_active_trades(db: AsyncSession = Depends(get_db)) -> dict[str, An
             "signal_flip_count": getattr(t, "signal_flip_count", 0) or 0,
             "outcome": getattr(t, "outcome", None),
             "outcome_at": (oat.isoformat() if (oat := getattr(t, "outcome_at", None)) else None),
+            "closing_price": getattr(t, "closing_price", None),
             "levels": [
                 {"sl": L.sl, "tp": L.tp, "created_at": L.created_at.isoformat(), "source": L.source}
                 for L in levels_sorted
@@ -343,13 +354,31 @@ async def close_trade_manually(
     trade_id: str,
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    """Mark an active trade as closed manually (outcome=manual). No further updates."""
-    trade = await db.get(ActiveTrade, trade_id)
+    """Mark an active trade as closed manually (outcome=manual). Captures current price at close time."""
+    from sqlalchemy.orm import selectinload
+    from app.services.technicals import get_cached_price
+    from app.services.recommendations.engine import get_yf_symbol
+    
+    q = select(ActiveTrade).options(selectinload(ActiveTrade.recommendation)).where(ActiveTrade.id == trade_id)
+    result = await db.execute(q)
+    trade = result.scalar_one_or_none()
+    
     if not trade:
         raise HTTPException(status_code=404, detail="Active trade not found")
     if getattr(trade, "outcome", None) is not None:
         return _with_disclaimer({"ok": True, "message": "Trade already has an outcome.", "trade_id": trade_id})
+    
     now = datetime.now(timezone.utc)
+    
+    # Capture closing price
+    rec = trade.recommendation
+    if rec:
+        symbol = get_yf_symbol(rec.asset_category, rec.asset_id)
+        if symbol:
+            closing_price = get_cached_price(symbol)
+            if closing_price:
+                trade.closing_price = closing_price
+    
     trade.trade_phase = "closed_manual"
     trade.outcome = "manual"
     trade.outcome_at = now

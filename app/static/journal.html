@@ -158,6 +158,7 @@
                 <th>Category</th>
                 <th>Direction</th>
                 <th class="num">Entry</th>
+                <th class="num">Close</th>
                 <th class="num">SL</th>
                 <th class="num">TP</th>
                 <th class="num">R:R</th>
@@ -231,7 +232,7 @@
       const tbody = document.getElementById('journal-tbody');
       tbody.innerHTML = '';
       if (filteredTrades.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="11" class="table-empty">No closed trades match the filters</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="12" class="table-empty">No closed trades match the filters</td></tr>';
         return;
       }
       filteredTrades.forEach(t => {
@@ -241,6 +242,7 @@
           '<td class="text-sm">' + esc(t.asset_category || '—') + '</td>' +
           '<td>' + dirBadge(t.direction) + '</td>' +
           '<td class="num">' + fmtNum(t.buy_in_price) + '</td>' +
+          '<td class="num">' + fmtNum(t.closing_price) + '</td>' +
           '<td class="num">' + fmtNum(t.original_sl) + '</td>' +
           '<td class="num">' + fmtNum(t.original_tp) + '</td>' +
           '<td class="num">' + fmtRR(t.risk_reward) + '</td>' +
@@ -277,7 +279,7 @@
 
     async function load() {
       try {
-        const r = await fetch('/api/active-trades');
+        const r = await fetch('/api/active-trades?include_closed=true');
         const data = await r.json();
         allTrades = (data.items || []).filter(t => t.outcome != null);
         filteredTrades = allTrades;

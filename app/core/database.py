@@ -128,6 +128,7 @@ def _migrate_engine_v2_v3(sync_conn) -> None:
         ("signal_flip_count", "INTEGER",     "0"),
         ("outcome",           "VARCHAR(24)", ""),
         ("outcome_at",        "TEXT",        ""),
+        ("closing_price",     "REAL",        ""),
     ])
 
 
