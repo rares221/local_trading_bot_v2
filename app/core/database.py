@@ -113,18 +113,21 @@ def _migrate_engine_v2_v3(sync_conn) -> None:
     """Add columns introduced in Engine v2.1 and v3."""
     # recommendations: direction, confidence_score, risk_reward, volatility_notes
     _ensure_columns(sync_conn, "recommendations", [
-        ("direction",        "VARCHAR(8)",  "'long'"),
-        ("confidence_score", "INTEGER",     ""),
-        ("risk_reward",      "REAL",        ""),
-        ("volatility_notes", "TEXT",        ""),
+        ("direction",          "VARCHAR(8)",  "'long'"),
+        ("confidence_score",   "INTEGER",     ""),
+        ("risk_reward",        "REAL",        ""),
+        ("volatility_notes",   "TEXT",        ""),
+        ("suggested_risk_pct", "REAL",        ""),
     ])
-    # active_trades: trade lifecycle (v3) + signal flip tracking
+    # active_trades: trade lifecycle (v3) + signal flip tracking + outcome logging
     _ensure_columns(sync_conn, "active_trades", [
         ("trade_phase",       "VARCHAR(24)", "'open'"),
         ("breakeven_hit",     "BOOLEAN",     "0"),
         ("highest_price",     "REAL",        ""),
         ("lowest_price",      "REAL",        ""),
         ("signal_flip_count", "INTEGER",     "0"),
+        ("outcome",           "VARCHAR(24)", ""),
+        ("outcome_at",        "TEXT",        ""),
     ])
 
 

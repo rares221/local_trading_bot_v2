@@ -77,3 +77,24 @@ def set_research_llm_config(provider: str | None = None, model: str | None = Non
         data["ollama_base_url"] = ollama_base_url.strip() or "http://localhost:11434"
     _save_prefs(data)
     return get_research_llm_config()
+
+
+def get_risk_budget_1r() -> float:
+    """Return risk_budget_1r (max total 1R exposure per batch) from preferences, default 1.0 (100%)."""
+    data = _load_prefs()
+    val = data.get("risk_budget_1r")
+    if val is None:
+        return 1.0
+    try:
+        return max(0.0, float(val))
+    except (ValueError, TypeError):
+        return 1.0
+
+
+def set_risk_budget_1r(value: float) -> float:
+    """Save risk_budget_1r (0.0-10.0). Returns saved value."""
+    val = max(0.0, min(10.0, float(value)))
+    data = _load_prefs()
+    data["risk_budget_1r"] = val
+    _save_prefs(data)
+    return val

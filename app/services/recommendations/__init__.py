@@ -4,6 +4,7 @@ from .engine import (
     compute_sl_tp_for_price,
     get_asset_price_and_risk,
     get_price_snapshot,
+    get_previous_price_snapshot,
 )
 
 __all__ = [
@@ -12,4 +13,5 @@ __all__ = [
     "compute_sl_tp_for_price",
     "get_asset_price_and_risk",
     "get_price_snapshot",
+    "get_previous_price_snapshot",
 ]

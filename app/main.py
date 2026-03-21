@@ -75,3 +75,9 @@ async def research_page() -> HTMLResponse:
 async def briefing_page() -> HTMLResponse:
     """Daily briefing: heartbeat-style checklist (SPX/VIX/oil, recs today)."""
     return HTMLResponse(content=_read_static("briefing.html"))
+
+
+@app.get("/journal", response_class=HTMLResponse)
+async def journal_page() -> HTMLResponse:
+    """Trade journal: review closed trades with outcomes, filter by confidence/regime/asset."""
+    return HTMLResponse(content=_read_static("journal.html"))

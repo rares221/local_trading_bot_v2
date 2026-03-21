@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Trade Journal — Trading Bot</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/common.css">
+  <style>
+    .filters {
+      display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center;
+      padding: var(--space-3); background: var(--secondary);
+      border: 1px solid var(--border); border-radius: var(--radius);
+      margin-bottom: var(--space-3);
+    }
+    .filter-group {
+      display: flex; flex-direction: column; gap: 4px;
+    }
+    .filter-label {
+      font-size: 11px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: .05em; color: var(--muted-foreground);
+    }
+    .stats-grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: var(--space-2); margin-bottom: var(--space-3);
+    }
+    .stat-card {
+      padding: var(--space-2); background: var(--card);
+      border: 1px solid var(--border); border-radius: var(--radius);
+      display: flex; flex-direction: column; gap: 4px;
+    }
+    .stat-label {
+      font-size: 11px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: .05em; color: var(--muted-foreground);
+    }
+    .stat-value {
+      font-size: 1.5rem; font-weight: 700; color: var(--foreground);
+      font-variant-numeric: tabular-nums;
+    }
+    .stat-hint {
+      font-size: 10px; color: var(--muted-foreground);
+    }
+  </style>
+</head>
+<body>
+  <nav class="nav">
+    <a href="/dashboard">Dashboard</a>
+    <a href="/recommendations">Recommendations</a>
+    <a href="/research">Research</a>
+    <a href="/analysis">Analysis</a>
+    <a href="/active-trades">Active trades</a>
+    <a href="/journal" class="active">Journal</a>
+    <a href="/briefing">Briefing</a>
+  </nav>
+
+  <main class="app app--wide">
+    <h1 class="page-title">Trade Journal</h1>
+    <p class="page-desc">Review closed trades with outcomes, filter by confidence/regime/asset, and analyze performance.</p>
+    
+    <details class="mb-3" style="padding:var(--space-2);background:var(--secondary);border:1px solid var(--border);border-radius:var(--radius);">
+      <summary style="cursor:pointer;font-weight:600;font-size:13px;color:var(--foreground);">📊 Understanding Outcomes & Metrics</summary>
+      <div class="text-sm text-muted" style="margin-top:var(--space-2);line-height:1.6;">
+        <p><strong>Outcomes:</strong></p>
+        <ul style="padding-left:20px;margin-top:4px;">
+          <li><strong style="color:#10b981;">Hit TP:</strong> Price reached take-profit target (win)</li>
+          <li><strong style="color:#ef4444;">Hit SL:</strong> Price hit stop-loss (loss)</li>
+          <li><strong style="color:#6b7280;">Expired:</strong> Trade reached expiry date without hitting TP/SL</li>
+          <li><strong style="color:#3b82f6;">Manual:</strong> User manually closed the trade</li>
+        </ul>
+        <p style="margin-top:8px;"><strong>Win Rate:</strong> Hit TP / (Hit TP + Hit SL). Excludes expired and manual closes. Target: 55%+ for profitable system with good risk-reward ratios.</p>
+        <p style="margin-top:8px;"><strong>Confidence Buckets:</strong> Use filters to see if higher confidence trades actually perform better. Well-calibrated system should show increasing win rates for higher buckets.</p>
+      </div>
+    </details>
+
+    <div class="filters">
+      <div class="filter-group">
+        <label class="filter-label" for="filter-outcome">Outcome</label>
+        <select id="filter-outcome" class="input" style="min-width:140px;">
+          <option value="">All</option>
+          <option value="hit_tp">Hit TP</option>
+          <option value="hit_sl">Hit SL</option>
+          <option value="expired">Expired</option>
+          <option value="manual">Manual</option>
+        </select>
+      </div>
+      <div class="filter-group">
+        <label class="filter-label" for="filter-bucket">Confidence Bucket</label>
+        <select id="filter-bucket" class="input" style="min-width:140px;">
+          <option value="">All</option>
+          <option value="low">Low</option>
+          <option value="medium">Medium</option>
+          <option value="high">High</option>
+          <option value="very_high">Very High</option>
+        </select>
+      </div>
+      <div class="filter-group">
+        <label class="filter-label" for="filter-category">Category</label>
+        <select id="filter-category" class="input" style="min-width:140px;">
+          <option value="">All</option>
+          <option value="stocks">Stocks</option>
+          <option value="commodities">Commodities</option>
+          <option value="indices">Indices</option>
+          <option value="other">Other</option>
+        </select>
+      </div>
+      <div class="filter-group">
+        <label class="filter-label" for="filter-direction">Direction</label>
+        <select id="filter-direction" class="input" style="min-width:120px;">
+          <option value="">All</option>
+          <option value="long">Long</option>
+          <option value="short">Short</option>
+        </select>
+      </div>
+      <div class="filter-group" style="margin-left:auto;">
+        <label class="filter-label">&nbsp;</label>
+        <button type="button" id="reset-filters" class="btn btn--secondary">Reset Filters</button>
+      </div>
+    </div>
+
+    <div class="stats-grid" id="stats-section" style="display:none;">
+      <div class="stat-card">
+        <span class="stat-label">Total Trades</span>
+        <span class="stat-value" id="stat-total">—</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">Win Rate</span>
+        <span class="stat-value" id="stat-winrate">—</span>
+        <span class="stat-hint">Hit TP / (Hit TP + Hit SL)</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">Hit TP</span>
+        <span class="stat-value" id="stat-tp">—</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">Hit SL</span>
+        <span class="stat-value" id="stat-sl">—</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">Expired</span>
+        <span class="stat-value" id="stat-expired">—</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">Manual</span>
+        <span class="stat-value" id="stat-manual">—</span>
+      </div>
+    </div>
+
+    <div id="loading" class="loading-overlay"><span class="spinner spinner--lg"></span> Loading journal&hellip;</div>
+    <div id="content" style="display:none;">
+      <section class="card">
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Asset</th>
+                <th>Category</th>
+                <th>Direction</th>
+                <th class="num">Entry</th>
+                <th class="num">SL</th>
+                <th class="num">TP</th>
+                <th class="num">R:R</th>
+                <th>Conf</th>
+                <th>Bucket</th>
+                <th>Outcome</th>
+                <th>Closed At</th>
+              </tr>
+            </thead>
+            <tbody id="journal-tbody"></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+
+    <p class="disclaimer">Educational and research purposes only. Not financial advice.</p>
+  </main>
+
+  <script>
+    function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+    function fmtNum(v) { return v != null ? Number(v).toFixed(2) : '—'; }
+    function fmtRR(v) { return v != null ? Number(v).toFixed(1) + ':1' : '—'; }
+    function fmtDateTime(iso) { return iso ? new Date(iso).toLocaleString() : '—'; }
+
+    function dirBadge(dir) {
+      return dir === 'short'
+        ? '<span class="badge badge--red">SHORT</span>'
+        : '<span class="badge badge--green">LONG</span>';
+    }
+    function confBadge(score) {
+      if (score == null) return '<span class="badge badge--gray">—</span>';
+      const cls = score >= 70 ? 'badge--green' : score >= 40 ? 'badge--yellow' : 'badge--red';
+      return '<span class="badge ' + cls + '">' + score + '%</span>';
+    }
+    function bucketBadge(bucket) {
+      if (!bucket) return '<span class="badge badge--gray">—</span>';
+      const cls = bucket === 'very_high' ? 'badge--green' : bucket === 'high' ? 'badge--blue' : bucket === 'medium' ? 'badge--yellow' : 'badge--gray';
+      const lbl = bucket.replace('_', ' ');
+      return '<span class="badge ' + cls + '" style="text-transform:capitalize;">' + lbl + '</span>';
+    }
+    function outcomeBadge(outcome) {
+      if (outcome === 'hit_tp') return '<span class="badge badge--green">Hit TP</span>';
+      if (outcome === 'hit_sl') return '<span class="badge badge--red">Hit SL</span>';
+      if (outcome === 'expired') return '<span class="badge badge--gray">Expired</span>';
+      if (outcome === 'manual') return '<span class="badge badge--blue">Manual</span>';
+      return '<span class="badge badge--gray">—</span>';
+    }
+
+    let allTrades = [];
+    let filteredTrades = [];
+
+    function applyFilters() {
+      const outcome = document.getElementById('filter-outcome').value;
+      const bucket = document.getElementById('filter-bucket').value;
+      const category = document.getElementById('filter-category').value;
+      const direction = document.getElementById('filter-direction').value;
+
+      filteredTrades = allTrades.filter(t => {
+        if (outcome && t.outcome !== outcome) return false;
+        if (bucket && t.confidence_bucket !== bucket) return false;
+        if (category && t.asset_category !== category) return false;
+        if (direction && t.direction !== direction) return false;
+        return true;
+      });
+
+      renderTable();
+      renderStats();
+    }
+
+    function renderTable() {
+      const tbody = document.getElementById('journal-tbody');
+      tbody.innerHTML = '';
+      if (filteredTrades.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="11" class="table-empty">No closed trades match the filters</td></tr>';
+        return;
+      }
+      filteredTrades.forEach(t => {
+        const tr = document.createElement('tr');
+        tr.innerHTML =
+          '<td class="font-semibold">' + esc(t.asset_id || '—') + '</td>' +
+          '<td class="text-sm">' + esc(t.asset_category || '—') + '</td>' +
+          '<td>' + dirBadge(t.direction) + '</td>' +
+          '<td class="num">' + fmtNum(t.buy_in_price) + '</td>' +
+          '<td class="num">' + fmtNum(t.original_sl) + '</td>' +
+          '<td class="num">' + fmtNum(t.original_tp) + '</td>' +
+          '<td class="num">' + fmtRR(t.risk_reward) + '</td>' +
+          '<td>' + confBadge(t.confidence_score) + '</td>' +
+          '<td>' + bucketBadge(t.confidence_bucket) + '</td>' +
+          '<td>' + outcomeBadge(t.outcome) + '</td>' +
+          '<td class="text-sm">' + fmtDateTime(t.outcome_at) + '</td>';
+        tbody.appendChild(tr);
+      });
+    }
+
+    function renderStats() {
+      const section = document.getElementById('stats-section');
+      if (filteredTrades.length === 0) {
+        section.style.display = 'none';
+        return;
+      }
+      section.style.display = 'grid';
+
+      const total = filteredTrades.length;
+      const tp = filteredTrades.filter(t => t.outcome === 'hit_tp').length;
+      const sl = filteredTrades.filter(t => t.outcome === 'hit_sl').length;
+      const expired = filteredTrades.filter(t => t.outcome === 'expired').length;
+      const manual = filteredTrades.filter(t => t.outcome === 'manual').length;
+      const winrate = (tp + sl > 0) ? (tp / (tp + sl) * 100).toFixed(1) + '%' : '—';
+
+      document.getElementById('stat-total').textContent = total;
+      document.getElementById('stat-winrate').textContent = winrate;
+      document.getElementById('stat-tp').textContent = tp;
+      document.getElementById('stat-sl').textContent = sl;
+      document.getElementById('stat-expired').textContent = expired;
+      document.getElementById('stat-manual').textContent = manual;
+    }
+
+    async function load() {
+      try {
+        const r = await fetch('/api/active-trades');
+        const data = await r.json();
+        allTrades = (data.items || []).filter(t => t.outcome != null);
+        filteredTrades = allTrades;
+        renderTable();
+        renderStats();
+      } catch (e) {
+        document.getElementById('content').innerHTML = '<div class="alert alert--error">Failed to load: ' + e.message + '</div>';
+      }
+      document.getElementById('loading').style.display = 'none';
+      document.getElementById('content').style.display = 'block';
+    }
+
+    document.getElementById('filter-outcome').addEventListener('change', applyFilters);
+    document.getElementById('filter-bucket').addEventListener('change', applyFilters);
+    document.getElementById('filter-category').addEventListener('change', applyFilters);
+    document.getElementById('filter-direction').addEventListener('change', applyFilters);
+    document.getElementById('reset-filters').addEventListener('click', () => {
+      document.getElementById('filter-outcome').value = '';
+      document.getElementById('filter-bucket').value = '';
+      document.getElementById('filter-category').value = '';
+      document.getElementById('filter-direction').value = '';
+      applyFilters();
+    });
+
+    load();
+  </script>
+</body>
+</html>

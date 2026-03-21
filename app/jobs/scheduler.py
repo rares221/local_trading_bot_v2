@@ -20,8 +20,10 @@ from app.services.sentiment import score_sentiment, tag_assets, detect_tickers
 from app.services.analysis import run_analysis, get_latest_analysis
 from app.services.recommendations import build_daily_candidates, get_asset_price_and_risk
 from app.services.recommendations.engine import get_yf_symbol, compute_sl_tp_for_price, get_sentiment_score_and_count
+from app.services.market_context import build_market_context
 from app.services.technicals import build_snapshot, compute_atr_levels, clear_cache, determine_direction
 from app.services.briefing import run_briefing
+from app.services.regime_monitor import detect_regime_transition, should_skip_recommendations_on_transition, get_trades_needing_review
 
 
 async def job_ingest_and_sentiment() -> None:
@@ -76,8 +78,10 @@ async def job_daily_batch() -> None:
             ).distinct()
             result_taken = await session.execute(q_taken)
             exclude_taken = {(row[0], row[1]) for row in result_taken.all()}
-            from app.core.preferences import get_preferred_risk
-            by_asset_sentiment = (analysis.payload or {}).get("by_asset_sentiment") or None
+            from app.core.preferences import get_preferred_risk, get_risk_budget_1r
+            payload = analysis.payload or {}
+            by_asset_sentiment = payload.get("by_asset_sentiment") or None
+            active_events = payload.get("active_events") or None
             print(f"[BATCH] Sentiment tags: {len(by_asset_sentiment) if by_asset_sentiment else 0}, excluded taken: {len(exclude_taken)}")
             candidates = build_daily_candidates(
                 max_count=10,
@@ -85,6 +89,8 @@ async def job_daily_batch() -> None:
                 preferred_risk=get_preferred_risk(),
                 tie_seed=batch_id,
                 exclude_taken=exclude_taken,
+                active_events=active_events,
+                risk_budget_1r=get_risk_budget_1r(),
             )
             print(f"[BATCH] Candidates built: {len(candidates)}")
             for c in candidates:
@@ -121,6 +127,7 @@ async def job_daily_batch() -> None:
                     risk_reward=c.risk_reward,
                     volatility_notes=c.volatility_notes,
                     status="pending",
+                    suggested_risk_pct=getattr(c, "suggested_risk_pct", None),
                 )
                 session.add(rec)
             await session.commit()
@@ -138,8 +145,17 @@ async def job_update_active_trades() -> None:
     2. At 1R profit (risk = |entry - SL|): suggest moving SL to breakeven -> PARTIAL_TP phase
     3. TRAILING phase: SL only moves favorably, trail behind structure
     4. If price hits TP or SL -> mark CLOSED
+    Regime-aware: detects regime transitions and flags trades needing review.
     """
     clear_cache()
+    market_ctx = build_market_context()
+    regime_id = market_ctx.regime.regime if market_ctx else None
+    
+    # Check for regime transition
+    transition = detect_regime_transition(regime_id) if regime_id else None
+    if transition:
+        print(f"[UPDATE_TRADES] {transition.description()}")
+
     async with async_session_factory() as session:
         # Load latest analysis for sentiment lookup
         analysis = await get_latest_analysis(session)
@@ -167,6 +183,15 @@ async def job_update_active_trades() -> None:
             original_sl = trade.current_sl
             risk = abs(entry_price - original_sl)
             phase = getattr(trade, "trade_phase", "open") or "open"
+
+            # Expired: if still open and past expiry_date, close and log outcome
+            today = date.today()
+            if phase == "open" and getattr(rec, "expiry_date", None) and rec.expiry_date < today:
+                trade.trade_phase = "closed_expired"
+                if getattr(trade, "outcome", None) is None:
+                    trade.outcome = "expired"
+                    trade.outcome_at = now
+                phase = "closed_expired"
 
             # Track extreme prices for trailing
             if direction == "long":
@@ -213,22 +238,34 @@ async def job_update_active_trades() -> None:
                 else:
                     sl = min(sl, trade.suggested_sl)
 
-            # Phase check: if current price has hit TP or SL, mark closed
+            # Phase check: if current price has hit TP or SL, mark closed and log outcome
             if direction == "long":
                 if current_price <= (trade.suggested_sl or original_sl):
                     trade.trade_phase = "closed_sl"
+                    if getattr(trade, "outcome", None) is None:
+                        trade.outcome = "hit_sl"
+                        trade.outcome_at = now
                 elif current_price >= rec.take_profit:
                     trade.trade_phase = "closed_tp"
+                    if getattr(trade, "outcome", None) is None:
+                        trade.outcome = "hit_tp"
+                        trade.outcome_at = now
             else:
                 if current_price >= (trade.suggested_sl or original_sl):
                     trade.trade_phase = "closed_sl"
+                    if getattr(trade, "outcome", None) is None:
+                        trade.outcome = "hit_sl"
+                        trade.outcome_at = now
                 elif current_price <= rec.take_profit:
                     trade.trade_phase = "closed_tp"
+                    if getattr(trade, "outcome", None) is None:
+                        trade.outcome = "hit_tp"
+                        trade.outcome_at = now
 
-            # Signal flip detection: re-evaluate direction from current data
+            # Signal flip detection: re-evaluate direction from current data (regime-aware)
             pair = get_sentiment_score_and_count(rec.asset_category, rec.asset_id, by_asset_sentiment)
             current_sentiment = pair[0] if pair else None
-            current_signal = determine_direction(current_sentiment, snap)
+            current_signal = determine_direction(current_sentiment, snap, regime=regime_id)
             flip_count = getattr(trade, "signal_flip_count", 0) or 0
             if current_signal != direction:
                 trade.signal_flip_count = min(flip_count + 1, 10)

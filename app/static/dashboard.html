@@ -8,6 +8,24 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/css/common.css">
+  <style>
+    .metric-box {
+      padding: var(--space-2); border: 1px solid var(--border);
+      border-radius: var(--radius); background: var(--secondary);
+      display: flex; flex-direction: column; gap: 4px; min-width: 140px;
+    }
+    .metric-label {
+      font-size: 11px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: .05em; color: var(--muted-foreground);
+    }
+    .metric-value {
+      font-size: 1.5rem; font-weight: 700; color: var(--foreground);
+      font-variant-numeric: tabular-nums;
+    }
+    .metric-hint {
+      font-size: 10px; color: var(--muted-foreground);
+    }
+  </style>
 </head>
 <body>
   <nav class="nav">
@@ -16,6 +34,7 @@
     <a href="/research">Research</a>
     <a href="/analysis">Analysis</a>
     <a href="/active-trades">Active trades</a>
+    <a href="/journal">Journal</a>
     <a href="/briefing">Briefing</a>
   </nav>
 
@@ -58,6 +77,36 @@
         </div>
       </section>
 
+      <!-- Regime status -->
+      <section class="card" id="regime-section">
+        <h2 class="section-title">Market Regime Status</h2>
+        <p class="meta mb-2">
+          <strong>What is a market regime?</strong> The bot analyzes SPX trend and VIX level to classify market conditions into three regimes:
+          <span style="display:inline-block;margin-left:8px;"><strong style="color:var(--green)">Risk-On</strong> (bullish, low volatility) — more aggressive recommendations;</span>
+          <span style="display:inline-block;margin-left:8px;"><strong style="color:var(--yellow)">Cautious</strong> (mixed signals) — balanced approach;</span>
+          <span style="display:inline-block;margin-left:8px;"><strong style="color:var(--red)">Risk-Off</strong> (bearish or high volatility) — defensive, may flip to shorts.</span>
+          Regime transitions trigger alerts for active trades that may need review.
+        </p>
+        <div id="regime-content">
+          <div class="flex gap-3 mb-2" style="flex-wrap:wrap;">
+            <div class="metric-box">
+              <span class="metric-label">Current Regime</span>
+              <span class="metric-value" id="regime-current">—</span>
+              <span class="metric-hint" id="regime-since">—</span>
+            </div>
+            <div class="metric-box">
+              <span class="metric-label">Flagged Trades</span>
+              <span class="metric-value" id="regime-flagged">—</span>
+              <span class="metric-hint">Trades needing review</span>
+            </div>
+          </div>
+          <div id="regime-alerts" style="display:none;" class="alert alert--warning mb-2">
+            <strong>⚠ Regime transition detected</strong>
+            <div id="regime-alert-list" class="mt-1 text-sm"></div>
+          </div>
+        </div>
+      </section>
+
       <!-- Risk preference -->
       <section class="card">
         <h2 class="section-title">Risk preference</h2>
@@ -69,6 +118,11 @@
             <option value="moderate">Moderate</option>
             <option value="aggressive">Aggressive</option>
           </select>
+        </div>
+        <div class="form-group mt-2">
+          <label for="risk-budget">Risk budget per batch (1R = 100%)</label>
+          <input type="number" id="risk-budget" class="input" style="max-width:200px;" min="0" max="10" step="0.1" placeholder="1.0">
+          <p class="meta mt-1">Max total 1R exposure (sum of suggested_risk_pct) for a batch. Default: 1.0 (100%).</p>
         </div>
       </section>
 
@@ -97,6 +151,104 @@
         <button type="button" class="btn btn--secondary" id="llm-save">
           <span class="btn-label">Save LLM settings</span>
         </button>
+      </section>
+
+      <!-- Calibration stats -->
+      <section class="card" style="grid-column: 1 / -1;" id="calibration-section">
+        <h2 class="section-title">Calibration & Performance</h2>
+        <p class="meta mb-2">Empirical hit rates per confidence bucket, Brier score, and Expected Calibration Error from closed trades.</p>
+        <div id="calibration-content" style="display:none;">
+          <div class="flex gap-3 mb-2" style="flex-wrap:wrap;">
+            <div class="metric-box">
+              <span class="metric-label">Brier Score</span>
+              <span class="metric-value" id="brier-val">—</span>
+              <span class="metric-hint">Lower is better (0 = perfect)</span>
+            </div>
+            <div class="metric-box">
+              <span class="metric-label">ECE</span>
+              <span class="metric-value" id="ece-val">—</span>
+              <span class="metric-hint">Lower is better (0 = perfect calibration)</span>
+            </div>
+            <div class="metric-box">
+              <span class="metric-label">Closed Trades</span>
+              <span class="metric-value" id="n-total-val">—</span>
+            </div>
+            <div class="metric-box">
+              <span class="metric-label">Platt Calibration</span>
+              <span class="metric-value" id="platt-status">—</span>
+              <span class="metric-hint" id="platt-hint">Not fitted</span>
+            </div>
+            <div class="metric-box">
+              <span class="metric-label">Adaptive Thresholds</span>
+              <span class="metric-value" id="adaptive-status">—</span>
+              <span class="metric-hint" id="adaptive-hint">Not enabled</span>
+            </div>
+          </div>
+          <div class="mb-2">
+            <button type="button" class="btn btn--secondary" id="fit-calibration-btn">
+              <span class="btn-label">Fit Platt Calibration</span>
+            </button>
+          </div>
+          <div class="meta text-sm">
+            <strong>Adaptive thresholds:</strong> Automatically adjusts min confidence based on empirical hit rates to target 55% win rate. Updates when calibration data changes (≥10 closed trades).
+          </div>
+          <table class="table" style="max-width:600px;">
+            <thead>
+              <tr>
+                <th>Bucket</th>
+                <th class="num">Count</th>
+                <th class="num">Hit TP</th>
+                <th class="num">Hit SL</th>
+                <th class="num">Expired</th>
+                <th class="num">Hit Rate</th>
+              </tr>
+            </thead>
+            <tbody id="bucket-tbody"></tbody>
+          </table>
+        </div>
+        <p class="meta" id="calibration-empty" style="display:none;">No closed trades yet. Calibration stats will appear once trades reach TP, SL, or expiry.</p>
+      </section>
+
+      <!-- Help & Glossary -->
+      <section class="card" style="grid-column: 1 / -1;">
+        <h2 class="section-title">Key Concepts</h2>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:var(--space-3);">
+          <div>
+            <h3 style="font-size:14px;font-weight:600;margin-bottom:8px;color:var(--foreground);">Market Regime</h3>
+            <p class="text-sm text-muted">
+              Classification of market conditions based on SPX trend and VIX level:
+            </p>
+            <ul class="text-sm text-muted" style="margin-top:8px;padding-left:20px;">
+              <li><strong style="color:var(--green);">Risk-On:</strong> Bullish trend + low volatility → more aggressive recommendations, higher confidence thresholds relaxed</li>
+              <li><strong style="color:var(--yellow);">Cautious:</strong> Mixed signals or moderate volatility → balanced approach, standard thresholds</li>
+              <li><strong style="color:var(--red);">Risk-Off:</strong> Bearish trend or high volatility → defensive stance, may flip longs to shorts, stricter confidence filters</li>
+            </ul>
+          </div>
+          <div>
+            <h3 style="font-size:14px;font-weight:600;margin-bottom:8px;color:var(--foreground);">Confidence Score & Buckets</h3>
+            <p class="text-sm text-muted">
+              Each recommendation gets a 0-100 confidence score based on sentiment + technical alignment. Scores are grouped into buckets:
+            </p>
+            <ul class="text-sm text-muted" style="margin-top:8px;padding-left:20px;">
+              <li><strong>Low (0-40):</strong> Weak signals, lower probability</li>
+              <li><strong>Medium (40-60):</strong> Moderate conviction</li>
+              <li><strong>High (60-80):</strong> Strong alignment</li>
+              <li><strong>Very High (80-100):</strong> Exceptional setup</li>
+            </ul>
+            <p class="text-sm text-muted" style="margin-top:8px;">
+              Calibration uses historical outcomes to ensure scores reflect actual win rates.
+            </p>
+          </div>
+          <div>
+            <h3 style="font-size:14px;font-weight:600;margin-bottom:8px;color:var(--foreground);">Position Sizing & Risk Budget</h3>
+            <p class="text-sm text-muted">
+              <strong>Suggested Risk %:</strong> Calculated using half-Kelly formula from confidence and risk-reward ratio. Higher confidence + better R:R = larger suggested position.
+            </p>
+            <p class="text-sm text-muted" style="margin-top:8px;">
+              <strong>Risk Budget:</strong> Caps total 1R exposure per batch (sum of all suggested_risk_pct). Default 1.0 = 100% of capital at risk across all trades. Prevents over-concentration.
+            </p>
+          </div>
+        </div>
       </section>
 
       <!-- Quick navigation -->
@@ -128,13 +280,27 @@
 
     /* Risk preference */
     const riskSel = document.getElementById('preferred-risk');
+    const riskBudgetInput = document.getElementById('risk-budget');
     fetch('/api/preferences').then(r=>r.json()).then(d => {
       if (d.preferred_risk) riskSel.value = d.preferred_risk;
+      if (d.risk_budget_1r != null) riskBudgetInput.value = d.risk_budget_1r;
     }).catch(()=>{});
     riskSel.addEventListener('change', () => {
       fetch('/api/preferences', {
         method:'PATCH', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({preferred_risk: riskSel.value})
+      }).then(r=>r.json()).then(d => showToast(d.message || 'Saved.', true))
+        .catch(e => showToast('Failed: ' + e.message, false));
+    });
+    riskBudgetInput.addEventListener('change', () => {
+      const val = parseFloat(riskBudgetInput.value);
+      if (isNaN(val) || val < 0) {
+        showToast('Risk budget must be >= 0', false);
+        return;
+      }
+      fetch('/api/preferences', {
+        method:'PATCH', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({risk_budget_1r: val})
       }).then(r=>r.json()).then(d => showToast(d.message || 'Saved.', true))
         .catch(e => showToast('Failed: ' + e.message, false));
     });
@@ -200,6 +366,122 @@
         label.textContent = origText;
         btn.disabled = false;
       });
+    });
+
+    /* Calibration stats */
+    async function loadCalibration() {
+      try {
+        const r = await fetch('/api/calibration');
+        if (!r.ok) throw new Error('Failed');
+        const data = await r.json();
+        const n = data.n_total || 0;
+        if (n === 0) {
+          document.getElementById('calibration-empty').style.display = 'block';
+          document.getElementById('calibration-content').style.display = 'none';
+          return;
+        }
+        document.getElementById('calibration-empty').style.display = 'none';
+        document.getElementById('calibration-content').style.display = 'block';
+        document.getElementById('brier-val').textContent = data.brier_score != null ? data.brier_score.toFixed(4) : '—';
+        document.getElementById('ece-val').textContent = data.ece != null ? data.ece.toFixed(4) : '—';
+        document.getElementById('n-total-val').textContent = n;
+        const platt = data.platt_calibration || {};
+        if (platt.fitted) {
+          document.getElementById('platt-status').textContent = 'Fitted';
+          document.getElementById('platt-hint').textContent = 'A=' + (platt.a != null ? platt.a.toFixed(4) : '?') + ', B=' + (platt.b != null ? platt.b.toFixed(4) : '?');
+        } else {
+          document.getElementById('platt-status').textContent = 'Not fitted';
+          document.getElementById('platt-hint').textContent = 'Click "Fit" to calibrate';
+        }
+        const adaptive = data.adaptive_thresholds || {};
+        if (adaptive.enabled) {
+          document.getElementById('adaptive-status').textContent = 'Enabled';
+          const hint = 'risk_on=' + (adaptive.risk_on || '?') + ', cautious=' + (adaptive.cautious || '?') + ', risk_off=' + (adaptive.risk_off || '?');
+          document.getElementById('adaptive-hint').textContent = hint;
+        } else {
+          document.getElementById('adaptive-status').textContent = 'Disabled';
+          document.getElementById('adaptive-hint').textContent = 'Need ≥10 closed trades';
+        }
+        const tbody = document.getElementById('bucket-tbody');
+        tbody.innerHTML = '';
+        const buckets = data.by_bucket || {};
+        ['low', 'medium', 'high', 'very_high'].forEach(b => {
+          const info = buckets[b] || {n:0, hit_tp:0, hit_sl:0, expired:0, hit_rate:null};
+          const tr = document.createElement('tr');
+          tr.innerHTML = '<td>' + b.replace('_', ' ') + '</td>'
+            + '<td class="num">' + info.n + '</td>'
+            + '<td class="num">' + info.hit_tp + '</td>'
+            + '<td class="num">' + info.hit_sl + '</td>'
+            + '<td class="num">' + info.expired + '</td>'
+            + '<td class="num">' + (info.hit_rate != null ? (info.hit_rate * 100).toFixed(1) + '%' : '—') + '</td>';
+          tbody.appendChild(tr);
+        });
+      } catch (e) {
+        document.getElementById('calibration-empty').textContent = 'Failed to load calibration.';
+        document.getElementById('calibration-empty').style.display = 'block';
+      }
+    }
+    loadCalibration();
+
+    /* Regime status */
+    async function loadRegimeStatus() {
+      try {
+        const r = await fetch('/api/regime/status');
+        if (!r.ok) throw new Error('Failed');
+        const data = await r.json();
+        const state = data.regime_state || {};
+        const flagged = data.flagged_trades || [];
+        
+        const regimeName = state.current_regime || 'unknown';
+        const regimeDisplay = regimeName.replace('_', ' ');
+        const regimeEl = document.getElementById('regime-current');
+        regimeEl.textContent = regimeDisplay;
+        // Color-code regime
+        regimeEl.style.color = regimeName === 'risk_on' ? 'var(--green)' : regimeName === 'risk_off' ? 'var(--red)' : 'var(--yellow)';
+        
+        if (state.regime_since) {
+          const since = new Date(state.regime_since);
+          const hours = ((new Date() - since) / 3600000).toFixed(1);
+          document.getElementById('regime-since').textContent = 'For ' + hours + ' hours';
+        } else {
+          document.getElementById('regime-since').textContent = 'Initializing...';
+        }
+        
+        document.getElementById('regime-flagged').textContent = flagged.length;
+        
+        if (flagged.length > 0) {
+          document.getElementById('regime-alerts').style.display = 'block';
+          const list = document.getElementById('regime-alert-list');
+          list.innerHTML = flagged.map(f => 
+            '<div><strong>' + (f.asset_id || 'Trade') + ':</strong> ' + (f.reason || 'Review needed') + '</div>'
+          ).join('');
+        } else {
+          document.getElementById('regime-alerts').style.display = 'none';
+        }
+      } catch (e) {
+        document.getElementById('regime-current').textContent = 'Error';
+        document.getElementById('regime-since').textContent = 'Failed to load';
+      }
+    }
+    loadRegimeStatus();
+    setInterval(loadRegimeStatus, 60000); // Refresh every minute
+
+    document.getElementById('fit-calibration-btn').addEventListener('click', async function() {
+      const btn = this;
+      const label = btn.querySelector('.btn-label');
+      const origText = label.textContent;
+      btn.disabled = true;
+      label.innerHTML = '<span class="spinner"></span> Fitting...';
+      try {
+        const r = await fetch('/api/calibration/fit', { method: 'POST' });
+        const d = await r.json();
+        showToast(d.message || (r.ok ? 'Calibration fitted.' : 'Failed'), r.ok);
+        if (r.ok) loadCalibration();
+      } catch (e) {
+        showToast('Request failed: ' + e.message, false);
+      }
+      label.textContent = origText;
+      btn.disabled = false;
     });
   </script>
 </body>

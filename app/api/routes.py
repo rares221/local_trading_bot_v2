@@ -146,8 +146,22 @@ async def run_briefing_now(db: AsyncSession = Depends(get_db)) -> dict[str, Any]
     })
 
 
+def _confidence_bucket(score: int | None) -> str:
+    """Map 0–100 confidence to bucket for UI (empirical hit rate can be added later)."""
+    if score is None:
+        return "low"
+    if score < 30:
+        return "low"
+    if score < 50:
+        return "medium"
+    if score < 70:
+        return "high"
+    return "very_high"
+
+
 def _rec_to_item(r: Recommendation) -> dict:
-    return {
+    score = getattr(r, "confidence_score", None)
+    item = {
         "id": r.id,
         "created_at": r.created_at.isoformat(),
         "batch_id": r.batch_id,
@@ -159,12 +173,15 @@ def _rec_to_item(r: Recommendation) -> dict:
         "expiry_date": r.expiry_date.isoformat() if r.expiry_date else None,
         "risk_tier": r.risk_tier,
         "direction": getattr(r, "direction", "long") or "long",
-        "confidence_score": getattr(r, "confidence_score", None),
+        "confidence_score": score,
+        "confidence_bucket": _confidence_bucket(score),
         "risk_reward": getattr(r, "risk_reward", None),
+        "suggested_risk_pct": getattr(r, "suggested_risk_pct", None),
         "volatility_notes": getattr(r, "volatility_notes", None),
         "status": r.status,
         "rationale_text": getattr(r, "rationale_text", None),
     }
+    return item
 
 
 @router.get("/recommendations")
@@ -178,7 +195,11 @@ async def list_recommendations(
     """
     List recommendations. Optional: batch_id, status, asset_category (stocks|commodities|other).
     Use group_by=category to get { stocks: [...], commodities: [...], other: [...], indices: [...] } for the recommendation page.
+    When group_by=category, defaults to today's batch and deduplicates by (category, asset_id).
     """
+    # Default to today's batch so the Recommendations page shows one set of ideas
+    if batch_id is None and group_by == "category":
+        batch_id = date.today().isoformat()
     q = select(Recommendation).order_by(Recommendation.created_at.desc())
     if batch_id:
         q = q.where(Recommendation.batch_id == batch_id)
@@ -189,14 +210,31 @@ async def list_recommendations(
     q = q.limit(100)
     result = await db.execute(q)
     recs = result.scalars().all()
-    items = [_rec_to_item(r) for r in recs]
+    # Deduplicate by (asset_category, asset_id) so each asset appears once (keep newest)
+    seen_key: set[tuple[str, str]] = set()
+    recs_deduped: list[Recommendation] = []
+    for r in recs:
+        key = (r.asset_category or "", r.asset_id or "")
+        if key in seen_key:
+            continue
+        seen_key.add(key)
+        recs_deduped.append(r)
+    items = [_rec_to_item(r) for r in recs_deduped]
     if group_by == "category":
         grouped: dict[str, list] = {"stocks": [], "commodities": [], "other": [], "indices": []}
-        for r in recs:
+        # Attach current price for each rec (from latest snapshot)
+        price_snapshot: dict[str, float] = {}
+        if recs_deduped:
+            from app.services.recommendations.engine import get_price_snapshot
+            asset_ids = list({r.asset_id for r in recs_deduped if r.asset_id})
+            price_snapshot = get_price_snapshot(extra_tags=set(asset_ids))
+        for r in recs_deduped:
             cat = r.asset_category if r.asset_category in grouped else "other"
             if cat not in grouped:
                 grouped[cat] = []
-            grouped[cat].append(_rec_to_item(r))
+            item = _rec_to_item(r)
+            item["current_price"] = price_snapshot.get(r.asset_id or "") if price_snapshot else None
+            grouped[cat].append(item)
         return _with_disclaimer({"by_category": grouped, "items": items})
     return _with_disclaimer({"items": items})
 
@@ -266,6 +304,7 @@ async def list_active_trades(db: AsyncSession = Depends(get_db)) -> dict[str, An
     for t in trades:
         rec = t.recommendation
         levels_sorted = sorted(t.levels or [], key=lambda L: L.created_at)
+        conf_score = getattr(rec, "confidence_score", None) if rec else None
         items.append({
             "id": t.id,
             "recommendation_id": t.recommendation_id,
@@ -274,6 +313,8 @@ async def list_active_trades(db: AsyncSession = Depends(get_db)) -> dict[str, An
             "buy_in_price": rec.buy_in_price if rec else None,
             "direction": getattr(rec, "direction", "long") if rec else "long",
             "risk_tier": rec.risk_tier if rec else None,
+            "confidence_score": conf_score,
+            "confidence_bucket": _confidence_bucket(conf_score) if conf_score is not None else None,
             "user_taken_at": t.user_taken_at.isoformat(),
             "original_sl": t.current_sl,
             "original_tp": t.current_tp,
@@ -287,12 +328,219 @@ async def list_active_trades(db: AsyncSession = Depends(get_db)) -> dict[str, An
             "highest_price": getattr(t, "highest_price", None),
             "lowest_price": getattr(t, "lowest_price", None),
             "signal_flip_count": getattr(t, "signal_flip_count", 0) or 0,
+            "outcome": getattr(t, "outcome", None),
+            "outcome_at": (oat.isoformat() if (oat := getattr(t, "outcome_at", None)) else None),
             "levels": [
                 {"sl": L.sl, "tp": L.tp, "created_at": L.created_at.isoformat(), "source": L.source}
                 for L in levels_sorted
             ],
         })
     return _with_disclaimer({"items": items})
+
+
+@router.post("/active-trades/{trade_id}/close-manually")
+async def close_trade_manually(
+    trade_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Mark an active trade as closed manually (outcome=manual). No further updates."""
+    trade = await db.get(ActiveTrade, trade_id)
+    if not trade:
+        raise HTTPException(status_code=404, detail="Active trade not found")
+    if getattr(trade, "outcome", None) is not None:
+        return _with_disclaimer({"ok": True, "message": "Trade already has an outcome.", "trade_id": trade_id})
+    now = datetime.now(timezone.utc)
+    trade.trade_phase = "closed_manual"
+    trade.outcome = "manual"
+    trade.outcome_at = now
+    trade.last_updated = now
+    await db.commit()
+    return _with_disclaimer({"ok": True, "message": "Trade marked closed manually.", "trade_id": trade_id})
+
+
+@router.get("/calibration")
+async def get_calibration(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    """
+    Empirical hit rate per confidence bucket, Brier score, and ECE from closed trades.
+    Uses ActiveTrade.outcome (hit_tp, hit_sl, expired, manual) and linked Recommendation.confidence_score.
+    """
+    from sqlalchemy.orm import selectinload
+
+    q = (
+        select(ActiveTrade)
+        .options(selectinload(ActiveTrade.recommendation))
+        .where(ActiveTrade.outcome.isnot(None))
+        .order_by(ActiveTrade.outcome_at.desc())
+    )
+    result = await db.execute(q)
+    trades = result.scalars().unique().all()
+
+    # By bucket: n, hit_tp, hit_sl, expired, manual, hit_rate (TP / (TP+SL+expired))
+    buckets: dict[str, dict[str, Any]] = {}
+    for name in ("low", "medium", "high", "very_high"):
+        buckets[name] = {"n": 0, "hit_tp": 0, "hit_sl": 0, "expired": 0, "manual": 0, "hit_rate": None}
+
+    # For Brier and ECE: (conf_prob, outcome 0/1), excluding manual
+    brier_pairs: list[tuple[float, float]] = []
+
+    for t in trades:
+        rec = t.recommendation
+        if not rec:
+            continue
+        bucket = _confidence_bucket(getattr(rec, "confidence_score", None))
+        if bucket not in buckets:
+            buckets[bucket] = {"n": 0, "hit_tp": 0, "hit_sl": 0, "expired": 0, "manual": 0, "hit_rate": None}
+        buckets[bucket]["n"] += 1
+        outcome = getattr(t, "outcome", None) or ""
+        if outcome == "hit_tp":
+            buckets[bucket]["hit_tp"] += 1
+            brier_pairs.append((getattr(rec, "confidence_score", 0) or 0) / 100.0, 1.0)
+        elif outcome == "hit_sl":
+            buckets[bucket]["hit_sl"] += 1
+            brier_pairs.append((getattr(rec, "confidence_score", 0) or 0) / 100.0, 0.0)
+        elif outcome == "expired":
+            buckets[bucket]["expired"] += 1
+            brier_pairs.append((getattr(rec, "confidence_score", 0) or 0) / 100.0, 0.0)
+        elif outcome == "manual":
+            buckets[bucket]["manual"] += 1
+
+    for name, data in buckets.items():
+        resolved = data["hit_tp"] + data["hit_sl"] + data["expired"]
+        if resolved > 0:
+            data["hit_rate"] = round(data["hit_tp"] / resolved, 4)
+
+    n_total = len(brier_pairs)
+    brier_score = round(sum((p - o) ** 2 for p, o in brier_pairs) / n_total, 4) if n_total else None
+    # ECE: group by confidence bucket, weight by count
+    conf_outcomes: list[tuple[float, float]] = brier_pairs
+    if conf_outcomes:
+        def bucket_of(p: float) -> str:
+            s = round(p * 100)
+            return _confidence_bucket(s)
+        by_b: dict[str, list[tuple[float, float]]] = {}
+        for p, o in conf_outcomes:
+            b = bucket_of(p)
+            by_b.setdefault(b, []).append((p, o))
+        ece = 0.0
+        for b, pairs in by_b.items():
+            n_k = len(pairs)
+            avg_conf = sum(x[0] for x in pairs) / n_k
+            avg_outcome = sum(x[1] for x in pairs) / n_k
+            ece += (n_k / n_total) * abs(avg_conf - avg_outcome)
+        ece = round(ece, 4)
+    else:
+        ece = None
+
+    # Platt calibration params (if fitted)
+    from app.services.calibration import get_platt_params
+    from app.services.adaptive_thresholds import update_adaptive_thresholds, get_adaptive_threshold, is_adaptive_enabled
+    
+    platt_a, platt_b = get_platt_params()
+    
+    # Update adaptive thresholds based on current calibration data
+    if n_total >= 10:
+        update_adaptive_thresholds(buckets)
+    
+    adaptive_thresholds = {
+        "enabled": is_adaptive_enabled(),
+        "risk_on": get_adaptive_threshold("risk_on"),
+        "cautious": get_adaptive_threshold("cautious"),
+        "risk_off": get_adaptive_threshold("risk_off"),
+    }
+
+    return _with_disclaimer({
+        "by_bucket": buckets,
+        "brier_score": brier_score,
+        "ece": ece,
+        "n_total": n_total,
+        "platt_calibration": {
+            "fitted": platt_a is not None,
+            "a": platt_a,
+            "b": platt_b,
+        },
+        "adaptive_thresholds": adaptive_thresholds,
+    })
+
+
+@router.post("/calibration/fit")
+async def fit_calibration(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    """
+    Fit Platt calibration from closed trades (hit_tp, hit_sl, expired).
+    Updates global calibration params; future recommendations can optionally use calibrated probability.
+    """
+    from sqlalchemy.orm import selectinload
+    from app.services.calibration import fit_platt_calibration, set_platt_params
+
+    q = (
+        select(ActiveTrade)
+        .options(selectinload(ActiveTrade.recommendation))
+        .where(ActiveTrade.outcome.isnot(None))
+    )
+    result = await db.execute(q)
+    trades = result.scalars().unique().all()
+
+    confidences: list[float] = []
+    outcomes: list[float] = []
+    for t in trades:
+        rec = t.recommendation
+        if not rec:
+            continue
+        outcome_val = getattr(t, "outcome", None)
+        if outcome_val == "manual":
+            continue
+        conf = getattr(rec, "confidence_score", None)
+        if conf is None:
+            continue
+        confidences.append(conf / 100.0)
+        outcomes.append(1.0 if outcome_val == "hit_tp" else 0.0)
+
+    if len(confidences) < 10:
+        return _with_disclaimer({"ok": False, "message": f"Not enough data (n={len(confidences)}). Need at least 10 closed trades."})
+
+    a, b = fit_platt_calibration(confidences, outcomes)
+    set_platt_params(a, b)
+    return _with_disclaimer({"ok": True, "message": f"Platt calibration fitted on {len(confidences)} trades.", "a": a, "b": b})
+
+
+@router.get("/regime/status")
+async def get_regime_status(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    """
+    Get current regime status and any trades flagged for review due to recent transitions.
+    """
+    from app.services.regime_monitor import get_current_regime_state, get_trades_needing_review
+    from sqlalchemy.orm import selectinload
+    
+    # Get current regime state
+    regime_state = get_current_regime_state()
+    
+    # Get active trades
+    q = (
+        select(ActiveTrade)
+        .options(selectinload(ActiveTrade.recommendation))
+        .where(ActiveTrade.trade_phase.in_(["open", "partial_tp", "trailing"]))
+    )
+    result = await db.execute(q)
+    trades = result.scalars().unique().all()
+    
+    # Convert to dicts for regime monitor
+    trades_data = []
+    for t in trades:
+        rec = t.recommendation
+        trades_data.append({
+            "id": t.id,
+            "asset_id": rec.asset_id if rec else None,
+            "trade_phase": getattr(t, "trade_phase", "open"),
+            "signal_flip_count": getattr(t, "signal_flip_count", 0),
+        })
+    
+    # Get trades needing review (will be empty if no recent transition)
+    flagged_trades = get_trades_needing_review(trades_data, None)  # transition is tracked internally
+    
+    return _with_disclaimer({
+        "regime_state": regime_state,
+        "flagged_trades": flagged_trades,
+        "flagged_count": len(flagged_trades),
+    })
 
 
 @router.get("/market/context")
@@ -333,9 +581,9 @@ async def health() -> dict[str, str]:
 
 @router.get("/preferences")
 async def get_preferences() -> dict[str, Any]:
-    """Return user preferences (risk stance + research LLM provider/model/URL)."""
-    from app.core.preferences import get_preferred_risk, get_research_llm_config
-    out = {"preferred_risk": get_preferred_risk()}
+    """Return user preferences (risk stance + research LLM provider/model/URL + risk budget)."""
+    from app.core.preferences import get_preferred_risk, get_research_llm_config, get_risk_budget_1r
+    out = {"preferred_risk": get_preferred_risk(), "risk_budget_1r": get_risk_budget_1r()}
     out.update(get_research_llm_config())
     return _with_disclaimer(out)
 
@@ -345,12 +593,13 @@ class PreferencesUpdate(BaseModel):
     research_llm_provider: str | None = None
     research_llm_model: str | None = None
     ollama_base_url: str | None = None
+    risk_budget_1r: float | None = None
 
 
 @router.patch("/preferences")
 async def update_preferences(body: PreferencesUpdate) -> dict[str, Any]:
-    """Update preferences. Risk: conservative|moderate|aggressive. LLM: provider (openai|anthropic|ollama|openrouter), model, ollama_base_url."""
-    from app.core.preferences import set_preferred_risk, set_research_llm_config, get_preferred_risk, get_research_llm_config
+    """Update preferences. Risk: conservative|moderate|aggressive. LLM: provider (openai|anthropic|ollama|openrouter), model, ollama_base_url. Risk budget: 0.0-10.0 (1.0 = 100%)."""
+    from app.core.preferences import set_preferred_risk, set_research_llm_config, get_preferred_risk, get_research_llm_config, set_risk_budget_1r, get_risk_budget_1r
     try:
         if body.preferred_risk is not None:
             set_preferred_risk(body.preferred_risk)
@@ -360,7 +609,9 @@ async def update_preferences(body: PreferencesUpdate) -> dict[str, Any]:
                 model=body.research_llm_model,
                 ollama_base_url=body.ollama_base_url,
             )
-        out = {"preferred_risk": get_preferred_risk()}
+        if body.risk_budget_1r is not None:
+            set_risk_budget_1r(body.risk_budget_1r)
+        out = {"preferred_risk": get_preferred_risk(), "risk_budget_1r": get_risk_budget_1r()}
         out.update(get_research_llm_config())
         out["message"] = "Preferences saved."
         return _with_disclaimer(out)

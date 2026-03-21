@@ -111,19 +111,46 @@ def calc_ema(series: pd.Series, span: int) -> pd.Series:
 class TrendAlignment:
     daily_trend: str = "neutral"   # "bullish" | "bearish" | "neutral"
     weekly_trend: str = "neutral"
+    h4_trend: str = "neutral"      # 4H trend when hourly data available
     ema_stack: str = "none"        # "bullish_stack" | "bearish_stack" | "mixed"
-    aligned: bool = False          # True if daily and weekly agree
-    alignment_score: float = 0.0   # -1 to +1
+    aligned: bool = False          # True if daily and weekly agree (and 4H when present)
+    alignment_score: float = 0.0   # -1 to +1 (3 timeframes when 4H available)
+
+
+def _check_4h_trend(symbol: str) -> str:
+    """4H trend from hourly data: EMA 20 on 4H bars. Returns bullish | bearish | neutral."""
+    df = fetch_ohlcv(symbol, period="30d", interval="1h")
+    if df is None or len(df) < 20:
+        return "neutral"
+    if "Close" not in df.columns:
+        return "neutral"
+    # Resample to 4H
+    df = df.copy()
+    df.index = pd.DatetimeIndex(df.index)
+    ohlc = df.resample("4h").agg({"Open": "first", "High": "max", "Low": "min", "Close": "last"}).dropna()
+    if len(ohlc) < 20:
+        return "neutral"
+    close = ohlc["Close"]
+    ema20 = calc_ema(close, 20)
+    current = float(close.iloc[-1])
+    e20 = float(ema20.iloc[-1])
+    if current > e20 * 1.002:
+        return "bullish"
+    if current < e20 * 0.998:
+        return "bearish"
+    return "neutral"
 
 
 def check_trend_alignment(symbol: str) -> TrendAlignment:
     """
-    Multi-timeframe trend check using EMA 20/50/200 on daily data.
-    Weekly trend approximated from 200-day SMA direction.
+    Multi-timeframe trend check: 4H (when available), daily EMA 20/50, weekly SMA 200.
+    Alignment score combines all three timeframes.
     """
     df = fetch_ohlcv(symbol, period="250d")
     if df is None or len(df) < 50:
         return TrendAlignment()
+
+    h4_trend = _check_4h_trend(symbol)
 
     close = df["Close"]
     current = float(close.iloc[-1])
@@ -162,26 +189,36 @@ def check_trend_alignment(symbol: str) -> TrendAlignment:
         elif e20 < e50 < sma200_val:
             ema_stack = "bearish_stack"
 
+    # Alignment: daily and weekly agree; when 4H is not neutral, all three must agree
     aligned = daily_trend == weekly_trend and daily_trend != "neutral"
+    if h4_trend != "neutral":
+        aligned = aligned and (daily_trend == h4_trend)
 
-    # Alignment score: -1 (strong bearish alignment) to +1 (strong bullish alignment)
+    # Alignment score: 4H + daily + weekly (3 timeframes when 4H present)
     score = 0.0
+    if h4_trend == "bullish":
+        score += 0.25
+    elif h4_trend == "bearish":
+        score -= 0.25
     if daily_trend == "bullish":
-        score += 0.4
+        score += 0.35
     elif daily_trend == "bearish":
-        score -= 0.4
+        score -= 0.35
     if weekly_trend == "bullish":
-        score += 0.4
+        score += 0.25
     elif weekly_trend == "bearish":
-        score -= 0.4
+        score -= 0.25
     if ema_stack == "bullish_stack":
-        score += 0.2
+        score += 0.15
     elif ema_stack == "bearish_stack":
-        score -= 0.2
+        score -= 0.15
+    # Clamp to [-1, 1]
+    score = max(-1.0, min(1.0, score))
 
     return TrendAlignment(
         daily_trend=daily_trend,
         weekly_trend=weekly_trend,
+        h4_trend=h4_trend,
         ema_stack=ema_stack,
         aligned=aligned,
         alignment_score=round(score, 2),
@@ -311,13 +348,23 @@ class MarketContext:
     def min_confidence_threshold(self) -> int:
         """
         Minimum confidence to include a recommendation.
-        risk_on: 35 (more permissive), cautious: 45, risk_off: 55 (stricter).
+        Uses adaptive thresholds if available (based on empirical hit rates),
+        otherwise falls back to static defaults:
+        risk_on: 30 (more permissive), cautious: 35, risk_off: 40 (stricter).
         """
+        from app.services.adaptive_thresholds import get_adaptive_threshold, is_adaptive_enabled
+        
+        if is_adaptive_enabled():
+            adaptive = get_adaptive_threshold(self.regime.regime)
+            if adaptive is not None:
+                return adaptive
+        
+        # Fallback to static thresholds
         if self.regime.regime == "risk_on":
-            return 35
+            return 30
         elif self.regime.regime == "risk_off":
-            return 55
-        return 45
+            return 40
+        return 35
 
     def max_recommendations_per_category(self) -> int:
         """risk_off: cap at 5 per category instead of 10."""

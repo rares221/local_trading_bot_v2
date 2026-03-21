@@ -21,30 +21,40 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _ohlcv_cache: dict[str, pd.DataFrame] = {}
+# Separate cache for intraday (key = symbol) to avoid overwriting daily
+_ohlcv_intraday_cache: dict[str, pd.DataFrame] = {}
 
 
 def clear_cache() -> None:
     _ohlcv_cache.clear()
+    _ohlcv_intraday_cache.clear()
 
 
-def fetch_ohlcv(symbol: str, period: str = "90d") -> Optional[pd.DataFrame]:
-    """Fetch OHLCV history from yfinance with caching. Returns None on failure."""
-    if symbol in _ohlcv_cache:
-        cached = _ohlcv_cache[symbol]
+def fetch_ohlcv(symbol: str, period: str = "90d", interval: Optional[str] = None) -> Optional[pd.DataFrame]:
+    """
+    Fetch OHLCV history from yfinance with caching. Returns None on failure.
+    interval: None or "1d" for daily; "1h" for hourly (uses 30d period, cached separately).
+    """
+    use_interval = interval or "1d"
+    cache_key = symbol if use_interval == "1d" else f"{symbol}_{use_interval}"
+    cache = _ohlcv_cache if use_interval == "1d" else _ohlcv_intraday_cache
+    if cache_key in cache:
+        cached = cache[cache_key]
         return cached if not cached.empty else None
     log = logging.getLogger("yfinance")
     old_level = log.level
     log.setLevel(logging.WARNING)
     try:
         ticker = yf.Ticker(symbol)
-        df = ticker.history(period=period)
+        kwargs = {"period": "30d" if use_interval == "1h" else period, "interval": use_interval}
+        df = ticker.history(**kwargs)
         if df is None or df.empty or "Close" not in df.columns:
-            _ohlcv_cache[symbol] = pd.DataFrame()
+            cache[cache_key] = pd.DataFrame()
             return None
-        _ohlcv_cache[symbol] = df
+        cache[cache_key] = df
         return df
     except Exception:
-        _ohlcv_cache[symbol] = pd.DataFrame()
+        cache[cache_key] = pd.DataFrame()
         return None
     finally:
         log.setLevel(old_level)
@@ -55,6 +65,38 @@ def get_cached_price(symbol: str) -> Optional[float]:
     if df is None or df.empty:
         return None
     return float(df["Close"].iloc[-1])
+
+
+def get_cached_previous_close(symbol: str) -> Optional[float]:
+    """Previous trading day close for divergence / trend. None if not enough data."""
+    df = fetch_ohlcv(symbol)
+    if df is None or len(df) < 2:
+        return None
+    return float(df["Close"].iloc[-2])
+
+
+def get_return_correlation(symbol_a: str, symbol_b: str, period_days: int = 60) -> Optional[float]:
+    """
+    Rolling correlation of daily returns between two symbols over the last period_days.
+    Used for correlation-aware filters to avoid over-concentration. Returns None if
+    insufficient data or symbols are the same.
+    """
+    if not symbol_a or not symbol_b or symbol_a == symbol_b:
+        return None
+    df_a = fetch_ohlcv(symbol_a, period="90d")
+    df_b = fetch_ohlcv(symbol_b, period="90d")
+    if df_a is None or df_b is None or len(df_a) < period_days or len(df_b) < period_days:
+        return None
+    ret_a = df_a["Close"].pct_change().dropna()
+    ret_b = df_b["Close"].pct_change().dropna()
+    common = ret_a.index.intersection(ret_b.index)
+    if len(common) < max(10, period_days // 2):
+        return None
+    try:
+        c = ret_a.loc[common].corr(ret_b.loc[common])
+        return float(c) if pd.notna(c) else None
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -286,6 +328,12 @@ class TechnicalSnapshot:
     avg_daily_move: Optional[float] = None
     trend_bias: str = "neutral"
     trend_strength: str = "weak"  # "weak" | "moderate" | "strong"
+    vwap: Optional[float] = None  # volume-weighted average price (e.g. 20d)
+    volatility_regime: str = "stable"  # "expanding" | "contracting" | "stable" (ATR slope)
+
+    @property
+    def price_above_vwap(self) -> bool:
+        return self.vwap is not None and self.price > self.vwap
 
     @property
     def is_overbought(self) -> bool:
@@ -368,6 +416,47 @@ class TechnicalSnapshot:
         return None
 
 
+def calc_atr_regime(df: pd.DataFrame, lookback: int = 10, period: int = 14) -> str:
+    """
+    ATR volatility regime: expanding (ATR rising), contracting (ATR falling), stable.
+    Used to adjust SL/TP width: contracting -> slightly wider to avoid whipsaw.
+    """
+    if df is None or len(df) < period + lookback + 1:
+        return "stable"
+    atr_now = calc_atr(df, period=period)
+    df_older = df.iloc[:-lookback]
+    if len(df_older) < period + 1:
+        return "stable"
+    atr_older = calc_atr(df_older, period=period)
+    if atr_now is None or atr_older is None or atr_older <= 0:
+        return "stable"
+    change = (atr_now - atr_older) / atr_older
+    if change > 0.05:
+        return "expanding"
+    if change < -0.05:
+        return "contracting"
+    return "stable"
+
+
+def calc_vwap(df: pd.DataFrame, period: int = 20) -> Optional[float]:
+    """
+    Volume-weighted average price over the last `period` bars.
+    VWAP = sum(typical_price * volume) / sum(volume), typical_price = (H+L+C)/3.
+    """
+    if df is None or df.empty or "Volume" not in df.columns:
+        return None
+    required = ["High", "Low", "Close", "Volume"]
+    if not all(c in df.columns for c in required):
+        return None
+    tail = df[required].tail(period)
+    vol = tail["Volume"]
+    if vol.sum() <= 0:
+        return None
+    typical = (tail["High"] + tail["Low"] + tail["Close"]) / 3.0
+    vwap = (typical * vol).sum() / vol.sum()
+    return float(vwap)
+
+
 def build_snapshot(symbol: str) -> Optional[TechnicalSnapshot]:
     """Build full technical snapshot for one symbol."""
     df = fetch_ohlcv(symbol)
@@ -389,6 +478,8 @@ def build_snapshot(symbol: str) -> Optional[TechnicalSnapshot]:
     supports, resistances = detect_support_resistance(df)
     fibonacci = calc_fibonacci_levels(df)
     avg_daily = calc_avg_daily_move(df)
+    vwap = calc_vwap(df, period=20)
+    vol_regime = calc_atr_regime(df, lookback=10)
 
     # Trend bias from all indicators
     bull, bear = 0, 0
@@ -467,6 +558,8 @@ def build_snapshot(symbol: str) -> Optional[TechnicalSnapshot]:
         avg_daily_move=_r(avg_daily, 6),
         trend_bias=trend_bias,
         trend_strength=trend_strength,
+        vwap=_r(vwap, 4) if vwap is not None else None,
+        volatility_regime=vol_regime,
     )
 
 
@@ -499,10 +592,14 @@ def compute_atr_levels(
     For shorts: SL snaps to nearest resistance above.
     TP considers Fibonacci levels and nearest S/R.
     """
-    # Base ATR levels
+    # Base ATR levels (volatility regime adjusts width: contracting -> wider, expanding -> tighter)
     if snapshot and snapshot.atr and snapshot.atr > 0:
         sl_mult, tp_mult = ATR_MULTIPLIERS.get(risk_tier, ATR_MULTIPLIERS["moderate"])
         atr = snapshot.atr
+        vol_mult = 1.1 if getattr(snapshot, "volatility_regime", "stable") == "contracting" else (
+            0.95 if getattr(snapshot, "volatility_regime", "stable") == "expanding" else 1.0
+        )
+        atr = atr * vol_mult
         if direction == "short":
             sl_base = price + atr * sl_mult
             tp_base = price - atr * tp_mult
@@ -576,70 +673,206 @@ def estimate_expiry_days(
 
 
 # ---------------------------------------------------------------------------
+# Regime-dependent weights (dynamic indicator weights)
+# ---------------------------------------------------------------------------
+
+def _regime_direction_weights(regime: Optional[str] = None) -> tuple[float, float]:
+    """
+    Sentiment vs technical weight for direction. risk_on: trust trend more (less sentiment).
+    risk_off: slightly more sentiment; cautious: balanced.
+    """
+    if regime == "risk_on":
+        return (0.20, 0.80)
+    if regime == "risk_off":
+        return (0.25, 0.75)
+    # cautious or None
+    return (0.30, 0.70)
+
+
+def _regime_tech_weights(regime: Optional[str] = None) -> tuple[float, float]:
+    """
+    Trend (MACD, ADX) vs mean-reversion (RSI, Stochastic, Bollinger) multiplier.
+    risk_on: favor trend; risk_off: favor mean reversion.
+    """
+    if regime == "risk_on":
+        return (1.2, 0.85)
+    if regime == "risk_off":
+        return (0.85, 1.2)
+    return (1.0, 1.0)
+
+
+def _regime_rsi_thresholds(regime: Optional[str] = None) -> tuple[float, float, float, float]:
+    """
+    (bull_bar, bear_bar, overbought, oversold). risk_off: stricter (60/40, 65/35).
+    risk_on: more lenient (52/48, 72/28). cautious: default (55/45, 70/30).
+    """
+    if regime == "risk_off":
+        return (60.0, 40.0, 65.0, 35.0)
+    if regime == "risk_on":
+        return (52.0, 48.0, 72.0, 28.0)
+    return (55.0, 45.0, 70.0, 30.0)
+
+
+def _regime_stoch_thresholds(regime: Optional[str] = None) -> tuple[float, float, float, float]:
+    """
+    (bull_bar, bear_bar, overbought, oversold). risk_off: stricter; risk_on: lenient.
+    """
+    if regime == "risk_off":
+        return (60.0, 40.0, 75.0, 25.0)
+    if regime == "risk_on":
+        return (52.0, 48.0, 85.0, 15.0)
+    return (55.0, 45.0, 80.0, 20.0)
+
+
+# ---------------------------------------------------------------------------
 # Direction determination (enhanced with ADX, Stochastic, OBV)
 # ---------------------------------------------------------------------------
 
 def determine_direction(
     sentiment_avg: Optional[float],
     snapshot: Optional[TechnicalSnapshot] = None,
+    regime: Optional[str] = None,
 ) -> str:
     """
-    Decide long vs short. Sentiment 30%, Technicals 70%.
+    Decide long vs short. Weights are regime-dependent: risk_on → more technical/trend;
+    risk_off → more mean-reversion weight; cautious → balanced (30% sentiment, 70% technical).
     Technicals: RSI, MACD, Bollinger, ADX (+DI vs -DI), Stochastic, OBV.
     """
+    sent_w, tech_w = _regime_direction_weights(regime)
     score = 0.0
 
     if sentiment_avg is not None:
-        score += sentiment_avg * 0.3
+        score += sentiment_avg * sent_w
 
     if snapshot:
-        tech_score = 0.0
-        signals = 0
+        trend_mult, mean_rev_mult = _regime_tech_weights(regime)
+        trend_sum = 0.0
+        trend_count = 0
+        mean_rev_sum = 0.0
+        mean_rev_count = 0
 
+        # Mean-reversion: RSI, Stochastic, Bollinger (regime-specific thresholds)
+        rsi_bull, rsi_bear, _, _ = _regime_rsi_thresholds(regime)
+        st_bull, st_bear, _, _ = _regime_stoch_thresholds(regime)
         if snapshot.rsi is not None:
-            signals += 1
-            if snapshot.rsi > 55:
-                tech_score += 1.0
-            elif snapshot.rsi < 45:
-                tech_score -= 1.0
+            mean_rev_count += 1
+            if snapshot.rsi > rsi_bull:
+                mean_rev_sum += 1.0
+            elif snapshot.rsi < rsi_bear:
+                mean_rev_sum -= 1.0
             else:
-                tech_score += (snapshot.rsi - 50) / 50
-
-        if snapshot.macd is not None:
-            signals += 1
-            tech_score += 1.0 if snapshot.macd[2] > 0 else -1.0
+                mid_rsi = (rsi_bull + rsi_bear) / 2
+                half = (rsi_bull - rsi_bear) / 2 or 1
+                mean_rev_sum += max(-1, min(1, (snapshot.rsi - mid_rsi) / half))
 
         if snapshot.bollinger is not None:
-            signals += 1
+            mean_rev_count += 1
             upper, mid, lower = snapshot.bollinger
             bw = upper - lower
             if bw > 0:
-                tech_score += max(-1, min(1, (snapshot.price - mid) / bw * 2))
-
-        if snapshot.adx is not None:
-            signals += 1
-            _, plus_di, minus_di = snapshot.adx
-            if plus_di > minus_di:
-                tech_score += 1.0
-            elif minus_di > plus_di:
-                tech_score -= 1.0
+                mean_rev_sum += max(-1, min(1, (snapshot.price - mid) / bw * 2))
 
         if snapshot.stochastic is not None:
-            signals += 1
+            mean_rev_count += 1
             k, _ = snapshot.stochastic
-            if k > 55:
-                tech_score += 0.8
-            elif k < 45:
-                tech_score -= 0.8
+            if k > st_bull:
+                mean_rev_sum += 0.8
+            elif k < st_bear:
+                mean_rev_sum -= 0.8
+
+        # Trend: MACD, ADX, OBV
+        if snapshot.macd is not None:
+            trend_count += 1
+            trend_sum += 1.0 if snapshot.macd[2] > 0 else -1.0
+
+        if snapshot.adx is not None:
+            trend_count += 1
+            _, plus_di, minus_di = snapshot.adx
+            if plus_di > minus_di:
+                trend_sum += 1.0
+            elif minus_di > plus_di:
+                trend_sum -= 1.0
 
         if snapshot.obv is not None:
-            signals += 1
-            tech_score += 0.6 if snapshot.obv[1] > 0 else -0.6
+            trend_count += 1
+            trend_sum += 0.6 if snapshot.obv[1] > 0 else -0.6
 
-        if signals > 0:
-            score += (tech_score / signals) * 0.7
+        # Weighted blend: trend and mean-rev each in [-1,1], combined by regime multipliers
+        trend_avg = (trend_sum / trend_count) if trend_count > 0 else None
+        mean_rev_avg = (mean_rev_sum / mean_rev_count) if mean_rev_count > 0 else None
+        if trend_avg is not None and mean_rev_avg is not None:
+            total_mult = trend_mult + mean_rev_mult
+            combined = (trend_avg * trend_mult + mean_rev_avg * mean_rev_mult) / total_mult
+        elif trend_avg is not None:
+            combined = trend_avg
+        elif mean_rev_avg is not None:
+            combined = mean_rev_avg
+        else:
+            combined = 0.0
+        score += max(-1.0, min(1.0, combined)) * tech_w
 
     return "long" if score >= 0 else "short"
+
+
+# ---------------------------------------------------------------------------
+# Indicator conflict rules (reduce confidence when key indicators disagree)
+# ---------------------------------------------------------------------------
+
+def get_indicator_conflict_penalty(
+    snapshot: Optional[TechnicalSnapshot],
+    direction: str,
+    regime: Optional[str] = None,
+) -> int:
+    """
+    Returns a penalty (0–25) when key indicators disagree with the chosen direction.
+    E.g. RSI overbought but direction long, or MACD bearish but direction long.
+    """
+    if not snapshot:
+        return 0
+    penalty = 0
+    is_long = direction == "long"
+    rsi_bull, rsi_bear, rsi_ob, rsi_os = _regime_rsi_thresholds(regime)
+    st_bull, st_bear, st_ob, st_os = _regime_stoch_thresholds(regime)
+
+    # RSI vs direction: overbought + long, or oversold + short
+    if snapshot.rsi is not None:
+        if is_long and snapshot.rsi >= rsi_ob:
+            penalty += 8
+        elif not is_long and snapshot.rsi <= rsi_os:
+            penalty += 8
+
+    # MACD vs direction: bearish + long, or bullish + short
+    if snapshot.macd is not None:
+        hist = snapshot.macd[2]
+        if is_long and hist < 0:
+            penalty += 7
+        elif not is_long and hist > 0:
+            penalty += 7
+
+    # ADX DI: -DI > +DI suggests bearish trend; +DI > -DI suggests bullish
+    if snapshot.adx is not None:
+        _, plus_di, minus_di = snapshot.adx
+        if is_long and minus_di > plus_di:
+            penalty += 5
+        elif not is_long and plus_di > minus_di:
+            penalty += 5
+
+    # Stochastic vs direction: overbought + long, or oversold + short
+    if snapshot.stochastic is not None:
+        k, _ = snapshot.stochastic
+        if is_long and k >= st_ob:
+            penalty += 5
+        elif not is_long and k <= st_os:
+            penalty += 5
+
+    # Bollinger: near upper band + long (stretched), near lower + short
+    if snapshot.bollinger is not None:
+        if is_long and snapshot.near_upper_band:
+            penalty += 5
+        elif not is_long and snapshot.near_lower_band:
+            penalty += 5
+
+    return min(25, penalty)
 
 
 # ---------------------------------------------------------------------------
@@ -651,19 +884,19 @@ def compute_confidence(
     sentiment_count: int,
     snapshot: Optional[TechnicalSnapshot] = None,
     direction: str = "long",
+    regime: Optional[str] = None,
 ) -> int:
     """
     Confidence score 0–100. Measures how many indicators agree with the direction
-    and how strongly. Higher = more conviction.
-
-    Weights: ADX trend strength 15%, RSI alignment 15%, MACD alignment 15%,
-    Stochastic alignment 10%, OBV confirmation 10%, Bollinger position 10%,
-    Sentiment alignment 15%, Mention volume 10%.
+    and how strongly. Higher = more conviction. Uses regime-specific RSI/Stochastic
+    thresholds when regime is provided.
     """
     points = 0.0
     max_points = 0.0
 
     is_long = direction == "long"
+    rsi_bull, rsi_bear, rsi_ob, rsi_os = _regime_rsi_thresholds(regime)
+    st_bull, st_bear, st_ob, st_os = _regime_stoch_thresholds(regime)
 
     # Sentiment alignment (15 pts)
     max_points += 15
@@ -692,22 +925,22 @@ def compute_confidence(
             elif adx_val >= 15:
                 points += 5
 
-    # RSI alignment (15 pts)
+    # RSI alignment (15 pts) — regime-specific thresholds
     max_points += 15
     if snapshot.rsi is not None:
         if is_long:
-            if 40 <= snapshot.rsi <= 70:
+            if rsi_bear <= snapshot.rsi <= rsi_ob:
                 points += 15  # healthy bull territory
-            elif snapshot.rsi < 30:
+            elif snapshot.rsi < rsi_os:
                 points += 12  # oversold bounce potential
-            elif snapshot.rsi < 40:
+            elif snapshot.rsi < rsi_bear:
                 points += 8
         else:
-            if 30 <= snapshot.rsi <= 60:
+            if rsi_os <= snapshot.rsi <= rsi_bull:
                 points += 15
-            elif snapshot.rsi > 70:
+            elif snapshot.rsi > rsi_ob:
                 points += 12
-            elif snapshot.rsi > 60:
+            elif snapshot.rsi > rsi_bull:
                 points += 8
 
     # MACD alignment (15 pts)
@@ -719,19 +952,19 @@ def compute_confidence(
         elif abs(hist) / max(snapshot.price, 1) < 0.001:
             points += 5  # near crossover
 
-    # Stochastic alignment (10 pts)
+    # Stochastic alignment (10 pts) — regime-specific thresholds
     max_points += 10
     if snapshot.stochastic is not None:
         k, d = snapshot.stochastic
         if is_long:
-            if 20 <= k <= 80 and k > d:
+            if st_os <= k <= st_ob and k > d:
                 points += 10
-            elif k < 20:
+            elif k < st_os:
                 points += 7  # oversold, bullish potential
         else:
-            if 20 <= k <= 80 and k < d:
+            if st_os <= k <= st_ob and k < d:
                 points += 10
-            elif k > 80:
+            elif k > st_ob:
                 points += 7
 
     # OBV confirmation (10 pts)
@@ -754,6 +987,16 @@ def compute_confidence(
                 points += 10
             elif snapshot.near_upper_band:
                 points += 8
+
+    # VWAP confirmation (5 pts) — price above VWAP supports long, below supports short
+    max_points += 5
+    if snapshot.vwap is not None and snapshot.price != snapshot.vwap:
+        if (is_long and snapshot.price_above_vwap) or (not is_long and not snapshot.price_above_vwap):
+            points += 5
+
+    # Indicator conflict penalty: reduce score when key indicators disagree with direction
+    conflict_penalty = get_indicator_conflict_penalty(snapshot, direction, regime)
+    points = max(0.0, points - conflict_penalty)
 
     return max(0, min(100, int(points / max_points * 100))) if max_points > 0 else 0
 

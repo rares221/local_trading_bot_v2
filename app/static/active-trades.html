@@ -78,6 +78,7 @@
     <a href="/research">Research</a>
     <a href="/analysis">Analysis</a>
     <a href="/active-trades" class="active">Active trades</a>
+    <a href="/journal">Journal</a>
     <a href="/briefing">Briefing</a>
   </nav>
 
@@ -92,6 +93,15 @@
       <span class="text-sm text-muted">Recalculates SL/TP from latest prices, evaluates signal alignment, then reloads.</span>
     </div>
 
+    <div id="regime-alert" style="display:none;" class="alert alert--warning mb-3">
+      <strong>⚠ Market regime transition detected</strong>
+      <p class="text-sm mt-1 mb-2" style="opacity:0.9;">
+        <em>Market regime</em> classifies current conditions based on SPX trend and VIX: <strong>Risk-On</strong> (bullish, low vol), <strong>Cautious</strong> (mixed), or <strong>Risk-Off</strong> (bearish/high vol). 
+        Major transitions (to/from Risk-Off) may warrant reviewing open positions.
+      </p>
+      <div id="regime-alert-content" class="text-sm"></div>
+    </div>
+
     <div id="loading" class="loading-overlay"><span class="spinner spinner--lg"></span> Loading trades&hellip;</div>
     <div id="content" style="display:none;"></div>
     <p class="disclaimer">Educational and research purposes only. Not financial advice.</p>
@@ -104,8 +114,8 @@
     function fmtTime(iso) { return iso ? new Date(iso).toLocaleString() : '—'; }
 
     function phaseBadge(phase) {
-      const cls = { open:'badge--blue', partial_tp:'badge--yellow', trailing:'badge--green', closed_sl:'badge--red', closed_tp:'badge--green' };
-      const lbl = { open:'Open', partial_tp:'Partial TP', trailing:'Trailing', closed_sl:'Closed (SL)', closed_tp:'Closed (TP)' };
+      const cls = { open:'badge--blue', partial_tp:'badge--yellow', trailing:'badge--green', closed_sl:'badge--red', closed_tp:'badge--green', closed_manual:'badge--gray', closed_expired:'badge--gray' };
+      const lbl = { open:'Open', partial_tp:'Partial TP', trailing:'Trailing', closed_sl:'Closed (SL)', closed_tp:'Closed (TP)', closed_manual:'Closed (manual)', closed_expired:'Closed (expired)' };
       return '<span class="badge ' + (cls[phase]||'badge--gray') + '">' + (lbl[phase]||phase) + '</span>';
     }
     function dirBadge(dir) {
@@ -117,6 +127,17 @@
       if (!count || count < 2) return '<span class="badge badge--green" title="Current technicals and sentiment agree with the trade direction">Aligned</span>';
       if (count >= 3) return '<span class="badge badge--red" title="Signal has disagreed for ' + count + ' consecutive checks — consider reviewing this position">⚠ Flipped (' + count + ')</span>';
       return '<span class="badge badge--yellow" title="Signal weakened for ' + count + ' consecutive checks">Weakening</span>';
+    }
+    function confBadge(score) {
+      if (score == null) return '<span class="badge badge--gray">—</span>';
+      const cls = score >= 70 ? 'badge--green' : score >= 40 ? 'badge--yellow' : 'badge--red';
+      return '<span class="badge ' + cls + '">' + score + '%</span>';
+    }
+    function bucketBadge(bucket) {
+      if (!bucket) return '';
+      const cls = bucket === 'very_high' ? 'badge--green' : bucket === 'high' ? 'badge--blue' : bucket === 'medium' ? 'badge--yellow' : 'badge--gray';
+      const lbl = bucket.replace('_', ' ');
+      return '<span class="badge ' + cls + '" style="font-size:10px;text-transform:capitalize;">' + lbl + '</span>';
     }
 
     function buildCard(t, idx) {
@@ -131,6 +152,7 @@
       h += '  <span class="trade-asset">' + esc(t.asset_id || '') + '</span>';
       if (t.asset_category) h += ' <span class="trade-category">' + esc(t.asset_category) + '</span>';
       h += '  <span class="badge-group"><span class="badge-label">Direction</span>' + dirBadge(t.direction) + '</span>';
+      h += '  <span class="badge-group"><span class="badge-label">Confidence</span>' + confBadge(t.confidence_score) + bucketBadge(t.confidence_bucket) + '</span>';
       h += '  <span class="badge-group"><span class="badge-label">Signal</span>' + signalBadge(t.signal_flip_count) + '</span>';
       h += '  <span class="badge-group"><span class="badge-label">Phase</span>' + phaseBadge(t.trade_phase) + be + '</span>';
       h += '</div>';
@@ -145,12 +167,17 @@
       h += metricCell('Expiry Date', fmtDate(t.expiry), !t.expiry);
       h += '</div>';
 
-      // Footer with history toggle
+      // Footer with history toggle and close-manually (only when no outcome yet)
+      h += '<div class="trade-footer">';
+      if (!t.outcome) {
+        h += '  <button type="button" class="btn btn-sm btn--secondary btn-close-manual" data-trade-id="' + esc(t.id) + '">Close manually</button>';
+      }
       if (levels.length > 0) {
-        h += '<div class="trade-footer">';
         h += '  <button class="btn btn-sm btn--secondary" data-idx="' + idx + '">Show level history (' + levels.length + ' updates)</button>';
         h += '  <span class="text-sm text-muted">SL/TP changes over time</span>';
-        h += '</div>';
+      }
+      h += '</div>';
+      if (levels.length > 0) {
         h += '<div class="history-panel" id="hist-' + idx + '" style="display:none;">';
         h += '  <table><thead><tr><th>Time</th><th>Source</th><th class="num">Stop Loss</th><th class="num">Take Profit</th></tr></thead><tbody>';
         levels.forEach(L => {
@@ -166,9 +193,41 @@
       return h;
     }
 
+    async function closeManually(tradeId) {
+      try {
+        const r = await fetch('/api/active-trades/' + encodeURIComponent(tradeId) + '/close-manually', { method: 'POST' });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.detail || 'Failed');
+        load(false);
+      } catch (e) {
+        alert('Failed to close: ' + (e.message || e));
+      }
+    }
+
     function metricCell(label, value, muted) {
       return '<div class="metric"><span class="metric-label">' + label + '</span>'
         + '<span class="metric-value' + (muted ? ' metric-value--muted' : '') + '">' + value + '</span></div>';
+    }
+
+    async function loadRegimeAlerts() {
+      try {
+        const r = await fetch('/api/regime/status');
+        if (!r.ok) return;
+        const data = await r.json();
+        const flagged = data.flagged_trades || [];
+        
+        if (flagged.length > 0) {
+          const content = flagged.map(f => 
+            '<div><strong>' + (f.asset_id || 'Trade') + ':</strong> ' + (f.reason || 'Review needed') + '</div>'
+          ).join('');
+          document.getElementById('regime-alert-content').innerHTML = content;
+          document.getElementById('regime-alert').style.display = 'block';
+        } else {
+          document.getElementById('regime-alert').style.display = 'none';
+        }
+      } catch (e) {
+        // Silently fail
+      }
     }
 
     async function load(updateFirst) {
@@ -185,6 +244,9 @@
         if (!r.ok) { content.innerHTML = '<div class="alert alert--error">Failed to load active trades.</div>'; return; }
         const data = await r.json();
         const items = data.items || [];
+        
+        // Load regime alerts
+        await loadRegimeAlerts();
         if (items.length === 0) {
           content.innerHTML = '<div class="empty-state"><p>No active trades yet.</p><p class="text-sm text-muted">Mark recommendations as "Took it" on the <a href="/recommendations">Recommendations</a> page.</p></div>';
           content.style.display = 'block'; loading.style.display = 'none';
@@ -205,6 +267,9 @@
             const count = (items[this.dataset.idx].levels||[]).length;
             this.textContent = show ? 'Hide level history' : 'Show level history (' + count + ' updates)';
           });
+        });
+        content.querySelectorAll('.btn-close-manual').forEach(b => {
+          b.addEventListener('click', function() { closeManually(this.dataset.tradeId); });
         });
       } catch (e) {
         content.innerHTML = '<div class="alert alert--error">Failed: ' + esc(e.message) + '</div>';

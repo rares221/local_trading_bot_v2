@@ -16,12 +16,22 @@
     <a href="/research">Research</a>
     <a href="/analysis">Analysis</a>
     <a href="/active-trades">Active trades</a>
+    <a href="/journal">Journal</a>
     <a href="/briefing">Briefing</a>
   </nav>
 
   <main class="app app--wide">
     <h1 class="page-title">Recommendations</h1>
     <p class="page-desc">Today's trade ideas grouped by category. Mark each as "Took it" or "Skip". Run the pipeline from the <a href="/dashboard">Dashboard</a> first.</p>
+    
+    <details class="mb-3" style="padding:var(--space-2);background:var(--secondary);border:1px solid var(--border);border-radius:var(--radius);">
+      <summary style="cursor:pointer;font-weight:600;font-size:13px;color:var(--foreground);">💡 Understanding Recommendations (click to expand)</summary>
+      <div class="text-sm text-muted" style="margin-top:var(--space-2);line-height:1.6;">
+        <p><strong>Confidence Score:</strong> 0-100 rating based on sentiment + technical alignment. Higher = stronger conviction. Grouped into buckets: Low (0-40), Medium (40-60), High (60-80), Very High (80-100).</p>
+        <p style="margin-top:8px;"><strong>Size:</strong> Suggested position size (% of capital at risk) calculated from confidence and risk-reward using half-Kelly formula.</p>
+        <p style="margin-top:8px;"><strong>Market Regime:</strong> Current conditions affect which assets appear and their direction. <span style="color:#10b981;">Risk-On</span> = more aggressive longs; <span style="color:#ef4444;">Risk-Off</span> = defensive, may flip to shorts.</p>
+      </div>
+    </details>
 
     <div id="loading" class="loading-overlay"><span class="spinner spinner--lg"></span> Loading recommendations&hellip;</div>
     <div id="content" style="display:none;">
@@ -112,22 +122,25 @@
       return exp.toLocaleDateString() + ' <span class="text-sm text-muted">(' + label + ')</span>';
     }
 
-    const THEAD = '<tr><th>Asset</th><th>Dir</th><th class="num">Entry</th><th class="num">SL</th><th class="num">TP</th><th class="num">R:R</th><th>Conf</th><th>Risk</th><th>Expiry</th><th>Status</th><th>Actions</th></tr>';
+    const THEAD = '<tr><th>Asset</th><th>Dir</th><th class="num">Entry</th><th class="num">Current</th><th class="num">SL</th><th class="num">TP</th><th class="num">R:R</th><th>Conf</th><th>Risk</th><th class="num">Size</th><th>Expiry</th><th>Status</th><th>Actions</th></tr>';
 
     function buildRow(rec) {
       const tr = document.createElement('tr');
       const actions = rec.status === 'pending'
         ? '<button class="btn btn-sm btn--primary" data-do="took-it">Took it</button><button class="btn btn-sm btn--secondary" data-do="skipped">Skip</button><button class="btn btn-sm btn--secondary" data-do="research">Research</button>'
         : '<button class="btn btn-sm btn--secondary" data-do="research">Research</button>';
+      const sizePct = rec.suggested_risk_pct != null ? rec.suggested_risk_pct.toFixed(2) + '%' : '—';
       tr.innerHTML =
         '<td class="font-semibold">' + rec.asset_id + '</td>' +
         '<td>' + dirBadge(rec.direction) + '</td>' +
         '<td class="num">' + fmtNum(rec.buy_in_price) + '</td>' +
+        '<td class="num">' + fmtNum(rec.current_price) + '</td>' +
         '<td class="num">' + fmtNum(rec.stop_loss) + '</td>' +
         '<td class="num">' + fmtNum(rec.take_profit) + '</td>' +
         '<td class="num">' + fmtRR(rec.risk_reward) + '</td>' +
         '<td>' + confBadge(rec.confidence_score) + '</td>' +
         '<td><span class="badge badge--gray">' + (rec.risk_tier || '—') + '</span></td>' +
+        '<td class="num text-sm">' + sizePct + '</td>' +
         '<td class="text-sm">' + fmtExpiry(rec.expiry_date) + '</td>' +
         '<td>' + statusBadge(rec.status) + '</td>' +
         '<td><div style="display:inline-flex;gap:4px;white-space:nowrap;">' + actions + '</div></td>';
@@ -150,7 +163,7 @@
       head.innerHTML = THEAD;
       body.innerHTML = '';
       if (!items || items.length === 0) {
-        body.innerHTML = '<tr><td colspan="11" class="table-empty">No recommendations in this category</td></tr>';
+        body.innerHTML = '<tr><td colspan="13" class="table-empty">No recommendations in this category</td></tr>';
         return;
       }
       items.forEach(rec => body.appendChild(buildRow(rec)));

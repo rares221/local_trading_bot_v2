@@ -22,6 +22,9 @@ from app.services.technicals import (
     determine_direction,
     estimate_expiry_days,
     get_cached_price,
+    get_cached_previous_close,
+    get_indicator_conflict_penalty,
+    get_return_correlation,
 )
 from app.services.market_context import (
     MarketContext,
@@ -29,8 +32,18 @@ from app.services.market_context import (
     check_trend_alignment,
     TrendAlignment,
 )
+from app.services.macro_calendar import is_high_impact_day
 
 RISK_TIER_ORDER = {"conservative": 0, "moderate": 1, "aggressive": 2}
+
+# When indicator conflict penalty >= this, candidate is skipped (not recommended).
+CONFLICT_SKIP_THRESHOLD = 25  # raised from 20 to allow more candidates through
+
+# Skip adding a candidate if its return correlation with any already-selected recommendation exceeds this (avoid over-concentration).
+CORRELATION_THRESHOLD = 0.75
+
+# On high-impact macro days (FOMC, CPI, NFP ±1 day), reduce all candidates' confidence by this amount.
+MACRO_DAY_CONFIDENCE_PENALTY = 10
 
 SENTIMENT_TAG_TO_ASSETS: dict[str, list[tuple[str, str]]] = {
     "oil": [("commodities", "WTI"), ("commodities", "Brent"), ("stocks", "XOM"), ("stocks", "CVX")],
@@ -163,6 +176,26 @@ def _all_assets() -> list[tuple[str, str, str, str]]:
 # Candidate with direction + expiry + technicals
 # ---------------------------------------------------------------------------
 
+def _suggested_risk_pct(confidence: int, risk_reward: Optional[float]) -> float:
+    """
+    Suggested risk per trade as % of capital (half-Kelly style when R:R known; else tier-based).
+    Capped at 2%, floored at 0.
+    """
+    p = (confidence or 0) / 100.0
+    if risk_reward is not None and risk_reward > 1.0:
+        # half-Kelly: f = 0.5 * (p * R - 1) / (R - 1)
+        k = 0.5 * (p * risk_reward - 1.0) / (risk_reward - 1.0)
+        return round(min(2.0, max(0.0, 100.0 * k)), 2)
+    # Tier-based fallback
+    if p >= 0.70:
+        return 1.0
+    if p >= 0.50:
+        return 0.75
+    if p >= 0.30:
+        return 0.5
+    return 0.25
+
+
 @dataclass
 class Candidate:
     asset_category: str
@@ -179,6 +212,7 @@ class Candidate:
     trend_aligned: bool = False
     market_regime_note: Optional[str] = None
     _score: float = 0.0
+    suggested_risk_pct: float = 0.5  # suggested risk % of capital (position sizing)
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +278,57 @@ def get_sentiment_score_and_count(
     return (best_avg, total_count) if best_avg is not None else None
 
 
+# Event types that affect specific tags (tag -> event_type). When active_events contains event_type, reduce confidence for that tag.
+TAG_TO_EVENT_TYPE: dict[str, str] = {
+    "Fed": "fed",
+    "ECB": "macro",
+    "BOJ": "macro",
+    "BOE": "macro",
+    "PBOC": "macro",
+}
+EVENT_CONFIDENCE_PENALTY = 5
+
+
+def _event_penalty(
+    category: str,
+    asset_id: str,
+    active_events: Optional[list[str]],
+    by_asset_sentiment: Optional[dict],
+) -> int:
+    """Confidence penalty when asset is tied to an active high-impact event (e.g. Fed, earnings)."""
+    if not active_events:
+        return 0
+    active_set = set(active_events)
+    for tag, targets in SENTIMENT_TAG_TO_ASSETS.items():
+        if (category, asset_id) not in targets:
+            continue
+        event_type = TAG_TO_EVENT_TYPE.get(tag)
+        if event_type and event_type in active_set:
+            return EVENT_CONFIDENCE_PENALTY
+    if category == "stocks" and "earnings" in active_set:
+        return EVENT_CONFIDENCE_PENALTY  # stocks more sensitive to earnings news
+    return 0
+
+
+def _has_sentiment_divergence(
+    category: str,
+    asset_id: str,
+    by_asset_sentiment: Optional[dict],
+) -> bool:
+    """True if any sentiment tag for this asset has sentiment–price divergence."""
+    if not by_asset_sentiment:
+        return False
+    for tag, targets in SENTIMENT_TAG_TO_ASSETS.items():
+        if (category, asset_id) in targets:
+            info = by_asset_sentiment.get(tag)
+            if info and info.get("divergence") is True:
+                return True
+    if category == "stocks" and asset_id in by_asset_sentiment:
+        if by_asset_sentiment[asset_id].get("divergence") is True:
+            return True
+    return False
+
+
 _CRYPTO_SUFFIXES = ("-USD", "-USDT")
 _KNOWN_CRYPTO = frozenset({
     "BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "DOT", "AVAX", "MATIC",
@@ -279,6 +364,24 @@ def _try_price(tag: str) -> Optional[float]:
     return None
 
 
+def _try_previous_price(tag: str) -> Optional[float]:
+    """Previous close for a sentiment tag (for divergence)."""
+    if tag.upper() in _KNOWN_CRYPTO:
+        for suffix in _CRYPTO_SUFFIXES:
+            p = get_cached_previous_close(tag.upper() + suffix)
+            if p is not None and p > 0:
+                return p
+        return None
+    p = get_cached_previous_close(tag)
+    if p is not None and p > 0:
+        return p
+    if "." in tag:
+        p = get_cached_previous_close(tag.replace(".", "-"))
+        if p is not None and p > 0:
+            return p
+    return None
+
+
 def get_price_snapshot(extra_tags: Optional[set[str]] = None) -> dict[str, float]:
     """
     Price snapshot for the hardcoded universe + any extra sentiment tags that
@@ -296,6 +399,25 @@ def get_price_snapshot(extra_tags: Optional[set[str]] = None) -> dict[str, float
             if not _looks_like_symbol(tag):
                 continue
             p = _try_price(tag)
+            if p is not None:
+                out[tag] = round(p, 2)
+    return out
+
+
+def get_previous_price_snapshot(extra_tags: Optional[set[str]] = None) -> dict[str, float]:
+    """Previous trading day close per asset (for sentiment–price divergence)."""
+    out: dict[str, float] = {}
+    for _cat, asset_id, symbol, _tier in _all_assets():
+        p = get_cached_previous_close(symbol)
+        if p is not None and p > 0:
+            out[asset_id] = round(p, 2)
+    if extra_tags:
+        for tag in extra_tags:
+            if tag in out:
+                continue
+            if not _looks_like_symbol(tag):
+                continue
+            p = _try_previous_price(tag)
             if p is not None:
                 out[tag] = round(p, 2)
     return out
@@ -374,6 +496,7 @@ def _build_candidate(
     risk_tier: str,
     by_asset_sentiment: Optional[dict],
     market_ctx: Optional[MarketContext] = None,
+    active_events: Optional[list[str]] = None,
 ) -> Optional[Candidate]:
     """Build a single Candidate with ATR-based levels, direction, expiry, score, trend alignment."""
     snap = build_snapshot(symbol)
@@ -382,11 +505,12 @@ def _build_candidate(
 
     price = round(snap.price, 2)
 
-    # Direction from sentiment + technicals
+    # Direction from sentiment + technicals (regime-dependent weights)
     pair = get_sentiment_score_and_count(category, asset_id, by_asset_sentiment or {})
     sentiment_avg = pair[0] if pair else None
     sentiment_count = pair[1] if pair else 0
-    direction = determine_direction(sentiment_avg, snap)
+    regime_id = market_ctx.regime.regime if market_ctx else None
+    direction = determine_direction(sentiment_avg, snap, regime=regime_id)
 
     # Multi-timeframe trend alignment check
     alignment = check_trend_alignment(symbol)
@@ -426,12 +550,48 @@ def _build_candidate(
         if aligned_dir != direction:
             score -= 0.3
 
-    # Confidence score (0–100) with market context adjustment
-    confidence = compute_confidence(sentiment_avg, sentiment_count, snap, direction)
+    # Confidence score (0–100) with market context adjustment; regime-specific thresholds
+    base_confidence = compute_confidence(sentiment_avg, sentiment_count, snap, direction, regime=regime_id)
+    confidence = base_confidence
+    logger.debug(
+        "[ENGINE] %s (%s): base_conf=%d, sent_avg=%s, sent_cnt=%d, dir=%s",
+        asset_id, symbol, base_confidence, sentiment_avg, sentiment_count, direction,
+    )
     if trend_aligned:
         confidence = min(100, confidence + 8)
     if market_ctx:
-        confidence = max(0, min(100, confidence + market_ctx.confidence_adjustment()))
+        adj = market_ctx.confidence_adjustment()
+        confidence = max(0, min(100, confidence + adj))
+        if adj != 0:
+            logger.debug("[ENGINE] %s: regime conf adj=%d → %d", asset_id, adj, confidence)
+    # Sentiment–price divergence: reduce confidence when sentiment and price move in opposite directions
+    if _has_sentiment_divergence(category, asset_id, by_asset_sentiment):
+        confidence = max(0, confidence - 10)
+        logger.debug("[ENGINE] %s: sentiment–price divergence → conf=%d", asset_id, confidence)
+        if regime_note:
+            regime_note = f"{regime_note}; sentiment–price divergence"
+        else:
+            regime_note = "Sentiment–price divergence"
+
+    # Event-type penalty: reduce confidence when asset is in an active high-impact event (Fed, earnings, etc.)
+    event_pen = _event_penalty(category, asset_id, active_events, by_asset_sentiment)
+    if event_pen > 0:
+        confidence = max(0, confidence - event_pen)
+        logger.debug("[ENGINE] %s: event penalty=%d → conf=%d", asset_id, event_pen, confidence)
+        if regime_note:
+            regime_note = f"{regime_note}; high-impact event"
+        else:
+            regime_note = "High-impact event"
+
+    # Skip candidate when key indicators strongly conflict with direction (e.g. RSI OB + long, MACD bear + long)
+    conflict_penalty = get_indicator_conflict_penalty(snap, direction, regime=regime_id)
+    logger.debug("[ENGINE] %s: conflict_penalty=%d", asset_id, conflict_penalty)
+    if conflict_penalty >= CONFLICT_SKIP_THRESHOLD:
+        logger.info(
+            "[ENGINE] Skip %s (%s): indicator conflict penalty=%d (direction=%s)",
+            asset_id, symbol, conflict_penalty, direction,
+        )
+        return None
 
     # Risk:Reward ratio
     rr = calc_risk_reward(price, sl, tp)
@@ -443,6 +603,7 @@ def _build_candidate(
         ema_label = f"EMA: {alignment.ema_stack}"
         vol_notes = f"{vol_notes}; {align_label}; {ema_label}"
 
+    suggested_risk = _suggested_risk_pct(confidence, rr)
     return Candidate(
         asset_category=category,
         asset_id=asset_id,
@@ -458,6 +619,7 @@ def _build_candidate(
         trend_aligned=trend_aligned,
         market_regime_note=regime_note,
         _score=score,
+        suggested_risk_pct=suggested_risk,
     )
 
 
@@ -469,6 +631,7 @@ def _candidates_for_pairs(
     by_asset_sentiment: Optional[dict] = None,
     exclude_taken: Optional[set[tuple[str, str]]] = None,
     market_ctx: Optional[MarketContext] = None,
+    active_events: Optional[list[str]] = None,
 ) -> list[Candidate]:
     out: list[Candidate] = []
     seen: set[str] = set()
@@ -483,7 +646,7 @@ def _candidates_for_pairs(
         symbol, risk_tier = resolved
         if RISK_TIER_ORDER.get(risk_tier, 99) > max_risk_level:
             continue
-        cand = _build_candidate(category, asset_id, symbol, risk_tier, by_asset_sentiment, market_ctx)
+        cand = _build_candidate(category, asset_id, symbol, risk_tier, by_asset_sentiment, market_ctx, active_events)
         if cand:
             out.append(cand)
     return out
@@ -501,6 +664,7 @@ def build_daily_candidates_for_category(
     tie_seed: Optional[str] = None,
     exclude_taken: Optional[set[tuple[str, str]]] = None,
     market_ctx: Optional[MarketContext] = None,
+    active_events: Optional[list[str]] = None,
 ) -> list[Candidate]:
     """
     Best trade ideas from analysis first, then backfill from universe.
@@ -511,9 +675,10 @@ def build_daily_candidates_for_category(
     if market_ctx:
         effective_max = min(max_count, market_ctx.max_recommendations_per_category())
 
-    min_confidence = 40  # default gate
+    min_confidence = 35  # default gate (lowered from 40)
     if market_ctx:
         min_confidence = market_ctx.min_confidence_threshold()
+    logger.info("[ENGINE][%s] min_confidence=%d (regime=%s)", category, min_confidence, market_ctx.regime.regime if market_ctx else None)
 
     max_risk_level = RISK_TIER_ORDER.get(preferred_risk, RISK_TIER_ORDER["moderate"])
     universe = _universe_lookup()
@@ -523,7 +688,7 @@ def build_daily_candidates_for_category(
     idea_candidates = _candidates_for_pairs(
         category, idea_pairs, universe, max_risk_level,
         by_asset_sentiment=by_asset_sentiment, exclude_taken=excluded,
-        market_ctx=market_ctx,
+        market_ctx=market_ctx, active_events=active_events,
     )
 
     # Confidence gate: drop low-conviction candidates
@@ -539,10 +704,10 @@ def build_daily_candidates_for_category(
     chosen_ids = {c.asset_id for c in idea_candidates[:effective_max]}
     result = idea_candidates[:effective_max]
 
-    print(f"[ENGINE][{category}] idea_candidates after gate (min_conf={min_confidence}): {len(idea_candidates)}")
+    logger.info("[ENGINE][%s] idea_candidates after gate (min_conf=%d): %d", category, min_confidence, len(idea_candidates))
     # Backfill from universe — use a lower confidence floor since these are
     # curated tradeable assets where technicals alone carry enough signal.
-    backfill_min_conf = max(20, min_confidence - 15)
+    backfill_min_conf = max(15, min_confidence - 20)  # lowered from max(20, min-15)
     if len(result) < effective_max:
         items = ASSETS_BY_CATEGORY.get(category, [])
         rest: list[Candidate] = []
@@ -551,11 +716,11 @@ def build_daily_candidates_for_category(
                 continue
             if RISK_TIER_ORDER.get(risk_tier, 99) > max_risk_level:
                 continue
-            cand = _build_candidate(category, asset_id, symbol, risk_tier, by_asset_sentiment, market_ctx)
+            cand = _build_candidate(category, asset_id, symbol, risk_tier, by_asset_sentiment, market_ctx, active_events)
             if not cand:
-                print(f"[ENGINE][{category}] {asset_id} ({symbol}): no price data — skipped")
+                logger.debug("[ENGINE][%s] %s (%s): no candidate built (no price or skipped)", category, asset_id, symbol)
             elif cand.confidence_score < backfill_min_conf:
-                print(f"[ENGINE][{category}] {asset_id}: conf={cand.confidence_score} < {backfill_min_conf} — skipped")
+                logger.debug("[ENGINE][%s] %s: conf=%d < %d — skipped", category, asset_id, cand.confidence_score, backfill_min_conf)
             else:
                 rest.append(cand)
         rest.sort(key=lambda c: (-c._score, hash((tie_seed or "", c.asset_id)) % 10000))
@@ -563,7 +728,7 @@ def build_daily_candidates_for_category(
             if len(result) >= effective_max:
                 break
             result.append(c)
-    print(f"[ENGINE][{category}] final: {len(result)} candidates (max={effective_max})")
+    logger.info("[ENGINE][%s] final: %d candidates (max=%d)", category, len(result), effective_max)
     return result
 
 
@@ -573,10 +738,13 @@ def build_daily_candidates(
     preferred_risk: str = "moderate",
     tie_seed: Optional[str] = None,
     exclude_taken: Optional[set[tuple[str, str]]] = None,
+    active_events: Optional[list[str]] = None,
+    risk_budget_1r: float = 1.0,
 ) -> list[Candidate]:
     """
     Build up to max_count per category. Clears price cache, detects market regime,
     applies confidence gating, and adjusts recommendations to current conditions.
+    Risk budget: caps total 1R exposure (sum of suggested_risk_pct) at risk_budget_1r.
     Returns (candidates, market_context).
     """
     global _last_market_context
@@ -588,8 +756,10 @@ def build_daily_candidates(
     logger.info("Market regime: %s", market_ctx.regime.description)
 
     out: list[Candidate] = []
+    seen_asset_key: set[tuple[str, str]] = set()
+    total_risk_pct = 0.0
     for category in ("stocks", "commodities", "other", "indices"):
-        out.extend(build_daily_candidates_for_category(
+        for c in build_daily_candidates_for_category(
             category,
             max_count=max_count,
             by_asset_sentiment=by_asset_sentiment,
@@ -597,7 +767,51 @@ def build_daily_candidates(
             tie_seed=tie_seed,
             exclude_taken=exclude_taken,
             market_ctx=market_ctx,
-        ))
+            active_events=active_events,
+        ):
+            key = (c.asset_category, c.asset_id)
+            if key in seen_asset_key:
+                continue
+            # Correlation-aware: skip if highly correlated with an already-selected recommendation
+            symbol_new = get_yf_symbol(c.asset_category, c.asset_id)
+            if symbol_new and out:
+                max_corr: Optional[float] = None
+                for c_old in out:
+                    symbol_old = get_yf_symbol(c_old.asset_category, c_old.asset_id)
+                    if not symbol_old or symbol_old == symbol_new:
+                        continue
+                    corr = get_return_correlation(symbol_old, symbol_new)
+                    if corr is not None:
+                        max_corr = corr if max_corr is None else max(max_corr, corr)
+                if max_corr is not None and max_corr >= CORRELATION_THRESHOLD:
+                    logger.info(
+                        "[ENGINE] Skip %s (%s): correlation %.2f with existing recs (threshold %.2f)",
+                        c.asset_id, symbol_new, max_corr, CORRELATION_THRESHOLD,
+                    )
+                    continue
+            # Risk budget check: skip if adding this candidate would exceed the budget
+            candidate_risk = c.suggested_risk_pct or 0.0
+            if total_risk_pct + candidate_risk > risk_budget_1r:
+                logger.info(
+                    "[ENGINE] Skip %s (%s): risk budget %.2f%% + %.2f%% > %.2f%% (budget)",
+                    c.asset_id, symbol_new, total_risk_pct, candidate_risk, risk_budget_1r,
+                )
+                continue
+            seen_asset_key.add(key)
+            out.append(c)
+            total_risk_pct += candidate_risk
+
+    # Macro calendar overlay: reduce confidence on and around FOMC/CPI/NFP days
+    if is_high_impact_day(date.today(), window_days=1):
+        for c in out:
+            current = c.confidence_score or 0
+            c.confidence_score = max(0, current - MACRO_DAY_CONFIDENCE_PENALTY)
+        logger.info(
+            "[ENGINE] High-impact macro day: applied confidence penalty %d to %d candidates",
+            MACRO_DAY_CONFIDENCE_PENALTY, len(out),
+        )
+
+    logger.info("[ENGINE] Final batch: %d candidates, total risk budget used: %.2f%% / %.2f%%", len(out), total_risk_pct, risk_budget_1r)
     return out
 
 

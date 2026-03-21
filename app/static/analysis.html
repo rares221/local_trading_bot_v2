@@ -16,12 +16,19 @@
     <a href="/research">Research</a>
     <a href="/analysis" class="active">Analysis</a>
     <a href="/active-trades">Active trades</a>
+    <a href="/journal">Journal</a>
     <a href="/briefing">Briefing</a>
   </nav>
 
   <main class="app app--wide">
     <h1 class="page-title">Market Analysis</h1>
     <p class="page-desc">Latest sentiment and price overview. Run the pipeline from the <a href="/dashboard">Dashboard</a> to refresh.</p>
+    
+    <div class="alert alert--info mb-3" style="font-size:13px;">
+      <strong>💡 About Market Regime:</strong> The bot classifies market conditions into <strong style="color:#10b981;">Risk-On</strong> (bullish + low volatility), 
+      <strong style="color:#f59e0b;">Cautious</strong> (mixed signals), or <strong style="color:#ef4444;">Risk-Off</strong> (bearish or high volatility) based on SPX trend and VIX level. 
+      This affects recommendation filters, confidence thresholds, and directional bias.
+    </div>
 
     <div id="loading" class="loading-overlay"><span class="spinner spinner--lg"></span> Loading analysis&hellip;</div>
     <div id="content" style="display:none;"></div>

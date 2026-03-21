@@ -30,6 +30,7 @@ class Recommendation(Base):
     risk_reward: Mapped[Optional[float]] = mapped_column(Float, nullable=True)  # e.g. 2.5
     volatility_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")  # pending | taken | skipped
+    suggested_risk_pct: Mapped[Optional[float]] = mapped_column(Float, nullable=True)  # position sizing: suggested risk % of capital
 
     active_trade: Mapped[Optional["ActiveTrade"]] = relationship("ActiveTrade", back_populates="recommendation", uselist=False)
 
@@ -57,6 +58,9 @@ class ActiveTrade(Base):
     highest_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)  # for longs
     lowest_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)   # for shorts
     signal_flip_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Outcome logging: hit_tp | hit_sl | expired | manual (for calibration / Brier later)
+    outcome: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
+    outcome_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     recommendation: Mapped["Recommendation"] = relationship("Recommendation", back_populates="active_trade")
     levels: Mapped[list["ActiveTradeLevel"]] = relationship(
