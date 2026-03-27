@@ -388,6 +388,19 @@ td .btn-sm { margin: 0 2px; }
 .levels-table { font-size: 13px; max-width: 480px; }
 .history-row td { background: var(--secondary); }
 
+/* ── Icons ── */
+.btn-icon {
+  display: inline-block; flex-shrink: 0;
+  vertical-align: -2px;
+}
+/* Dim nav icons slightly; full opacity when active/hover */
+.nav a .btn-icon { opacity: .65; transition: opacity .15s; }
+.nav a:hover .btn-icon, .nav a.active .btn-icon { opacity: 1; }
+/* Section title icons */
+.section-title .btn-icon { opacity: .55; margin-right: 5px; vertical-align: -2px; }
+/* Tighten gap between icon and label inside buttons */
+.btn { gap: 6px; }
+
 /* Utility classes */
 .flex { display: flex; }
 .flex-col { flex-direction: column; }

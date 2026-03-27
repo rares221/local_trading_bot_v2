@@ -8,16 +8,17 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/css/common.css">
+  <script src="/static/js/icons.js"></script>
 </head>
 <body>
   <nav class="nav">
-    <a href="/dashboard">Dashboard</a>
-    <a href="/recommendations">Recommendations</a>
-    <a href="/research" class="active">Research</a>
-    <a href="/analysis">Analysis</a>
-    <a href="/active-trades">Active trades</a>
-    <a href="/journal">Journal</a>
-    <a href="/briefing">Briefing</a>
+    <a href="/dashboard"><span data-icon="layout-dashboard"></span> Dashboard</a>
+    <a href="/recommendations"><span data-icon="list-checks"></span> Recommendations</a>
+    <a href="/research" class="active"><span data-icon="search"></span> Research</a>
+    <a href="/analysis"><span data-icon="bar-chart-2"></span> Analysis</a>
+    <a href="/active-trades"><span data-icon="activity"></span> Active trades</a>
+    <a href="/journal"><span data-icon="book-open"></span> Journal</a>
+    <a href="/briefing"><span data-icon="newspaper"></span> Briefing</a>
   </nav>
 
   <main class="app app--wide">
@@ -31,7 +32,7 @@
           <label for="asset-id">Asset (ticker or name)</label>
           <div class="flex gap-1 items-center">
             <input type="text" id="asset-id" class="input" placeholder="e.g. AAPL, Gold, Siemens" style="max-width:240px;">
-            <button type="button" class="btn btn--secondary btn-sm" id="resolve-btn">Resolve</button>
+            <button type="button" class="btn btn--secondary btn-sm" id="resolve-btn"><span data-icon="search" data-icon-size="13"></span> Resolve</button>
           </div>
           <p id="resolve-hint" class="meta mt-1" style="display:none;"></p>
         </div>
@@ -46,6 +47,7 @@
         </div>
       </div>
       <button type="button" class="btn btn--primary mt-2" id="get-btn">
+        <span data-icon="sparkles"></span>
         <span class="btn-label">Get research</span>
       </button>
     </section>
@@ -108,7 +110,7 @@
         resolveHint.textContent = 'Resolve failed: ' + e.message;
         resolveHint.style.color = 'var(--error-text)';
       }
-      resolveBtn.disabled = false; resolveBtn.textContent = 'Resolve';
+      resolveBtn.disabled = false; resolveBtn.innerHTML = icon('search', 13) + ' Resolve';
     });
 
     getBtn.addEventListener('click', async () => {
