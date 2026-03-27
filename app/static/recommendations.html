@@ -8,6 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/css/common.css">
+  <script src="/static/js/icons.js"></script>
   <style>
     /* ── Research modal overrides ── */
     .research-modal {
@@ -135,13 +136,13 @@
 </head>
 <body>
   <nav class="nav">
-    <a href="/dashboard">Dashboard</a>
-    <a href="/recommendations" class="active">Recommendations</a>
-    <a href="/research">Research</a>
-    <a href="/analysis">Analysis</a>
-    <a href="/active-trades">Active trades</a>
-    <a href="/journal">Journal</a>
-    <a href="/briefing">Briefing</a>
+    <a href="/dashboard"><span data-icon="layout-dashboard"></span> Dashboard</a>
+    <a href="/recommendations" class="active"><span data-icon="list-checks"></span> Recommendations</a>
+    <a href="/research"><span data-icon="search"></span> Research</a>
+    <a href="/analysis"><span data-icon="bar-chart-2"></span> Analysis</a>
+    <a href="/active-trades"><span data-icon="activity"></span> Active trades</a>
+    <a href="/journal"><span data-icon="book-open"></span> Journal</a>
+    <a href="/briefing"><span data-icon="newspaper"></span> Briefing</a>
   </nav>
 
   <main class="app app--wide">
@@ -613,8 +614,10 @@
     function buildRow(rec) {
       const tr = document.createElement('tr');
       const actions = rec.status === 'pending'
-        ? '<button class="btn btn-sm btn--primary" data-do="took-it">Took it</button><button class="btn btn-sm btn--secondary" data-do="skipped">Skip</button><button class="btn btn-sm btn--secondary" data-do="research">Research</button>'
-        : '<button class="btn btn-sm btn--secondary" data-do="research">Research</button>';
+        ? '<button class="btn btn-sm btn--primary" data-do="took-it">' + icon('check', 13) + ' Took it</button>' +
+          '<button class="btn btn-sm btn--secondary" data-do="skipped">' + icon('x', 13) + ' Skip</button>' +
+          '<button class="btn btn-sm btn--secondary" data-do="research">' + icon('search', 13) + ' Research</button>'
+        : '<button class="btn btn-sm btn--secondary" data-do="research">' + icon('search', 13) + ' Research</button>';
       const sizePct = rec.suggested_risk_pct != null ? rec.suggested_risk_pct.toFixed(2) + '%' : '—';
       tr.innerHTML =
         '<td class="font-semibold">' + rec.asset_id + '</td>' +

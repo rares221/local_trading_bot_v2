@@ -8,6 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/css/common.css">
+  <script src="/static/js/icons.js"></script>
   <style>
     .filters {
       display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center;
@@ -46,13 +47,13 @@
 </head>
 <body>
   <nav class="nav">
-    <a href="/dashboard">Dashboard</a>
-    <a href="/recommendations">Recommendations</a>
-    <a href="/research">Research</a>
-    <a href="/analysis">Analysis</a>
-    <a href="/active-trades">Active trades</a>
-    <a href="/journal" class="active">Journal</a>
-    <a href="/briefing">Briefing</a>
+    <a href="/dashboard"><span data-icon="layout-dashboard"></span> Dashboard</a>
+    <a href="/recommendations"><span data-icon="list-checks"></span> Recommendations</a>
+    <a href="/research"><span data-icon="search"></span> Research</a>
+    <a href="/analysis"><span data-icon="bar-chart-2"></span> Analysis</a>
+    <a href="/active-trades"><span data-icon="activity"></span> Active trades</a>
+    <a href="/journal" class="active"><span data-icon="book-open"></span> Journal</a>
+    <a href="/briefing"><span data-icon="newspaper"></span> Briefing</a>
   </nav>
 
   <main class="app app--wide">
@@ -60,7 +61,7 @@
     <p class="page-desc">Review closed trades with outcomes, filter by confidence/regime/asset, and analyze performance.</p>
     
     <details class="mb-3" style="padding:var(--space-2);background:var(--secondary);border:1px solid var(--border);border-radius:var(--radius);">
-      <summary style="cursor:pointer;font-weight:600;font-size:13px;color:var(--foreground);">📊 Understanding Outcomes & Metrics</summary>
+      <summary style="cursor:pointer;font-weight:600;font-size:13px;color:var(--foreground);display:flex;align-items:center;gap:6px;"><span data-icon="info" data-icon-size="14"></span> Understanding Outcomes & Metrics</summary>
       <div class="text-sm text-muted" style="margin-top:var(--space-2);line-height:1.6;">
         <p><strong>Outcomes:</strong></p>
         <ul style="padding-left:20px;margin-top:4px;">
@@ -115,7 +116,7 @@
       </div>
       <div class="filter-group" style="margin-left:auto;">
         <label class="filter-label">&nbsp;</label>
-        <button type="button" id="reset-filters" class="btn btn--secondary">Reset Filters</button>
+        <button type="button" id="reset-filters" class="btn btn--secondary"><span data-icon="filter-x"></span> Reset Filters</button>
       </div>
     </div>
 

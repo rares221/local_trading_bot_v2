@@ -89,3 +89,116 @@ Replaced with a proper **Geometric Brownian Motion (GBM) Monte Carlo simulation*
 - **P(TP) probability** displayed in the chart header — percentage of the 500 simulations that reached Take Profit before Stop Loss
 - Chart title updated to "Monte Carlo GBM · 500 paths · 14-day horizon"
 - Disclaimer updated to reflect the actual model used
+
+---
+
+#### Icon System — Lucide SVG icons across all pages (2026-03-27)
+
+**New file: `app/static/icons.js`**
+
+A lightweight, zero-dependency icon system (~3KB) based on the [Lucide](https://lucide.dev/) icon set — stroke-based SVG icons optimized for dashboards and data-heavy UIs.
+
+- `window.icon(name, size)` — returns an inline SVG string for use in JS-generated HTML
+- `data-icon="name"` / `data-icon-size="px"` — HTML placeholder pattern hydrated automatically on `DOMContentLoaded` via `hydrateIcons()`
+- All icons are 24×24 viewBox, `stroke="currentColor"`, `fill="none"` — inherit color from parent text/button
+
+**Icons included (30 total) and their assignments:**
+
+| Icon name | Used on |
+|---|---|
+| `layout-dashboard` | Nav — Dashboard link |
+| `list-checks` | Nav — Recommendations link |
+| `search` | Nav — Research link; Research page Resolve button |
+| `bar-chart-2` | Nav — Analysis link |
+| `activity` | Nav — Active Trades link |
+| `book-open` | Nav — Journal link |
+| `newspaper` | Nav — Briefing link |
+| `play-circle` | Briefing page — Run briefing now button |
+| `sparkles` | Research page — Get research button |
+| `filter-x` | Journal page — Reset Filters button |
+| `info` | Journal page — Understanding Outcomes collapsible header |
+| `gauge` | Analysis page — About Market Regime info banner |
+| `check` | Recommendations — Took it action button |
+| `x` | Recommendations — Skip action button |
+| `refresh-cw` | Active Trades — Refresh button |
+| `square-x` | Active Trades — Close manually button |
+| `history` | Active Trades — Level history toggle button |
+| `trending-up` | Dashboard — Run pipeline button; stat headers |
+| `zap` | Dashboard — LLM provider section title |
+| `settings` | Dashboard — Configuration section title |
+| `database` | Dashboard — Data section title |
+| `plus-circle` | Recommendations — Add recommendation button |
+| `trash-2` | Recommendations — Delete action |
+| `check-circle` | Recommendations — Confirm/approve action |
+| `alert-triangle` | Alert banners (warning) |
+| `wifi-off` | Error/offline states |
+| `clock` | Expiry fields |
+| `arrow-up` | Long direction indicator |
+| `arrow-down` | Short direction indicator |
+| `bar-chart` | Confidence/stats labels |
+
+**CSS additions to `app/static/css/common.css`:**
+
+```css
+.btn-icon { display: inline-block; flex-shrink: 0; vertical-align: -2px; }
+.nav a .btn-icon { opacity: .65; transition: opacity .15s; }
+.nav a:hover .btn-icon, .nav a.active .btn-icon { opacity: 1; }
+.section-title .btn-icon { opacity: .55; margin-right: 5px; vertical-align: -2px; }
+.btn { gap: 6px; }
+```
+
+**Pages updated:**
+
+- `dashboard.html` — nav icons + all buttons + section title icons
+- `recommendations.html` — nav icons + row action buttons (Took it / Skip / Research)
+- `active-trades.html` — nav icons + Refresh, Close manually, Level history buttons
+- `journal.html` — nav icons + Reset Filters + info collapsible icon (replaces 📊 emoji)
+- `research.html` — nav icons + Resolve + Get research buttons
+- `analysis.html` — nav icons + gauge icon in info banner (replaces 💡 emoji)
+- `briefing.html` — nav icons + Run briefing now button
+
+> **Docker rebuild required** — `icons.js` is a new static file baked into the image. Run `make build && make start` to apply.
+
+---
+
+#### `app/static/active-trades.html` — Card UI Redesign (2026-03-27)
+
+Complete visual overhaul of the Active Trades page for better readability and scannability.
+
+**Card status indicator**
+
+- Added colored left border to each trade card communicating health at a glance:
+  - Green — open, signal aligned
+  - Yellow — signal weakening (1–2 consecutive flips)
+  - Red — signal flipped (3+ consecutive flips)
+  - Gray/faded — closed trade
+
+**Header redesign**
+
+- Asset name enlarged (1.25rem, bold)
+- All status badges (Direction, Confidence, Signal, Phase) moved to a single inline row with `|` separators — previously stacked vertically in separate `badge-group` columns which were hard to scan
+- Category shown as a small inline chip next to the asset name
+
+**Levels layout — 3-column grid replaces 6 flat cells**
+
+- Previous layout: 6 equal cells (Entry, Orig SL, Orig TP, Sug SL, Sug TP, Expiry) with no visual relationship between related values
+- New layout: 3 columns — **Entry** | **Stop Loss** | **Take Profit**
+- When a suggested level differs from the original, it renders as: `~~$204.67~~ → $204.91` with the new value colored green (improvement) or red (worse) based on trade direction:
+  - Long SL: green if suggested > original (tighter protection), red otherwise
+  - Long TP: green if suggested ≥ original (higher target), red otherwise
+  - Short directions inverted
+- `% from entry` hint shown under each level (e.g. `-1.5%` under SL, `+3.0%` under TP)
+- R:R ratio displayed as a hint under the Entry price
+
+**Range bar**
+
+- Added a visual gradient bar (red → green) below the levels grid showing where the entry price sits between Stop Loss and Take Profit
+- White marker pin indicates entry position within the SL–TP range
+- Labels: SL on the left (red), TP on the right (green), Entry centered (muted)
+- Uses suggested levels if available, falls back to originals
+
+**Footer improvements**
+
+- Expiry date moved to the right side of the footer with urgency coloring: red if expiring today/tomorrow, amber if within 3 days
+- "Close manually" restyled as `btn--danger` to visually communicate it is a destructive action
+- "Level history" button label simplified

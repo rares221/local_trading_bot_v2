@@ -8,6 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/css/common.css">
+  <script src="/static/js/icons.js"></script>
   <style>
     .trade-cards { display: flex; flex-direction: column; gap: var(--space-3); }
 
@@ -124,13 +125,13 @@
 </head>
 <body>
   <nav class="nav">
-    <a href="/dashboard">Dashboard</a>
-    <a href="/recommendations">Recommendations</a>
-    <a href="/research">Research</a>
-    <a href="/analysis">Analysis</a>
-    <a href="/active-trades" class="active">Active trades</a>
-    <a href="/journal">Journal</a>
-    <a href="/briefing">Briefing</a>
+    <a href="/dashboard"><span data-icon="layout-dashboard"></span> Dashboard</a>
+    <a href="/recommendations"><span data-icon="list-checks"></span> Recommendations</a>
+    <a href="/research"><span data-icon="search"></span> Research</a>
+    <a href="/analysis"><span data-icon="bar-chart-2"></span> Analysis</a>
+    <a href="/active-trades" class="active"><span data-icon="activity"></span> Active trades</a>
+    <a href="/journal"><span data-icon="book-open"></span> Journal</a>
+    <a href="/briefing"><span data-icon="newspaper"></span> Briefing</a>
   </nav>
 
   <main class="app app--wide">
@@ -139,6 +140,7 @@
 
     <div class="flex items-center gap-2 mb-3">
       <button type="button" id="refresh-btn" class="btn btn--primary">
+        <span data-icon="refresh-cw"></span>
         <span class="btn-label">Update &amp; refresh</span>
       </button>
       <span class="text-sm text-muted">Recalculates SL/TP from latest prices, evaluates signal alignment, then reloads.</span>
@@ -334,10 +336,10 @@
       /* Footer */
       h += `<div class="trade-footer">`;
       if (!t.outcome) {
-        h += `<button type="button" class="btn btn-sm btn--danger btn-close-manual" data-trade-id="${esc(t.id)}">Close manually</button>`;
+        h += `<button type="button" class="btn btn-sm btn--danger btn-close-manual" data-trade-id="${esc(t.id)}">${icon('square-x', 13)} Close manually</button>`;
       }
       if (levels.length > 0) {
-        h += `<button class="btn btn-sm btn--secondary" data-idx="${idx}">Level history (${levels.length})</button>`;
+        h += `<button class="btn btn-sm btn--secondary" data-idx="${idx}">${icon('history', 13)} Level history (${levels.length})</button>`;
       }
       h += `<span class="trade-footer-spacer"></span>`;
       h += expiryChip();
@@ -424,7 +426,9 @@
             const show = panel.style.display === 'none';
             panel.style.display = show ? 'block' : 'none';
             const count = (items[this.dataset.idx].levels||[]).length;
-            this.textContent = show ? 'Hide level history' : `Level history (${count})`;
+            this.innerHTML = show
+              ? icon('history', 13) + ' Hide level history'
+              : icon('history', 13) + ' Level history (' + count + ')';
           });
         });
         content.querySelectorAll('.btn-close-manual').forEach(b => {
