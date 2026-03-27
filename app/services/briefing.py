@@ -1,5 +1,5 @@
 """
-Daily briefing: configurable checklist (SPX/VIX/oil, recs today) run once per day.
+Daily briefing: configurable checklist (SPX/VIX/commodities, recs today) run once per day.
 Produces a short text summary stored in daily_briefings; optional API and later Telegram.
 """
 from __future__ import annotations
@@ -22,7 +22,10 @@ from app.models.recommendation import Recommendation
 DEFAULT_CHECKLIST = [
     {"id": "spx_move", "label": "S&P 500 move", "type": "index_move", "symbol": "^GSPC", "threshold_pct": 1.5},
     {"id": "vix_level", "label": "VIX level", "type": "level", "symbol": "^VIX", "above": 20},
-    {"id": "oil", "label": "WTI oil", "type": "price", "symbol": "CL=F"},
+    {"id": "oil_wti", "label": "WTI crude", "type": "price", "symbol": "CL=F"},
+    {"id": "oil_brent", "label": "Brent crude", "type": "price", "symbol": "BZ=F"},
+    {"id": "gold", "label": "Gold", "type": "price", "symbol": "GC=F"},
+    {"id": "silver", "label": "Silver", "type": "price", "symbol": "SI=F"},
     {"id": "recs_today", "label": "Recommendations today", "type": "recs_count"},
 ]
 

@@ -3,6 +3,10 @@ Macro calendar overlay: high-impact event dates (FOMC, CPI, NFP) to reduce
 recommendation confidence on and around those days. Static list; extend as needed.
 """
 from datetime import date, timedelta
+from typing import Any
+
+# Points subtracted from each candidate confidence when `is_high_impact_day` (see recommendation engine).
+MACRO_DAY_CONFIDENCE_PENALTY = 10
 
 # High-impact US macro dates (FOMC decision, CPI release, NFP). Format: (year, month, day).
 # FOMC 2024–2025 (meeting days); CPI ~mid-month; NFP first Friday.
@@ -42,3 +46,22 @@ def is_high_impact_day(d: date | None = None, window_days: int = 1) -> bool:
         if (t.year, t.month, t.day) in HIGH_IMPACT_DATES:
             return True
     return False
+
+
+def get_macro_overlay_info(d: date | None = None, window_days: int = 1) -> dict[str, Any]:
+    """
+    For API/UI: whether the macro calendar overlay applies today and how it affects confidence.
+    """
+    active = is_high_impact_day(d, window_days)
+    return {
+        "active": active,
+        "as_of": (d or date.today()).isoformat(),
+        "window_days": window_days,
+        "confidence_penalty_points": MACRO_DAY_CONFIDENCE_PENALTY,
+        "message": (
+            f"Today is within ±{window_days} day(s) of a listed FOMC, CPI, or NFP date. "
+            f"The engine applies −{MACRO_DAY_CONFIDENCE_PENALTY} confidence points to each candidate in the batch."
+            if active
+            else ""
+        ),
+    }

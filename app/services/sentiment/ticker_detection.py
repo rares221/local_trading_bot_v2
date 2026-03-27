@@ -26,6 +26,23 @@ _DEFAULT_BLOCKLIST = frozenset({
     "USDT", "HBAR", "DOT",
     "IRA", "JONES", "LIKE", "LL", "LOVES", "NGM", "PCE", "PDL", "PGIM", "PIXEL",
     "SHARE", "SL", "SOL", "IEA", "CAPO", "CIO", "CISD", "DSCW", "GATE", "VALID", "WAIT",
+    # Common headline / NLP false positives (avoid Yahoo "delisted" spam)
+    "THE", "AND", "FOR", "NOT", "BUT", "OUR", "ARE", "WAS", "HAS", "HIS", "HER", "ITS",
+    "YOU", "ALL", "CAN", "MAY", "WAY", "WHO", "HOW", "OUT", "USE", "ANY", "GOT", "GET",
+    "SEE", "NEW", "NOW", "DAY", "ONE", "TWO", "BIG", "END", "FAR", "TOO", "YES", "BUY",
+    "SELL", "LONG", "SHORT", "HIGH", "LOW", "TOP", "HIT", "CUT", "SET", "LOT", "RUN",
+    "PUT", "BAD", "GOOD", "LAST", "NEXT", "FIRST", "JUST", "OVER", "INTO", "FROM", "THAT",
+    "THIS", "WITH", "HAVE", "BEEN", "SOME", "THAN", "THEM", "ALSO", "ONLY", "VERY", "WHAT",
+    "WHEN", "YOUR", "MORE", "MOST", "MANY", "SUCH", "MAKE", "LIKE", "TIME", "YEAR", "WEEK",
+    "BACK", "MUCH", "THEN", "THEY", "EVEN", "WELL", "DOWN", "SAYS", "SAID", "CASE", "READ",
+    "OPEN", "CLOSE", "FULL", "HALF", "LESS", "BEST", "WORST", "TRUE", "FALSE", "REAL",
+    "FACT", "NEWS", "TOLD", "KNOW", "TAKE", "GAVE", "GIVE", "CAME", "COME", "WENT", "GOES",
+    "DOES", "DID", "LET", "OWN", "OLD", "AGE", "AGO", "OFF", "ADD", "PER", "VIA",
+    "THERE", "THESE", "THOSE", "WHERE", "WHILE", "AFTER", "SINCE", "UNDER", "ABOVE",
+    "BELOW", "STOCK", "TRADE", "TRUMP", "BANK", "RATE", "BOND", "CASH", "DEAL", "PLAN",
+    # Institutions / acronyms often tagged but not Yahoo tickers
+    "ECB", "BOE", "PBOC", "IMF", "OECD", "NATO", "WTO", "WHO", "UN", "IRS", "FBI", "DOJ",
+    "FED", "BOJ", "SNB", "RBA", "RBNZ",
 })
 
 

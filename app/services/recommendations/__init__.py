@@ -5,6 +5,7 @@ from .engine import (
     get_asset_price_and_risk,
     get_price_snapshot,
     get_previous_price_snapshot,
+    snapshot_prices_for_recommendations,
 )
 
 __all__ = [
@@ -14,4 +15,5 @@ __all__ = [
     "get_asset_price_and_risk",
     "get_price_snapshot",
     "get_previous_price_snapshot",
+    "snapshot_prices_for_recommendations",
 ]

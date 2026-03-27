@@ -1,228 +1,259 @@
 # local_trading_bot_v2
 
-Trading insight app: **market analysis** (Phase 1) and **trade recommendations** (Phase 2, ≤5/day, volatility-aware) with user feedback (Took it / Skipped), active-trade updates, research rationales (LLM), and an optional daily briefing.
+Trading insight app: **market analysis** (RSS + sentiment + technicals), **regime-aware trade recommendations**, user feedback (**Took it / Skipped**), **active trade management** (ATR-based suggested SL/TP, signal alignment), **outcome logging & calibration**, **position sizing & risk budget**, **trade journal**, research rationales (multi-provider LLM), and an optional **daily briefing**.
 
 **Specs:** [TRADING_APP_PLAN.md](../TRADING_APP_PLAN.md) and [PLAN_MODE.md](../PLAN_MODE.md).  
 **Stack:** [TECH_STACK_AND_INTEGRATION.md](TECH_STACK_AND_INTEGRATION.md).  
-**Plan vs progress:** [PLAN_PROGRESS.md](PLAN_PROGRESS.md).
+**Plan vs progress:** [PLAN_PROGRESS.md](PLAN_PROGRESS.md).  
+**Future ideas:** [docs/FUTURE_RECOMMENDATION_IMPROVEMENTS.md](docs/FUTURE_RECOMMENDATION_IMPROVEMENTS.md).
 
 ---
 
 ## Prerequisites
 
-- **Python 3.10+** (for type hints and async)
-- **pip** and a **virtual environment** (recommended)
-- **Network access** for RSS feeds and yfinance; optional API keys for cloud LLM providers
-- **Optional:** [Docker](https://docs.docker.com/get-docker/) and Docker Compose for running in a container
-- **Optional (local LLM):** [Ollama](https://ollama.ai/) running (e.g. `ollama run llama3.1`) if you use `RESEARCH_LLM_PROVIDER=ollama`
+- **Python 3.10+** (async, type hints)
+- **pip** (or use `python -m pip` if `pip` is not on PATH)
+- **Virtual environment** (strongly recommended)
+- **Network** for RSS feeds and **yfinance**
+- **Optional:** API keys for cloud LLM providers (research rationales)
+- **Optional:** [Docker](https://docs.docker.com/get-docker/) / Docker Compose
+- **Optional (local LLM):** [Ollama](https://ollama.ai/) if you use provider `ollama`
+- **Optional (FinBERT sentiment blend):** `pip install -r requirements-optional.txt` (PyTorch + transformers; see file for notes)
 
 ---
 
 ## Setup
 
+From the **project root** (`local_trading_bot_v2`):
+
 ```bash
 cd local_trading_bot_v2
 python -m venv .venv
-# Activate the venv:
-#   Windows (PowerShell):  .venv\Scripts\Activate.ps1
-#   Windows (cmd):        .venv\Scripts\activate.bat
-#   Unix / Git Bash:      source .venv/bin/activate
-pip install -r requirements.txt
 ```
 
-**Environment (optional)**  
-Create a `.env` file in the project root to override defaults. The app loads it via `pydantic-settings`.
+### Activate the virtual environment (pick your shell)
+
+| Shell | Command |
+|--------|---------|
+| **Windows — PowerShell** | `.venv\Scripts\Activate.ps1` |
+| **Windows — Command Prompt (cmd)** | `.venv\Scripts\activate.bat` |
+| **Windows — Git Bash** | `source .venv/Scripts/activate` |
+| **macOS / Linux / WSL** | `source .venv/bin/activate` |
+
+Then install dependencies:
+
+```bash
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+**Note:** On Windows Git Bash, always use **forward slashes** in paths (e.g. `.venv/Scripts/activate`), not backslashes.
+
+**Optional FinBERT:** after the base install:
+
+```bash
+python -m pip install -r requirements-optional.txt
+```
+
+### Environment (optional)
+
+Create a `.env` file in the project root. The app loads it via `pydantic-settings`.
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `DATABASE_URL` | SQLite path (or other async URL) | `sqlite+aiosqlite:///./data/trading.db` |
-| `DEBUG` | Enable SQL echo / debug | `false` |
-| `DATA_DIR` | Directory for DB, preferences, blocklist, briefing checklist | `./data` |
-| `PREFERRED_RISK` | Risk filter for recommendations | `moderate` |
+| `DATABASE_URL` | Async SQLAlchemy URL | `sqlite+aiosqlite:///./data/trading.db` |
+| `DEBUG` | SQL echo / debug | `false` |
+| `DATA_DIR` | DB, preferences, blocklist, briefing | `./data` |
+| `PREFERRED_RISK` | Risk filter (`conservative` / `moderate` / `aggressive`) | `moderate` |
 | `DAILY_BATCH_HOUR` | Hour (0–23) for daily recommendation batch | `6` |
 | `ANALYSIS_RUN_INTERVAL_HOURS` | Ingestion + analysis interval | `2` |
-| `UPDATE_ACTIVE_TRADES_INTERVAL_HOURS` | Active-trade SL/TP refresh interval | `2` |
+| `UPDATE_ACTIVE_TRADES_INTERVAL_HOURS` | Active-trade SL/TP refresh | `2` |
 | `FEED_MAX_AGE_DAYS` | Delete feed items older than this | `30` |
-| Research LLM (see below) | `RESEARCH_LLM_PROVIDER`, `RESEARCH_LLM_MODEL`, `*_API_KEY`, `OLLAMA_BASE_URL` | — |
+| Research LLM | `RESEARCH_LLM_PROVIDER`, `RESEARCH_LLM_MODEL`, `*_API_KEY`, `OLLAMA_BASE_URL` | — |
 
-On first run, the app creates the `data` directory (if missing), the SQLite database, and tables.
+On first run, the app creates `data/`, the SQLite database, and tables (with lightweight column migrations).
 
 ---
 
-## Run
+## Run the app
 
-### Option A: Local (venv)
+**Always:** project root + **venv activated**, then:
 
-```bash
-# From project root, with venv activated
+### Start Uvicorn (pick your shell)
+
+The command is the same everywhere; only the way you chain commands differs.
+
+**PowerShell** (use `;` if you need two steps in one line):
+
+```powershell
+cd C:\path\to\local_trading_bot_v2
+.venv\Scripts\Activate.ps1
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-- **Root:** http://localhost:8000/ (links to dashboard, pages, API docs)
-- **Dashboard:** http://localhost:8000/dashboard (preferences, actions, LLM settings, links)
-- **Recommendations:** http://localhost:8000/recommendations
-- **Research an asset:** http://localhost:8000/research (asset/category + “Resolve” company name → ticker)
-- **Market analysis:** http://localhost:8000/analysis
-- **Active trades:** http://localhost:8000/active-trades
-- **Daily briefing:** http://localhost:8000/briefing
-- **API docs:** http://localhost:8000/docs
+**Command Prompt (cmd):**
 
-The **scheduler** runs with the app: ingestion + analysis every 2h, daily batch at 06:00, active-trade updates every 2h, daily briefing once per day (after batch hour), feed cleanup at 04:00.
-
-### Option B: Docker
-
-```bash
-make build   # first time or after dependency/code changes
-make start   # start app in background
+```bat
+cd C:\path\to\local_trading_bot_v2
+.venv\Scripts\activate.bat
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-- Same URLs as above; ensure port 8000 is mapped (see `docker-compose.yml` or Makefile).
-- Data (SQLite, `data/`) is typically in a volume so it persists across stop/start.
+**Git Bash** (one line after `cd`):
 
 ```bash
-make stop    # stop and remove the container
+cd /c/path/to/local_trading_bot_v2 && source .venv/Scripts/activate && uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-**Docker on Windows:** Add Docker’s `bin` folder to your user PATH (e.g. `C:\Program Files\Docker\Docker\resources\bin`) so `docker` and `docker compose` work in the terminal. Alternatively use the project’s `start.bat` / `stop.bat` if they call Docker by full path.
-
-**Using Podman instead of Docker:** Point the Docker CLI at Podman so `docker compose` and `make` use Podman. In a terminal where both `docker` and `podman` are on PATH (e.g. after installing Podman Desktop or Podman CLI):
+**macOS / Linux / WSL:**
 
 ```bash
-# Create a Docker context that uses Podman’s socket (pipe name may vary)
-docker context create podman --docker "host=npipe:////./pipe/podman-machine-default"
-docker context use podman
+cd /path/to/local_trading_bot_v2 && source .venv/bin/activate && uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-Then `make build`, `make start`, and `docker compose` use Podman. To see the exact pipe name: `podman machine inspect --format '{{.ConnectionInfo.PodmanInfo.PodmanPipe.Path}}'` (use that path in the `host=` value). To switch back to Docker later: `docker context use default`.
+- **Root:** http://localhost:8000/ → redirects to dashboard  
+- **API docs:** http://localhost:8000/docs  
+
+The **scheduler** starts with the app: ingestion + analysis (interval), daily batch (default 06:00), active-trade updates, daily briefing, feed cleanup.
 
 ---
 
-## API overview
+## Web UI (current)
 
-| Endpoint | Description |
-|----------|-------------|
-| `GET /api/health` | Health check |
-| `GET /api/analysis/latest` | Latest market analysis (summary + payload) |
-| `GET /api/recommendations` | List recommendations (optional: `?batch_id`, `?status`, `?asset_category`, `?group_by=category`) |
-| `POST /api/recommendations/{id}/took-it` | Mark recommendation as taken (creates active trade) |
-| `POST /api/recommendations/{id}/skipped` | Mark recommendation as skipped |
-| `GET /api/active-trades` | List active trades (with original/suggested SL/TP and levels history) |
-| `GET /api/research/providers` | List LLM providers and current research config |
-| `GET /api/research/resolve?q=...` | Resolve company name to ticker(s) (e.g. `?q=Apple` → AAPL) |
-| `GET /api/research/summary?asset_id=...&category=...&generate=true` | Research context + optional LLM rationale |
-| `GET /api/briefing/latest` | Most recent daily briefing (404 if none) |
-| `GET /api/briefing/checklist` | Current briefing checklist config |
-| `POST /api/briefing/run` | Run briefing checklist now and return new briefing |
-| `GET /api/preferences` | User preferences (risk, LLM provider/model) |
-| `PUT /api/preferences` | Update preferences (JSON body) |
-| `POST /api/actions/run-pipeline-once` | Run ingest + analysis + daily batch once |
-| `POST /api/actions/refresh-todays-batch` | Rebuild today’s recommendation batch |
-| `POST /api/actions/clear-todays-batch` | Clear today’s pending recommendations |
-| `POST /api/actions/purge-all` | Delete all recommendations and active trades (testing) |
+| Page | URL | What it’s for |
+|------|-----|----------------|
+| **Dashboard** | `/dashboard` | Pipeline actions, risk stance, **risk budget per batch**, LLM settings, **calibration & regime status**, glossary / key concepts |
+| **Recommendations** | `/recommendations` | Today’s ideas; **Took it / Skip**; confidence, **suggested size %**, R:R |
+| **Research** | `/research` | LLM research for any asset; company → ticker resolve |
+| **Market analysis** | `/analysis` | Latest report, sentiment, news by category |
+| **Active trades** | `/active-trades` | **Open** trades only (taken, not yet closed); update SL/TP; **Close manually** |
+| **Journal** | `/journal` | **Closed** trades (outcomes), filters, stats, **closing price** when recorded |
+| **Briefing** | `/briefing` | Daily checklist (SPX, VIX, WTI, Brent, gold, silver, rec count, …) |
 
-All API responses include a `disclaimer` field where applicable.
+Help text in the UI explains **market regime** (risk-on / cautious / risk-off), confidence buckets, and sizing.
+
+---
+
+## Behaviour highlights (engine & data)
+
+- **Regime:** SPX + VIX → affects thresholds, direction bias, and correlation / macro overlays. Transitions can surface alerts on Dashboard / Active trades.
+- **Daily batch:** Up to **5 recommendations per category** (stocks, commodities, other, indices) → **up to ~20** total. Each category is ranked separately; the engine then keeps rows in order while applying **global** correlation and **global** risk-budget (sum of Size %) across the whole batch. Default risk budget **25** is sized for ~20 small positions; increase it if logs show budget skips.
+- **Active trades API:** `GET /api/active-trades` returns **non-closed** trades by default. Use `?include_closed=true` for all rows (e.g. Journal).
+- **Outcomes:** `hit_tp`, `hit_sl`, `expired`, `manual` — used for calibration and journal. **Closing price** is stored when the outcome is set (scheduler or manual close with live quote).
+- **Preferences:** `risk_budget_1r` caps the **sum** of **all** rows’ **Size** values (% of capital). Default **25.0** fits a full batch (~20 recommendations); **1.0** is far too small. Stored in `data/preferences.json`.
+
+---
+
+## Docker (optional)
+
+```bash
+make build   # first time or after dependency/code changes
+make start   # background
+make stop    # stop container
+```
+
+Same URLs; ensure port **8000** is exposed. On Windows, add Docker’s `bin` folder to PATH if `docker` is not found.
+
+**Podman:** you can point the Docker CLI at Podman (`docker context create/use podman` with your machine’s pipe/socket). Then `make build` / `make start` work the same.
+
+---
+
+## API overview (selected)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/health` | Health check |
+| `GET` | `/api/analysis/latest` | Latest market analysis |
+| `GET` | `/api/recommendations` | List recommendations (`?group_by=category`, filters) |
+| `POST` | `/api/recommendations/{id}/took-it` | Taken → creates active trade |
+| `POST` | `/api/recommendations/{id}/skipped` | Skipped |
+| `GET` | `/api/active-trades` | Open trades (add `?include_closed=true` for all) |
+| `POST` | `/api/active-trades/{id}/close-manually` | Manual close + capture price |
+| `GET` | `/api/calibration` | Buckets, Brier, ECE, Platt/adaptive metadata |
+| `POST` | `/api/calibration/fit` | Fit Platt scaling (needs enough closed trades) |
+| `GET` | `/api/regime/status` | Regime snapshot / flags (for UI) |
+| `GET` | `/api/research/providers` | LLM providers + config |
+| `GET` | `/api/research/summary?...` | Research + optional LLM |
+| `GET` | `/api/briefing/latest` | Latest briefing |
+| `POST` | `/api/briefing/run` | Run briefing now |
+| `GET` | `/api/preferences` | Risk, LLM, **risk_budget_1r** |
+| `PATCH` | `/api/preferences` | Update preferences (JSON body) |
+| `POST` | `/api/actions/run-pipeline-once` | Ingest + analysis + batch |
+| `POST` | `/api/actions/refresh-todays-batch` | Rebuild today’s batch |
+| `POST` | `/api/actions/clear-todays-batch` | Clear pending for today |
+| `POST` | `/api/actions/purge-all` | Wipe recs + trades (testing) |
+| `POST` | `/api/actions/update-active-trades` | Recalc active-trade levels (same as UI refresh) |
+
+Responses include a `disclaimer` where applicable.
 
 ---
 
 ## Research rationale (multi-provider LLM)
 
-Short “why this idea and main risk” rationales use a configurable LLM. **Providers:** OpenAI, Anthropic, Ollama (local), OpenRouter.
+Providers: **OpenAI**, **Anthropic**, **Ollama**, **OpenRouter**. Env vars: `RESEARCH_LLM_PROVIDER`, `RESEARCH_LLM_MODEL`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, `OLLAMA_BASE_URL`.
 
-| Env / config | Description |
-|--------------|-------------|
-| `RESEARCH_LLM_PROVIDER` | `openai` (default), `anthropic`, `ollama`, or `openrouter` |
-| `RESEARCH_LLM_MODEL` | Model name; empty = provider default (e.g. `gpt-4o-mini`, `llama3.1`) |
-| `OPENAI_API_KEY` | Required when provider is `openai` |
-| `ANTHROPIC_API_KEY` | Required when provider is `anthropic` |
-| `OPENROUTER_API_KEY` | Required when provider is `openrouter`; use model IDs like `openai/gpt-4o-mini` |
-| `OLLAMA_BASE_URL` | Optional; default `http://localhost:11434` for Ollama |
-
-- **Ollama (local):** Set `RESEARCH_LLM_PROVIDER=ollama`, optionally `RESEARCH_LLM_MODEL=llama3.1`. No API key; run Ollama and pull the model.
-- **OpenAI / Anthropic / OpenRouter:** Set the matching `*_API_KEY` and `RESEARCH_LLM_PROVIDER`.
-
-Provider and model (and Ollama URL) can also be changed from the **Dashboard** (“Research / LLM provider”); values are stored in `data/preferences.json` and override env.
-
-If no provider is configured or the key is missing, rationale generation is skipped; context and recommendations still work, and `rationale_text` / summary will be null.
+Dashboard can override and persist to `data/preferences.json`. If no key / provider, rationales are skipped; recommendations still work.
 
 ---
 
 ## Daily briefing
 
-Optional “heartbeat-style” checklist runs **once per day** (scheduled after the daily batch) and can be run manually from the **Briefing** page or via `POST /api/briefing/run`.
-
-**Default checklist:** S&P 500 move (highlight if |change| ≥ 1.5%), VIX level (highlight if above 20), WTI oil price, recommendations count for today.
-
-To customize, create `data/briefing_checklist.json` with a JSON array of items (see `app/services/briefing.py` for `type`: `index_move`, `level`, `price`, `recs_count` and their fields). Results are stored in the `daily_briefings` table and returned by `GET /api/briefing/latest`.
+Runs on schedule and manually from **Briefing** or `POST /api/briefing/run`. Default checklist includes WTI (`CL=F`), Brent (`BZ=F`), gold (`GC=F`), and silver (`SI=F`). Optional override: `data/briefing_checklist.json` (see `app/services/briefing.py`).
 
 ---
 
-## Populate data (without waiting for scheduler)
+## Populate data without waiting for the scheduler
 
-From the Dashboard click **“Run pipeline once”**, or from the project root:
+- Dashboard → **Run full pipeline**, or from project root with venv active:
 
 ```bash
 python scripts/run_pipeline_once.py
 ```
 
-This runs: ingest RSS + sentiment → market analysis → daily recommendation batch (if none for today). Then check `/api/analysis/latest` and `/api/recommendations`.
-
-Other scripts (from project root):
-
-- `python scripts/refresh_todays_batch.py` — Rebuild today’s batch (e.g. after changing risk preference).
+- `python scripts/refresh_todays_batch.py` — rebuild today’s batch (e.g. after changing preferences).
 
 ---
 
 ## Testing / sanity check
 
-- **Health:** `curl http://localhost:8000/api/health`
-- **Run pipeline once:** use Dashboard or `python scripts/run_pipeline_once.py`, then open Dashboard → Recommendations and Analysis.
-- **Research:** open http://localhost:8000/research, type e.g. `Apple`, click **Resolve**, then **Get research** (LLM summary requires a configured provider).
-- **Briefing:** open http://localhost:8000/briefing and click **Run briefing now** (uses live yfinance data and today’s rec count).
+- **Health:** `curl http://localhost:8000/api/health` (or open in browser)
+- **Pipeline:** run once, then **Analysis** + **Recommendations**
+- **Taken trade:** **Took it** → **Active trades**; after close → **Journal**
+- **Research:** `/research` with a configured LLM
 
-There are no automated test suites in the repo yet; the above manual checks are the current validation.
+Automated test suites are minimal; the above is the main manual validation.
 
 ---
 
 ## Data and files
 
-| Path / location | Description |
-|-----------------|-------------|
-| `data/trading.db` | SQLite database (created on first run) |
-| `data/preferences.json` | User preferences (risk, LLM provider/model, Ollama URL); created when saved from UI |
-| `data/blocklist.txt` | Optional; one symbol per line (2–5 letters), `#` = comment; used to exclude tokens from ticker detection |
-| `data/briefing_checklist.json` | Optional; custom daily briefing checklist (JSON array); see `app/services/briefing.py` |
+| Path | Description |
+|------|-------------|
+| `data/trading.db` | SQLite DB |
+| `data/preferences.json` | Risk, LLM, **risk_budget_1r** |
+| `data/blocklist.txt` | Optional ticker blocklist |
+| `data/briefing_checklist.json` | Optional briefing config |
 
-**Main tables:** `feed_items`, `market_analyses`, `recommendations`, `active_trades`, `active_trade_levels`, `daily_briefings`.
-
----
-
-## Reuse from codeops-trading-app
-
-| From codeops-trading-rss-ingester | Reused in local_trading_bot_v2 |
-|-----------------------------------|---------------------------------|
-| Feed list, categories, item shape | Feeds in `app/services/ingestion/feeds.py`; FeedItem in `app/models/feed_item.py` (plus sentiment, asset_tags) |
-| Max age / cleanup | `feed_max_age_days`; daily cleanup job at 04:00 |
-| Fetch → parse → save | Same flow with `feedparser` and SQLite |
-
-**Shell:** Bash (Git Bash / WSL) or PowerShell; use `;` instead of `&&` in PowerShell where needed.
+**Main tables:** `feed_items`, `market_analyses`, `recommendations`, `active_trades` (incl. `outcome`, `outcome_at`, `closing_price`), `active_trade_levels`, `daily_briefings`.
 
 ---
 
-## What’s next
+## Troubleshooting: very few recommendations
 
-See [PLAN_PROGRESS.md](PLAN_PROGRESS.md) §10 for the full backlog. Current status:
+1. **Risk budget (most common):** The batch targets **~20** rows (5 per category). Set **Risk budget per batch** to **25** (default) or higher and **Refresh today’s batch**. A value like **1.0** caps total Size at 1 percentage point and will drop most ideas.
+2. **Regime / confidence:** In **risk-off**, thresholds are stricter; check logs for `min_confidence` and skip reasons.
+3. **Correlation:** Pairs with very high return correlation to an already-selected idea are skipped (see engine logs).
 
-| Step | Status |
-|------|--------|
-| Pipeline, scheduler, recommendation engine, taken-asset filter | Done |
-| Research / rationale (multi-provider LLM), richer context (yfinance .info), company→ticker resolve | Done |
-| Active-trade update (original + suggested + history), indices, blocklist, feed cleanup | Done |
-| Daily briefing (checklist, job, API, UI) | Done |
-| Export (CSV) | Later |
-| MCP tools / Telegram (optional) | Later |
+---
+
+## Shell tips
+
+- **PowerShell:** use `;` between commands; execution policy may block scripts — you can run `python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000` without activating if you use `.venv\Scripts\python.exe` explicitly.
+- **Git Bash on Windows:** `source .venv/Scripts/activate` (forward slashes).
+- **WSL:** treat paths as Linux; venv is `.venv/bin/activate`.
 
 ---
 
 ## Disclaimer
 
-All analysis and recommendations are for **educational and research purposes only**. Not financial advice. See API responses and [TRADING_APP_PLAN.md](../TRADING_APP_PLAN.md) §8.
+All analysis and recommendations are for **educational and research purposes only**. Not financial advice. See API responses and [TRADING_APP_PLAN.md](../TRADING_APP_PLAN.md).

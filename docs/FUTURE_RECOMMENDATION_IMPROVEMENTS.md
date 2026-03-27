@@ -99,7 +99,7 @@ This document outlines research-backed options to improve the accuracy of the re
 | Option | Description | Effort | Impact | Status |
 |--------|-------------|--------|--------|--------|
 | **Kelly or fractional Kelly** | Suggest position size from confidence (as probability) and R:R (e.g. half-Kelly). | Low | Medium | ✅ **DONE** — `suggested_risk_pct` computed via half-Kelly style in `_suggested_risk_pct()`, shown in Recommendations page "Size" column |
-| **Risk budget per batch** | Cap total risk (e.g. sum of 1R across recommendations) per batch or per category. | Low | Medium | ✅ **DONE** — `risk_budget_1r` preference (default 1.0 = 100%) enforced in `build_daily_candidates()`, configurable on Dashboard |
+| **Risk budget per batch** | Cap total risk (e.g. sum of suggested_risk_pct across recommendations) per batch. | Low | Medium | ✅ **DONE** — `risk_budget_1r` in `build_daily_candidates()` (default **10.0** sum of Size %); Dashboard; see README if batch looks “empty” after two trades |
 | **Confidence-based sizing** | Map confidence to suggested size (e.g. 0.5% risk at 40%, 1% at 70%). | Low | Medium | ✅ **DONE** — Implemented as part of half-Kelly calculation with tier-based fallback |
 
 ---
@@ -143,7 +143,7 @@ After running the app and opening the recommendations view:
    - Trend alignment now includes 4H; “MTF: aligned” in volatility notes means daily, weekly, and (when not neutral) 4H agree. Conflicting timeframes reduce alignment bonus and can lower confidence.
 
 4. **Volatility regime (ATR)**  
-   - SL/TP widths are adjusted: **contracting** volatility → slightly wider (1.1× ATR) to avoid whipsaw; **expanding** → slightly tighter (0.95×). You won’t see a label unless you log or expose `volatility_regime` from the technical snapshot; you can confirm by comparing SL/TP distance for the same asset in different volatility regimes.
+   - SL/TP widths are adjusted: **contracting** volatility → slightly wider (1.1× ATR) to avoid whipsaw; **expanding** → slightly tighter (0.95×). **`Vol regime: expanding|contracting|stable`** is included in each recommendation’s stored `volatility_notes` and shown in the Recommendations page **Context** column (hover for full text).
 
 5. **Indicator conflict (reduce confidence + skip)**  
    - **Confidence:** When RSI is overbought but direction is long (or similar conflicts), confidence is reduced by up to 25 points.  
@@ -184,6 +184,20 @@ After accumulating some closed trades:
 - Visit Dashboard → see calibration stats appear once you have closed trades.  
 - Click "Fit Platt Calibration" (after 10+ closed trades) to train the model.  
 - Set risk budget to 0.5 (50%) on Dashboard, run a new batch → should see fewer recommendations and logs showing budget constraint.
+
+---
+
+## Next quick wins (~30 minutes each)
+
+**Done:** macro banner + `macro_overlay` on `GET /api/recommendations`; calibration strip on `/recommendations`; survivor **indicator conflict penalty** appended to `volatility_notes`. `MACRO_DAY_CONFIDENCE_PENALTY` now lives in `macro_calendar.py` (imported by the engine).
+
+Further ideas from **Sections 6–9** or polish:
+
+1. **2026+ macro dates** — Extend `HIGH_IMPACT_DATES` in `macro_calendar.py` so the banner stays accurate after 2025.
+2. **Show calibrated confidence in API** — If Platt is fitted, add optional `confidence_calibrated` to recommendation items.
+3. **A/B or shadow mode** — Run two threshold profiles and log which would have fired (Section 9).
+
+**Earlier polish:** Vol regime in notes; **market_regime_note** merged into stored `volatility_notes`; **Context** column on Recommendations.
 
 ---
 
