@@ -41,9 +41,11 @@ def fetch_ohlcv(symbol: str, period: str = "90d", interval: Optional[str] = None
     if cache_key in cache:
         cached = cache[cache_key]
         return cached if not cached.empty else None
+    # yfinance logs and some builds also print "$TICKER: possibly delisted" to the console;
+    # keep loggers quiet (failures still return None / empty df).
     log = logging.getLogger("yfinance")
     old_level = log.level
-    log.setLevel(logging.WARNING)
+    log.setLevel(logging.CRITICAL)
     try:
         ticker = yf.Ticker(symbol)
         kwargs = {"period": "30d" if use_interval == "1h" else period, "interval": use_interval}

@@ -2,7 +2,10 @@
 APScheduler jobs: ingestion + sentiment, analysis run, daily recommendation batch,
 active-trade updates (ATR-based trailing), daily briefing, feed cleanup.
 """
+import asyncio
+from functools import partial
 from datetime import datetime, timezone, date, timedelta
+from typing import Optional
 from uuid import uuid4
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -23,7 +26,12 @@ from app.services.recommendations.engine import get_yf_symbol, compute_sl_tp_for
 from app.services.market_context import build_market_context
 from app.services.technicals import build_snapshot, compute_atr_levels, clear_cache, determine_direction
 from app.services.briefing import run_briefing
-from app.services.regime_monitor import detect_regime_transition, should_skip_recommendations_on_transition, get_trades_needing_review
+from app.services.regime_monitor import (
+    RegimeTransition,
+    detect_regime_transition,
+    get_trades_needing_review,
+    should_skip_recommendations_on_transition,
+)
 
 
 async def job_ingest_and_sentiment() -> None:
@@ -54,8 +62,8 @@ async def job_run_analysis() -> None:
 
 async def job_daily_batch() -> None:
     """
-    Produce up to 10 recommendations per category for today (5 in risk-off).
-    Uses ATR-based SL/TP, long/short direction, and expiry estimation.
+    Produce today's batch: up to 5 recommendations per category (stocks, commodities, other, indices),
+    i.e. up to ~20 total, with ATR SL/TP, direction, expiry, global correlation and risk-budget filters.
     """
     batch_id = date.today().isoformat()
     print(f"[BATCH] Starting daily batch for {batch_id}")
@@ -83,8 +91,9 @@ async def job_daily_batch() -> None:
             by_asset_sentiment = payload.get("by_asset_sentiment") or None
             active_events = payload.get("active_events") or None
             print(f"[BATCH] Sentiment tags: {len(by_asset_sentiment) if by_asset_sentiment else 0}, excluded taken: {len(exclude_taken)}")
-            candidates = build_daily_candidates(
-                max_count=10,
+            # Run heavy sync work off the asyncio loop so HTTP (e.g. /api/recommendations) stays responsive.
+            _build = partial(
+                build_daily_candidates,
                 by_asset_sentiment=by_asset_sentiment,
                 preferred_risk=get_preferred_risk(),
                 tie_seed=batch_id,
@@ -92,6 +101,7 @@ async def job_daily_batch() -> None:
                 active_events=active_events,
                 risk_budget_1r=get_risk_budget_1r(),
             )
+            candidates = await asyncio.to_thread(_build)
             print(f"[BATCH] Candidates built: {len(candidates)}")
             for c in candidates:
                 print(f"  [{c.asset_category}] {c.asset_id} dir={c.direction} conf={c.confidence_score} rr={c.risk_reward}")
@@ -109,6 +119,15 @@ async def job_daily_batch() -> None:
                     rationale_text = await generate_rationale(ctx)
                 except Exception as exc:
                     print(f"  [BATCH] LLM rationale failed for {c.asset_id}: {exc}")
+                # Persist regime / divergence / event hints with technical notes (Candidate.market_regime_note is not a DB column)
+                _reg_note = getattr(c, "market_regime_note", None)
+                _vol = c.volatility_notes
+                if _reg_note and _vol:
+                    _combined_notes = f"{_reg_note}; {_vol}"
+                elif _reg_note:
+                    _combined_notes = _reg_note
+                else:
+                    _combined_notes = _vol
                 rec = Recommendation(
                     id=str(uuid4()),
                     created_at=now,
@@ -125,7 +144,7 @@ async def job_daily_batch() -> None:
                     direction=c.direction,
                     confidence_score=c.confidence_score,
                     risk_reward=c.risk_reward,
-                    volatility_notes=c.volatility_notes,
+                    volatility_notes=_combined_notes,
                     status="pending",
                     suggested_risk_pct=getattr(c, "suggested_risk_pct", None),
                 )
@@ -147,12 +166,13 @@ async def job_update_active_trades() -> None:
     4. If price hits TP or SL -> mark CLOSED
     Regime-aware: detects regime transitions and flags trades needing review.
     """
-    clear_cache()
-    market_ctx = build_market_context()
-    regime_id = market_ctx.regime.regime if market_ctx else None
-    
-    # Check for regime transition
-    transition = detect_regime_transition(regime_id) if regime_id else None
+    def _regime_prep() -> Optional[RegimeTransition]:
+        clear_cache()
+        market_ctx = build_market_context()
+        regime_id = market_ctx.regime.regime if market_ctx else None
+        return detect_regime_transition(regime_id) if regime_id else None
+
+    transition = await asyncio.to_thread(_regime_prep)
     if transition:
         print(f"[UPDATE_TRADES] {transition.description()}")
 

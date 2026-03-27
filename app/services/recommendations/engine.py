@@ -6,11 +6,11 @@ confidence gating, cross-asset correlation. Best N per category (regime-dependen
 import logging
 from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import Optional
+from typing import Any, Optional, Sequence
 
 logger = logging.getLogger(__name__)
 
-from app.services.sentiment.ticker_detection import is_likely_ticker
+from app.services.sentiment.ticker_detection import get_blocklist, is_likely_ticker
 from app.services.technicals import (
     TechnicalSnapshot,
     build_snapshot,
@@ -32,7 +32,7 @@ from app.services.market_context import (
     check_trend_alignment,
     TrendAlignment,
 )
-from app.services.macro_calendar import is_high_impact_day
+from app.services.macro_calendar import MACRO_DAY_CONFIDENCE_PENALTY, is_high_impact_day
 
 RISK_TIER_ORDER = {"conservative": 0, "moderate": 1, "aggressive": 2}
 
@@ -42,8 +42,15 @@ CONFLICT_SKIP_THRESHOLD = 25  # raised from 20 to allow more candidates through
 # Skip adding a candidate if its return correlation with any already-selected recommendation exceeds this (avoid over-concentration).
 CORRELATION_THRESHOLD = 0.75
 
-# On high-impact macro days (FOMC, CPI, NFP ±1 day), reduce all candidates' confidence by this amount.
-MACRO_DAY_CONFIDENCE_PENALTY = 10
+# Macro-day confidence penalty: see `MACRO_DAY_CONFIDENCE_PENALTY` in `app.services.macro_calendar`.
+
+# Daily batch: up to this many recommendations **per** category (stocks, commodities, other, indices).
+# Four categories → up to 4 × MAX_RECOMMENDATIONS_PER_CATEGORY (default 20) before correlation / budget trims.
+MAX_RECOMMENDATIONS_PER_CATEGORY = 5
+# Max depth when ranking within each category (backfill + ideas); must be >= MAX_RECOMMENDATIONS_PER_CATEGORY.
+POOL_PER_CATEGORY = 15
+
+BATCH_CATEGORIES: tuple[str, ...] = ("stocks", "commodities", "other", "indices")
 
 SENTIMENT_TAG_TO_ASSETS: dict[str, list[tuple[str, str]]] = {
     "oil": [("commodities", "WTI"), ("commodities", "Brent"), ("stocks", "XOM"), ("stocks", "CVX")],
@@ -179,21 +186,28 @@ def _all_assets() -> list[tuple[str, str, str, str]]:
 def _suggested_risk_pct(confidence: int, risk_reward: Optional[float]) -> float:
     """
     Suggested risk per trade as % of capital (half-Kelly style when R:R known; else tier-based).
-    Capped at 2%, floored at 0.
+    Capped at 2%, floored at 0. If Kelly is negative (no mathematical edge), use tier fallback
+    so Size stays consistent with confidence and risk-budget sums make sense.
     """
     p = (confidence or 0) / 100.0
+
+    def _tier_fallback() -> float:
+        if p >= 0.70:
+            return 1.0
+        if p >= 0.50:
+            return 0.75
+        if p >= 0.30:
+            return 0.5
+        return 0.25
+
     if risk_reward is not None and risk_reward > 1.0:
         # half-Kelly: f = 0.5 * (p * R - 1) / (R - 1)
         k = 0.5 * (p * risk_reward - 1.0) / (risk_reward - 1.0)
-        return round(min(2.0, max(0.0, 100.0 * k)), 2)
-    # Tier-based fallback
-    if p >= 0.70:
-        return 1.0
-    if p >= 0.50:
-        return 0.75
-    if p >= 0.30:
-        return 0.5
-    return 0.25
+        kelly_pct = min(2.0, max(0.0, 100.0 * k))
+        if kelly_pct >= 0.01:
+            return round(kelly_pct, 2)
+        return round(_tier_fallback(), 2)
+    return round(_tier_fallback(), 2)
 
 
 @dataclass
@@ -346,6 +360,26 @@ def _looks_like_symbol(s: str) -> bool:
     return all(c.isalpha() or c == '.' for c in s)
 
 
+def _tag_eligible_for_extra_yahoo_price(tag: str) -> bool:
+    """
+    Stricter than _looks_like_symbol for sentiment-derived tags: use blocklist + length
+    rules so common headline words (BUY, THE, ECB-as-noise) do not hit Yahoo.
+    Still allows BRK.B-style tickers.
+    """
+    if not tag or not tag.strip():
+        return False
+    tag = tag.strip()
+    if is_likely_ticker(tag):
+        return True
+    # Dotted class-A style (e.g. BRK.B) — not covered by is_likely_ticker (non-alpha)
+    if "." in tag and tag == tag.upper() and len(tag) <= 8:
+        base, _, suf = tag.partition(".")
+        if base.isalpha() and suf.isalpha() and 1 <= len(base) <= 5 and 1 <= len(suf) <= 2:
+            if base not in get_blocklist():
+                return True
+    return False
+
+
 def _try_price(tag: str) -> Optional[float]:
     """Try multiple yfinance symbol variants for a sentiment tag."""
     if tag.upper() in _KNOWN_CRYPTO:
@@ -396,11 +430,31 @@ def get_price_snapshot(extra_tags: Optional[set[str]] = None) -> dict[str, float
         for tag in extra_tags:
             if tag in out:
                 continue
-            if not _looks_like_symbol(tag):
+            if not _tag_eligible_for_extra_yahoo_price(tag):
                 continue
             p = _try_price(tag)
             if p is not None:
                 out[tag] = round(p, 2)
+    return out
+
+
+def snapshot_prices_for_recommendations(records: Sequence[Any]) -> dict[str, float]:
+    """
+    Current price keyed by asset_id for the given rows only (no full-universe scan).
+    Use from API handlers to avoid blocking the asyncio loop on get_price_snapshot().
+    """
+    out: dict[str, float] = {}
+    for r in records:
+        aid = getattr(r, "asset_id", None) or ""
+        if not aid:
+            continue
+        cat = getattr(r, "asset_category", None) or "stocks"
+        sym = get_yf_symbol(cat, aid)
+        if not sym:
+            continue
+        p = get_cached_price(sym)
+        if p is not None and p > 0:
+            out[aid] = round(float(p), 2)
     return out
 
 
@@ -415,7 +469,7 @@ def get_previous_price_snapshot(extra_tags: Optional[set[str]] = None) -> dict[s
         for tag in extra_tags:
             if tag in out:
                 continue
-            if not _looks_like_symbol(tag):
+            if not _tag_eligible_for_extra_yahoo_price(tag):
                 continue
             p = _try_previous_price(tag)
             if p is not None:
@@ -480,6 +534,9 @@ def _build_volatility_notes(snap: Optional[TechnicalSnapshot], direction: str) -
         parts.append(f"S: {snap.supports[0]}")
     if snap.resistances:
         parts.append(f"R: {snap.resistances[0]}")
+    # ATR slope regime affects SL/TP width (see compute_atr_levels); expose for UI / research (Section 2 roadmap)
+    vreg = getattr(snap, "volatility_regime", None) or "stable"
+    parts.append(f"Vol regime: {vreg}")
     parts.append(f"trend: {snap.trend_bias}")
     parts.append(f"dir: {direction}")
     return "; ".join(parts) if parts else None
@@ -602,6 +659,10 @@ def _build_candidate(
         align_label = f"MTF: {'aligned' if trend_aligned else 'conflicting'}"
         ema_label = f"EMA: {alignment.ema_stack}"
         vol_notes = f"{vol_notes}; {align_label}; {ema_label}"
+    # Survivors only: show how close this row was to being dropped for indicator conflict
+    if conflict_penalty > 0:
+        suffix = f"indicator conflict penalty: {conflict_penalty} (skip if ≥{CONFLICT_SKIP_THRESHOLD})"
+        vol_notes = f"{vol_notes}; {suffix}" if vol_notes else suffix
 
     suggested_risk = _suggested_risk_pct(confidence, rr)
     return Candidate(
@@ -733,75 +794,96 @@ def build_daily_candidates_for_category(
 
 
 def build_daily_candidates(
-    max_count: int = 10,
+    max_per_category: Optional[int] = None,
+    pool_per_category: int = POOL_PER_CATEGORY,
     by_asset_sentiment: Optional[dict] = None,
     preferred_risk: str = "moderate",
     tie_seed: Optional[str] = None,
     exclude_taken: Optional[set[tuple[str, str]]] = None,
     active_events: Optional[list[str]] = None,
-    risk_budget_1r: float = 1.0,
+    risk_budget_1r: float = 25.0,
 ) -> list[Candidate]:
     """
-    Build up to max_count per category. Clears price cache, detects market regime,
-    applies confidence gating, and adjusts recommendations to current conditions.
-    Risk budget: caps total 1R exposure (sum of suggested_risk_pct) at risk_budget_1r.
-    Returns (candidates, market_context).
+    Build today's batch: up to ``max_per_category`` recommendations **per** category
+    (stocks, commodities, other, indices), i.e. up to **4 × max_per_category** (default 20) before
+    correlation and risk-budget filters.
+
+    For each category, candidates are ranked internally; we then walk in order and keep up to
+    ``max_per_category`` that pass **global** correlation (vs already chosen rows) and **global**
+    risk budget (sum of Size %).
     """
     global _last_market_context
     clear_cache()
 
-    # Build market context once for the whole batch
     market_ctx = build_market_context()
     _last_market_context = market_ctx
     logger.info("Market regime: %s", market_ctx.regime.description)
 
+    cap = max_per_category if max_per_category is not None else MAX_RECOMMENDATIONS_PER_CATEGORY
+    cap = max(1, int(cap))
+    logger.info(
+        "[ENGINE] Batch: up to %d per category × %d categories (regime=%s)",
+        cap,
+        len(BATCH_CATEGORIES),
+        market_ctx.regime.regime,
+    )
+
     out: list[Candidate] = []
     seen_asset_key: set[tuple[str, str]] = set()
     total_risk_pct = 0.0
-    for category in ("stocks", "commodities", "other", "indices"):
-        for c in build_daily_candidates_for_category(
+
+    def _try_add(c: Candidate) -> bool:
+        nonlocal total_risk_pct
+        key = (c.asset_category, c.asset_id)
+        if key in seen_asset_key:
+            return False
+        symbol_new = get_yf_symbol(c.asset_category, c.asset_id)
+        if symbol_new and out:
+            max_corr: Optional[float] = None
+            for c_old in out:
+                symbol_old = get_yf_symbol(c_old.asset_category, c_old.asset_id)
+                if not symbol_old or symbol_old == symbol_new:
+                    continue
+                corr = get_return_correlation(symbol_old, symbol_new)
+                if corr is not None:
+                    max_corr = corr if max_corr is None else max(max_corr, corr)
+            if max_corr is not None and max_corr >= CORRELATION_THRESHOLD:
+                logger.info(
+                    "[ENGINE] Skip %s (%s): correlation %.2f with existing recs (threshold %.2f)",
+                    c.asset_id, symbol_new, max_corr, CORRELATION_THRESHOLD,
+                )
+                return False
+        candidate_risk = c.suggested_risk_pct or 0.0
+        if total_risk_pct + candidate_risk > risk_budget_1r:
+            logger.info(
+                "[ENGINE] Skip %s (%s): risk budget %.2f%% + %.2f%% > %.2f%% (budget)",
+                c.asset_id, symbol_new, total_risk_pct, candidate_risk, risk_budget_1r,
+            )
+            return False
+        seen_asset_key.add(key)
+        out.append(c)
+        total_risk_pct += candidate_risk
+        return True
+
+    for category in BATCH_CATEGORIES:
+        ranked = build_daily_candidates_for_category(
             category,
-            max_count=max_count,
+            max_count=max(pool_per_category, cap),
             by_asset_sentiment=by_asset_sentiment,
             preferred_risk=preferred_risk,
             tie_seed=tie_seed,
             exclude_taken=exclude_taken,
             market_ctx=market_ctx,
             active_events=active_events,
-        ):
-            key = (c.asset_category, c.asset_id)
-            if key in seen_asset_key:
-                continue
-            # Correlation-aware: skip if highly correlated with an already-selected recommendation
-            symbol_new = get_yf_symbol(c.asset_category, c.asset_id)
-            if symbol_new and out:
-                max_corr: Optional[float] = None
-                for c_old in out:
-                    symbol_old = get_yf_symbol(c_old.asset_category, c_old.asset_id)
-                    if not symbol_old or symbol_old == symbol_new:
-                        continue
-                    corr = get_return_correlation(symbol_old, symbol_new)
-                    if corr is not None:
-                        max_corr = corr if max_corr is None else max(max_corr, corr)
-                if max_corr is not None and max_corr >= CORRELATION_THRESHOLD:
-                    logger.info(
-                        "[ENGINE] Skip %s (%s): correlation %.2f with existing recs (threshold %.2f)",
-                        c.asset_id, symbol_new, max_corr, CORRELATION_THRESHOLD,
-                    )
-                    continue
-            # Risk budget check: skip if adding this candidate would exceed the budget
-            candidate_risk = c.suggested_risk_pct or 0.0
-            if total_risk_pct + candidate_risk > risk_budget_1r:
-                logger.info(
-                    "[ENGINE] Skip %s (%s): risk budget %.2f%% + %.2f%% > %.2f%% (budget)",
-                    c.asset_id, symbol_new, total_risk_pct, candidate_risk, risk_budget_1r,
-                )
-                continue
-            seen_asset_key.add(key)
-            out.append(c)
-            total_risk_pct += candidate_risk
+        )
+        taken = 0
+        for c in ranked:
+            if taken >= cap:
+                break
+            if _try_add(c):
+                taken += 1
+        logger.info("[ENGINE][%s] added %d / target %d to batch", category, taken, cap)
 
-    # Macro calendar overlay: reduce confidence on and around FOMC/CPI/NFP days
     if is_high_impact_day(date.today(), window_days=1):
         for c in out:
             current = c.confidence_score or 0
@@ -811,7 +893,13 @@ def build_daily_candidates(
             MACRO_DAY_CONFIDENCE_PENALTY, len(out),
         )
 
-    logger.info("[ENGINE] Final batch: %d candidates, total risk budget used: %.2f%% / %.2f%%", len(out), total_risk_pct, risk_budget_1r)
+    logger.info(
+        "[ENGINE] Final batch: %d candidates (≤%d per category), total risk budget used: %.2f%% / %.2f%%",
+        len(out),
+        cap,
+        total_risk_pct,
+        risk_budget_1r,
+    )
     return out
 
 

@@ -20,36 +20,50 @@
     <a href="/briefing">Briefing</a>
   </nav>
 
-  <main class="app app--wide">
+  <main class="app app--wide app--recommendations">
     <h1 class="page-title">Recommendations</h1>
     <p class="page-desc">Today's trade ideas grouped by category. Mark each as "Took it" or "Skip". Run the pipeline from the <a href="/dashboard">Dashboard</a> first.</p>
     
     <details class="mb-3" style="padding:var(--space-2);background:var(--secondary);border:1px solid var(--border);border-radius:var(--radius);">
       <summary style="cursor:pointer;font-weight:600;font-size:13px;color:var(--foreground);">💡 Understanding Recommendations (click to expand)</summary>
-      <div class="text-sm text-muted" style="margin-top:var(--space-2);line-height:1.6;">
-        <p><strong>Confidence Score:</strong> 0-100 rating based on sentiment + technical alignment. Higher = stronger conviction. Grouped into buckets: Low (0-40), Medium (40-60), High (60-80), Very High (80-100).</p>
-        <p style="margin-top:8px;"><strong>Size:</strong> Suggested position size (% of capital at risk) calculated from confidence and risk-reward using half-Kelly formula.</p>
-        <p style="margin-top:8px;"><strong>Market Regime:</strong> Current conditions affect which assets appear and their direction. <span style="color:#10b981;">Risk-On</span> = more aggressive longs; <span style="color:#ef4444;">Risk-Off</span> = defensive, may flip to shorts.</p>
+      <div class="text-sm text-muted" style="margin-top:var(--space-2);line-height:1.65;">
+        <p><strong>Confidence Score:</strong> 0–100 from sentiment + technical alignment. Buckets: Low (0–40), Medium (40–60), High (60–80), Very High (80–100). On the <a href="/dashboard">Dashboard</a> you can fit <strong>Platt calibration</strong> on closed trades so scores map more closely to realized hit rates.</p>
+        <p style="margin-top:10px;"><strong>Size:</strong> Suggested % of capital at risk (half-Kelly style from confidence and R:R). The <strong>risk budget</strong> on the Dashboard caps the <em>sum</em> of Size % across all ideas in one batch.</p>
+        <p style="margin-top:10px;"><strong>Market Regime:</strong> SPX trend + VIX drive <span style="color:#10b981;">risk-on</span>, <span style="color:#ca8a04;">cautious</span>, or <span style="color:#ef4444;">risk-off</span>. Regime changes which names qualify, direction (e.g. equities may flip short in risk-off), and confidence thresholds.</p>
+        <p style="margin-top:10px;"><strong>Context column</strong> (one long line of tags — the table is wide so it wraps):</p>
+        <ul style="margin:6px 0 0;padding-left:1.25rem;">
+          <li><strong>Leading phrase</strong> — Short market summary when the row was built; may add <em>sentiment–price divergence</em> (news vs price disagree) or <em>high-impact event</em> (Fed, macro, earnings tags from the news pipeline).</li>
+          <li><strong>ATR / RSI / MACD / ADX / Stoch / OBV / Bollinger / S&amp;R</strong> — Snapshot of indicators and nearest support (S) / resistance (R) used for direction and SL/TP.</li>
+          <li><strong>MTF</strong> — Multi-timeframe trend: <em>aligned</em> vs <em>conflicting</em> with the trade direction (daily / weekly / 4H when available).</li>
+          <li><strong>EMA</strong> — EMA stack label (bullish / bearish / mixed) from the same alignment module.</li>
+          <li><strong>Vol regime</strong> — <em>contracting</em> ATR → slightly <em>wider</em> stop/target bands to reduce whipsaw; <em>expanding</em> → slightly <em>tighter</em> bands; <em>stable</em> → baseline ATR multiples.</li>
+          <li><strong>Macro calendar</strong> — On heavy macro days (e.g. FOMC, CPI, NFP window) the engine applies a small confidence penalty across candidates; that isn’t repeated in every cell but affects the whole batch.</li>
+        </ul>
+        <p style="margin-top:10px;"><strong>Indicator conflict:</strong> Ideas above the skip threshold are removed. Survivors may show <em>indicator conflict penalty: N (skip if ≥25)</em> in Context so you can see how “tight” the fit was.</p>
+        <p style="margin-top:8px;">A <strong>yellow macro banner</strong> appears when today is in a FOMC/CPI/NFP window (same rule as the batch engine). The <strong>calibration strip</strong> below summarizes Brier / ECE from closed trades; use the Dashboard to fit Platt and see per-bucket hit rates.</p>
       </div>
     </details>
+
+    <div id="macro-banner" class="alert alert--warning mb-2" style="display:none;" role="status" aria-live="polite"></div>
+    <div id="calibration-strip" class="recommendations-calibration mb-2" style="display:none;" aria-label="Calibration summary"></div>
 
     <div id="loading" class="loading-overlay"><span class="spinner spinner--lg"></span> Loading recommendations&hellip;</div>
     <div id="content" style="display:none;">
       <section class="card" id="stocks-section">
         <h2 class="section-title">Stocks</h2>
-        <div class="table-wrap"><table><thead id="stocks-head"></thead><tbody id="stocks-body"></tbody></table></div>
+        <div class="table-wrap table-wrap--recommendations"><table class="table--recommendations"><thead id="stocks-head"></thead><tbody id="stocks-body"></tbody></table></div>
       </section>
       <section class="card" id="commodities-section">
         <h2 class="section-title">Commodities</h2>
-        <div class="table-wrap"><table><thead id="commodities-head"></thead><tbody id="commodities-body"></tbody></table></div>
+        <div class="table-wrap table-wrap--recommendations"><table class="table--recommendations"><thead id="commodities-head"></thead><tbody id="commodities-body"></tbody></table></div>
       </section>
       <section class="card" id="indices-section">
         <h2 class="section-title">Indices</h2>
-        <div class="table-wrap"><table><thead id="indices-head"></thead><tbody id="indices-body"></tbody></table></div>
+        <div class="table-wrap table-wrap--recommendations"><table class="table--recommendations"><thead id="indices-head"></thead><tbody id="indices-body"></tbody></table></div>
       </section>
       <section class="card" id="other-section">
         <h2 class="section-title">Other</h2>
-        <div class="table-wrap"><table><thead id="other-head"></thead><tbody id="other-body"></tbody></table></div>
+        <div class="table-wrap table-wrap--recommendations"><table class="table--recommendations"><thead id="other-head"></thead><tbody id="other-body"></tbody></table></div>
       </section>
     </div>
 
@@ -121,8 +135,32 @@
       const label = days <= 0 ? 'today' : days === 1 ? '1 day' : days + ' days';
       return exp.toLocaleDateString() + ' <span class="text-sm text-muted">(' + label + ')</span>';
     }
+    function escapeAttr(s) {
+      if (s == null || s === '') return '';
+      return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+    function contextCell(rec) {
+      const vn = rec.volatility_notes || '';
+      if (!vn.trim()) return '<td class="col-context text-xs text-muted">—</td>';
+      return '<td class="col-context text-xs text-muted ctx-wrap" title="' + escapeAttr(vn) + '"><span class="ctx-text">' + escapeAttr(vn) + '</span></td>';
+    }
 
-    const THEAD = '<tr><th>Asset</th><th>Dir</th><th class="num">Entry</th><th class="num">Current</th><th class="num">SL</th><th class="num">TP</th><th class="num">R:R</th><th>Conf</th><th>Risk</th><th class="num">Size</th><th>Expiry</th><th>Status</th><th>Actions</th></tr>';
+    const THEAD = '<tr>'
+      + '<th class="col-asset">Asset</th>'
+      + '<th class="col-dir">Dir</th>'
+      + '<th class="col-num-sm num">Entry</th>'
+      + '<th class="col-num-sm num">Now</th>'
+      + '<th class="col-num-sm num">SL</th>'
+      + '<th class="col-num-sm num">TP</th>'
+      + '<th class="col-rr num">R:R</th>'
+      + '<th class="col-conf">Conf</th>'
+      + '<th class="col-risk">Risk</th>'
+      + '<th class="col-size num">Size</th>'
+      + '<th class="col-expiry">Expiry</th>'
+      + '<th class="col-context">Context</th>'
+      + '<th class="col-status">Status</th>'
+      + '<th class="col-actions">Actions</th>'
+      + '</tr>';
 
     function buildRow(rec) {
       const tr = document.createElement('tr');
@@ -131,19 +169,20 @@
         : '<button class="btn btn-sm btn--secondary" data-do="research">Research</button>';
       const sizePct = rec.suggested_risk_pct != null ? rec.suggested_risk_pct.toFixed(2) + '%' : '—';
       tr.innerHTML =
-        '<td class="font-semibold">' + rec.asset_id + '</td>' +
-        '<td>' + dirBadge(rec.direction) + '</td>' +
-        '<td class="num">' + fmtNum(rec.buy_in_price) + '</td>' +
-        '<td class="num">' + fmtNum(rec.current_price) + '</td>' +
-        '<td class="num">' + fmtNum(rec.stop_loss) + '</td>' +
-        '<td class="num">' + fmtNum(rec.take_profit) + '</td>' +
-        '<td class="num">' + fmtRR(rec.risk_reward) + '</td>' +
-        '<td>' + confBadge(rec.confidence_score) + '</td>' +
-        '<td><span class="badge badge--gray">' + (rec.risk_tier || '—') + '</span></td>' +
-        '<td class="num text-sm">' + sizePct + '</td>' +
-        '<td class="text-sm">' + fmtExpiry(rec.expiry_date) + '</td>' +
-        '<td>' + statusBadge(rec.status) + '</td>' +
-        '<td><div style="display:inline-flex;gap:4px;white-space:nowrap;">' + actions + '</div></td>';
+        '<td class="col-asset font-semibold">' + rec.asset_id + '</td>' +
+        '<td class="col-dir">' + dirBadge(rec.direction) + '</td>' +
+        '<td class="col-num-sm num">' + fmtNum(rec.buy_in_price) + '</td>' +
+        '<td class="col-num-sm num">' + fmtNum(rec.current_price) + '</td>' +
+        '<td class="col-num-sm num">' + fmtNum(rec.stop_loss) + '</td>' +
+        '<td class="col-num-sm num">' + fmtNum(rec.take_profit) + '</td>' +
+        '<td class="col-rr num">' + fmtRR(rec.risk_reward) + '</td>' +
+        '<td class="col-conf">' + confBadge(rec.confidence_score) + '</td>' +
+        '<td class="col-risk"><span class="badge badge--gray">' + (rec.risk_tier || '—') + '</span></td>' +
+        '<td class="col-size num text-sm">' + sizePct + '</td>' +
+        '<td class="col-expiry text-sm">' + fmtExpiry(rec.expiry_date) + '</td>' +
+        contextCell(rec) +
+        '<td class="col-status">' + statusBadge(rec.status) + '</td>' +
+        '<td class="col-actions"><div class="btn-group-rec">' + actions + '</div></td>';
       tr.querySelectorAll('button[data-do]').forEach(btn => {
         btn.addEventListener('click', async () => {
           const act = btn.dataset.do;
@@ -163,22 +202,78 @@
       head.innerHTML = THEAD;
       body.innerHTML = '';
       if (!items || items.length === 0) {
-        body.innerHTML = '<tr><td colspan="13" class="table-empty">No recommendations in this category</td></tr>';
+        body.innerHTML = '<tr><td colspan="14" class="table-empty">No recommendations in this category</td></tr>';
         return;
       }
       items.forEach(rec => body.appendChild(buildRow(rec)));
     }
 
+    function renderMacroBanner(macro) {
+      const el = document.getElementById('macro-banner');
+      if (!el || !macro || !macro.active) {
+        if (el) el.style.display = 'none';
+        return;
+      }
+      el.textContent = macro.message || 'Macro calendar overlay is active today.';
+      el.style.display = 'flex';
+    }
+
+    function renderCalibrationStrip(cal) {
+      const el = document.getElementById('calibration-strip');
+      if (!el || !cal) return;
+      const n = cal.n_total != null ? cal.n_total : 0;
+      const brier = cal.brier_score != null ? cal.brier_score : '—';
+      const ece = cal.ece != null ? cal.ece : '—';
+      const platt = cal.platt_calibration || {};
+      const plattOk = !!platt.fitted;
+      const parts = [
+        '<span class="recommendations-calibration__label">Calibration</span>',
+        '<span>Brier <strong>' + brier + '</strong> <span class="text-muted">(↓ better)</span></span>',
+        '<span>ECE <strong>' + ece + '</strong> <span class="text-muted">(↓ better)</span></span>',
+        '<span>' + (plattOk ? 'Platt: <strong>fitted</strong>' : 'Platt: <strong>not fitted</strong>') + '</span>',
+        '<span class="text-muted">n=' + n + ' resolved outcomes for Brier/ECE</span>',
+        '<a href="/dashboard">Open Dashboard</a> <span class="text-muted">for bucket table &amp; “Fit Platt”</span>'
+      ];
+      if (n < 10) {
+        parts.push('<span class="text-muted">· Need ≥10 closed trades to fit Platt.</span>');
+      }
+      el.innerHTML = '<div class="recommendations-calibration__inner">' + parts.join(' · ') + '</div>';
+      el.style.display = 'block';
+    }
+
     async function load() {
+      const macroEl = document.getElementById('macro-banner');
+      const calEl = document.getElementById('calibration-strip');
       try {
-        const r = await fetch('/api/recommendations?group_by=category');
-        const data = await r.json();
+        const [recSettled, calSettled] = await Promise.allSettled([
+          fetch('/api/recommendations?group_by=category').then(r => {
+            if (!r.ok) throw new Error(r.status + ' ' + r.statusText);
+            return r.json();
+          }),
+          fetch('/api/calibration').then(r => {
+            if (!r.ok) throw new Error(r.status + ' ' + r.statusText);
+            return r.json();
+          })
+        ]);
+        if (recSettled.status !== 'fulfilled') throw recSettled.reason;
+        const data = recSettled.value;
+        renderMacroBanner(data.macro_overlay);
+        if (calSettled.status === 'fulfilled') {
+          renderCalibrationStrip(calSettled.value);
+        } else {
+          if (calEl) {
+            calEl.innerHTML = '<div class="recommendations-calibration__inner text-muted">Calibration summary unavailable. <a href="/dashboard">Dashboard</a></div>';
+            calEl.style.display = 'block';
+          }
+        }
         const by = data.by_category || {};
         render('stocks-head', 'stocks-body', 'stocks-section', by.stocks);
         render('commodities-head', 'commodities-body', 'commodities-section', by.commodities);
         render('indices-head', 'indices-body', 'indices-section', by.indices);
         render('other-head', 'other-body', 'other-section', by.other);
       } catch (e) {
+        if (macroEl) macroEl.style.display = 'none';
+        if (calEl) calEl.style.display = 'none';
         document.getElementById('content').innerHTML = '<div class="alert alert--error">Failed to load: ' + e.message + '</div>';
       }
       document.getElementById('loading').style.display = 'none';

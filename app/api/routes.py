@@ -2,6 +2,7 @@
 API routes: analysis, recommendations, feedback (Took it/Skipped), active trades.
 All user-facing responses include disclaimer per TRADING_APP_PLAN.
 """
+import asyncio
 from datetime import datetime, timezone, date
 from typing import Any
 
@@ -196,7 +197,11 @@ async def list_recommendations(
     List recommendations. Optional: batch_id, status, asset_category (stocks|commodities|other).
     Use group_by=category to get { stocks: [...], commodities: [...], other: [...], indices: [...] } for the recommendation page.
     When group_by=category, defaults to today's batch and deduplicates by (category, asset_id).
+    Includes macro_overlay when FOMC/CPI/NFP window applies (same rule as batch confidence penalty).
     """
+    from app.services.macro_calendar import get_macro_overlay_info
+
+    macro_overlay = get_macro_overlay_info()
     # Default to today's batch so the Recommendations page shows one set of ideas
     if batch_id is None and group_by == "category":
         batch_id = date.today().isoformat()
@@ -225,9 +230,12 @@ async def list_recommendations(
         # Attach current price for each rec (from latest snapshot)
         price_snapshot: dict[str, float] = {}
         if recs_deduped:
-            from app.services.recommendations.engine import get_price_snapshot
-            asset_ids = list({r.asset_id for r in recs_deduped if r.asset_id})
-            price_snapshot = get_price_snapshot(extra_tags=set(asset_ids))
+            from app.services.recommendations.engine import snapshot_prices_for_recommendations
+
+            price_snapshot = await asyncio.to_thread(
+                snapshot_prices_for_recommendations,
+                recs_deduped,
+            )
         for r in recs_deduped:
             cat = r.asset_category if r.asset_category in grouped else "other"
             if cat not in grouped:
@@ -235,8 +243,8 @@ async def list_recommendations(
             item = _rec_to_item(r)
             item["current_price"] = price_snapshot.get(r.asset_id or "") if price_snapshot else None
             grouped[cat].append(item)
-        return _with_disclaimer({"by_category": grouped, "items": items})
-    return _with_disclaimer({"items": items})
+        return _with_disclaimer({"by_category": grouped, "items": items, "macro_overlay": macro_overlay})
+    return _with_disclaimer({"items": items, "macro_overlay": macro_overlay})
 
 
 @router.post("/recommendations/{recommendation_id}/took-it")
@@ -535,12 +543,29 @@ async def fit_calibration(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
 async def get_regime_status(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
     """
     Get current regime status and any trades flagged for review due to recent transitions.
+    Refreshes regime from live market context so the UI is not stuck on "unknown" until
+    the active-trades job runs.
     """
-    from app.services.regime_monitor import get_current_regime_state, get_trades_needing_review
+    from app.services.market_context import build_market_context
+    from app.services.regime_monitor import (
+        detect_regime_transition,
+        get_current_regime_state,
+        get_trades_needing_review,
+    )
     from sqlalchemy.orm import selectinload
-    
-    # Get current regime state
+
+    live_regime: str | None = None
+    try:
+        ctx = await asyncio.to_thread(build_market_context)
+        if ctx and getattr(ctx, "regime", None):
+            live_regime = ctx.regime.regime
+            await asyncio.to_thread(detect_regime_transition, live_regime)
+    except Exception:
+        pass
+
     regime_state = get_current_regime_state()
+    if regime_state.get("current_regime") is None and live_regime:
+        regime_state = {**regime_state, "current_regime": live_regime}
     
     # Get active trades
     q = (
@@ -576,7 +601,8 @@ async def get_regime_status(db: AsyncSession = Depends(get_db)) -> dict[str, Any
 async def get_market_context() -> dict[str, Any]:
     """Current market regime, cross-asset correlations, and trading conditions."""
     from app.services.market_context import build_market_context
-    ctx = build_market_context()
+
+    ctx = await asyncio.to_thread(build_market_context)
     return _with_disclaimer({
         "regime": ctx.regime.regime,
         "regime_description": ctx.regime.description,

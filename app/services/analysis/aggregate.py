@@ -16,6 +16,11 @@ from app.services.sentiment import tag_event_types
 
 # Half-life for sentiment decay in hours: items from 24h ago have half the weight
 SENTIMENT_HALF_LIFE_HOURS = 24.0
+
+# Sentiment–price snapshot: do not call Yahoo for every unique tag (hundreds of false
+# positives → huge log spam, slow analysis). Only tags with enough mentions, capped.
+MIN_TAG_MENTIONS_FOR_YAHOO_PRICE = 2
+MAX_EXTRA_TAGS_YAHOO_PRICE = 120
 # Windows for sentiment trend: recent = last 24h, older = 24–72h (for divergence)
 SENTIMENT_RECENT_HOURS = 24.0
 SENTIMENT_OLDER_MAX_HOURS = 72.0
@@ -158,8 +163,19 @@ async def run_analysis(session: AsyncSession) -> MarketAnalysis:
             return None
         return sum(s * w for s, w in pairs) / tw
 
-    price_snapshot = get_price_snapshot(extra_tags=set(by_asset_sentiment.keys()))
-    previous_price_snapshot = get_previous_price_snapshot(extra_tags=set(by_asset_sentiment.keys()))
+    _tag_by_count = sorted(
+        by_asset_sentiment.items(),
+        key=lambda kv: (-(kv[1].get("count") or 0), kv[0]),
+    )
+    extra_price_tags: set[str] = set()
+    for tag, info in _tag_by_count:
+        if len(extra_price_tags) >= MAX_EXTRA_TAGS_YAHOO_PRICE:
+            break
+        if (info.get("count") or 0) >= MIN_TAG_MENTIONS_FOR_YAHOO_PRICE:
+            extra_price_tags.add(tag)
+
+    price_snapshot = get_price_snapshot(extra_tags=extra_price_tags)
+    previous_price_snapshot = get_previous_price_snapshot(extra_tags=extra_price_tags)
     PRICE_CHANGE_THRESHOLD = 0.005  # 0.5% to call up/down
 
     for tag in list(by_asset_sentiment.keys()):

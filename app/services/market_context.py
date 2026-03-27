@@ -367,10 +367,11 @@ class MarketContext:
         return 35
 
     def max_recommendations_per_category(self) -> int:
-        """risk_off: cap at 5 per category instead of 10."""
-        if self.regime.regime == "risk_off":
-            return 5
-        return 10
+        """
+        Max length of the ranked candidate list produced **per category** (before taking the top 5
+        for the batch). Must be large enough that correlation/budget skips can still fill slots.
+        """
+        return 15
 
     def describe(self) -> str:
         parts = [self.regime.description]

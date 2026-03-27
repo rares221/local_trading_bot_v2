@@ -87,6 +87,13 @@ a { color: var(--primary); }
 /* Layout */
 .app { max-width: 720px; margin: 0 auto; padding: var(--space-3) var(--space-2) var(--space-6); }
 .app--wide { max-width: 1280px; }
+/* Recommendations: use nearly full viewport width so wide tables avoid horizontal scroll */
+.app--recommendations {
+  max-width: min(1680px, calc(100vw - 24px));
+  width: 100%;
+  padding-left: var(--space-2);
+  padding-right: var(--space-2);
+}
 
 /* Navigation */
 .nav {
@@ -215,6 +222,83 @@ tbody tr:hover { background: var(--muted); }
 .num { text-align: right; font-variant-numeric: tabular-nums; font-family: var(--font-mono); font-size: 13px; }
 td.table-empty { text-align: center; padding: var(--space-4); color: var(--muted-foreground); }
 td .btn-sm { margin: 0 2px; }
+
+/* Recommendations tables: fit without scrollbar on typical desktop */
+.table-wrap--recommendations {
+  overflow-x: visible;
+}
+@media (max-width: 1100px) {
+  .table-wrap--recommendations {
+    overflow-x: auto;
+  }
+}
+.table--recommendations {
+  table-layout: fixed;
+  width: 100%;
+  font-size: 13px;
+}
+.table--recommendations th,
+.table--recommendations td {
+  padding: 8px 6px;
+  vertical-align: top;
+}
+.table--recommendations th {
+  white-space: normal;
+  line-height: 1.25;
+  hyphens: auto;
+}
+.table--recommendations .col-asset { width: 5.5rem; }
+.table--recommendations .col-dir { width: 4.25rem; }
+.table--recommendations .col-num-sm { width: 4.5rem; }
+.table--recommendations .col-rr { width: 3.5rem; }
+.table--recommendations .col-conf { width: 4rem; }
+.table--recommendations .col-risk { width: 5.5rem; }
+.table--recommendations .col-size { width: 3.75rem; }
+.table--recommendations .col-expiry { width: 8.5rem; }
+.table--recommendations .col-context { width: 32%; min-width: 0; }
+.table--recommendations .col-status { width: 5rem; }
+.table--recommendations .col-actions { width: 11rem; min-width: 0; }
+.table--recommendations .col-context,
+.table--recommendations .col-context .ctx-text {
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+.table--recommendations .col-actions .btn-group-rec {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  justify-content: flex-end;
+}
+.table--recommendations .num { font-size: 12px; }
+
+/* Recommendations page: macro + calibration strips */
+.recommendations-calibration {
+  padding: 10px 14px;
+  background: var(--info-bg);
+  color: var(--info-text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 13px;
+  line-height: 1.55;
+  box-shadow: var(--shadow);
+}
+.dark .recommendations-calibration {
+  border-color: var(--border);
+}
+.recommendations-calibration__inner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+}
+.recommendations-calibration__label {
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 11px;
+  margin-right: 4px;
+}
 
 /* Form controls */
 .form-group { margin-bottom: var(--space-2); }

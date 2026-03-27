@@ -79,21 +79,28 @@ def set_research_llm_config(provider: str | None = None, model: str | None = Non
     return get_research_llm_config()
 
 
+# Sum of per-trade suggested_risk_pct values (each is % of capital, e.g. 0.5 = 0.5%).
+# Default 10.0 ≈ ten trades at ~1% suggested risk — not "one percent total" (see README).
+# Sum of Size % across all recs; default fits ~20 small positions (e.g. 20 × ~1%).
+_DEFAULT_RISK_BUDGET = 25.0
+_MAX_RISK_BUDGET = 50.0
+
+
 def get_risk_budget_1r() -> float:
-    """Return risk_budget_1r (max total 1R exposure per batch) from preferences, default 1.0 (100%)."""
+    """Return max sum of suggested_risk_pct (%) allowed per batch. Default allows a normal-sized batch."""
     data = _load_prefs()
     val = data.get("risk_budget_1r")
     if val is None:
-        return 1.0
+        return _DEFAULT_RISK_BUDGET
     try:
         return max(0.0, float(val))
     except (ValueError, TypeError):
-        return 1.0
+        return _DEFAULT_RISK_BUDGET
 
 
 def set_risk_budget_1r(value: float) -> float:
-    """Save risk_budget_1r (0.0-10.0). Returns saved value."""
-    val = max(0.0, min(10.0, float(value)))
+    """Save risk_budget_1r (0.0–50.0). Returns saved value."""
+    val = max(0.0, min(_MAX_RISK_BUDGET, float(value)))
     data = _load_prefs()
     data["risk_budget_1r"] = val
     _save_prefs(data)
