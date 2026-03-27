@@ -632,6 +632,34 @@ async def health() -> dict[str, str]:
     return {"status": "ok", "app": "local_trading_bot_v2"}
 
 
+# --- Macro Calendar ---
+
+@router.get("/macro-calendar")
+async def get_macro_calendar_status() -> dict[str, Any]:
+    """
+    Get macro calendar status: loaded dates, upcoming events, and overlay info.
+    Dates are fetched from public sources (Fed calendar, press releases) and cached.
+    """
+    from app.services.macro_calendar import get_macro_overlay_info
+    return _with_disclaimer(get_macro_overlay_info())
+
+
+@router.post("/macro-calendar/refresh")
+async def refresh_macro_calendar() -> dict[str, Any]:
+    """
+    Force refresh macro calendar from public sources (Fed, pattern-based CPI/NFP).
+    Updates the local cache file.
+    """
+    from app.services.macro_calendar import refresh_dates, get_macro_overlay_info
+    count = await asyncio.to_thread(refresh_dates, True)
+    info = get_macro_overlay_info()
+    return _with_disclaimer({
+        "refreshed": True,
+        "dates_loaded": count,
+        **info,
+    })
+
+
 # --- Preferences (risk stance); used by recommendation engine ---
 
 @router.get("/preferences")

@@ -16,6 +16,12 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    # Refresh macro calendar cache if stale (runs in background, non-blocking)
+    try:
+        from app.services.macro_calendar import refresh_dates
+        refresh_dates(force=False)  # Only fetches if cache is stale
+    except Exception:
+        pass  # Fallback to static dates if fetch fails
     scheduler = start_scheduler()
     yield
     scheduler.shutdown(wait=False)
@@ -81,3 +87,9 @@ async def briefing_page() -> HTMLResponse:
 async def journal_page() -> HTMLResponse:
     """Trade journal: review closed trades with outcomes, filter by confidence/regime/asset."""
     return HTMLResponse(content=_read_static("journal.html"))
+
+
+@app.get("/calendar", response_class=HTMLResponse)
+async def calendar_page() -> HTMLResponse:
+    """Macro calendar: FOMC, CPI, NFP dates that affect recommendation confidence."""
+    return HTMLResponse(content=_read_static("calendar.html"))

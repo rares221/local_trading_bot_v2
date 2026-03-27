@@ -166,13 +166,14 @@ async def job_update_active_trades() -> None:
     4. If price hits TP or SL -> mark CLOSED
     Regime-aware: detects regime transitions and flags trades needing review.
     """
-    def _regime_prep() -> Optional[RegimeTransition]:
+    def _regime_prep() -> tuple[Optional[RegimeTransition], Optional[str]]:
         clear_cache()
         market_ctx = build_market_context()
-        regime_id = market_ctx.regime.regime if market_ctx else None
-        return detect_regime_transition(regime_id) if regime_id else None
+        rid = market_ctx.regime.regime if market_ctx else None
+        trans = detect_regime_transition(rid) if rid else None
+        return trans, rid
 
-    transition = await asyncio.to_thread(_regime_prep)
+    transition, regime_id = await asyncio.to_thread(_regime_prep)
     if transition:
         print(f"[UPDATE_TRADES] {transition.description()}")
 

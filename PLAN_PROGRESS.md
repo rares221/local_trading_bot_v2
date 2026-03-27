@@ -8,8 +8,8 @@
 
 ## 1. Purpose & context
 
-- **Purpose:** Active trading support for oil/gold/gas (and later stocks, commodities, forex, indices) using market news, sentiment, and market data. Two deliverables: (1) **Market analysis**, (2) **Structured trade recommendations** with a **user feedback loop** (taken vs skipped → updates only for taken trades).
-- **Principles:** At most **5 recommendations per day**; don’t overwhelm the user; favor **conservative / lower-volatility** when the user prefers less risk.
+- **Purpose:** Trading insight from news + sentiment + technicals + regime: (1) **Market analysis**, (2) **Structured trade recommendations** (stocks, commodities, forex, indices) with **Took it / Skipped**, **active trade** lifecycle, **outcomes**, **journal**, and **calibration**.
+- **Principles:** Up to **5 recommendations per category per day** (~**20** total before correlation/risk-budget trims); one batch per calendar day; favor **conservative** assets when the user prefers less risk; updates only for **taken** trades until closed.
 - **Context:** Build on codeops-trading-app ideas; reuse RSS feeds and data shapes. Optional: [claude-equity-research](https://github.com/quant-sentiment-ai/claude-equity-research) for equity research.
 
 ---
@@ -27,8 +27,8 @@
 │  │ (reuse/adapt)│   │ (APIs)      │   │ Enrichment  │   │ Summary Output  │  │
 │  └─────────────┘   └─────────────┘   └─────────────┘   └─────────────────┘  │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│  PHASE 2: TRADE RECOMMENDATIONS (≤5 per day, volatility-aware)               │
-│  Recommendation Engine → daily batch (≤5) → User: Took it / Skipped         │
+│  PHASE 2: TRADE RECOMMENDATIONS (≤5 per category / day, volatility-aware)   │
+│  Engine → daily batch → User: Took it / Skipped → Active trades → Journal   │
 │  Took it → Active trade (updates SL/TP). Skipped → no updates.               │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -39,17 +39,17 @@
 
 - **Goal:** One coherent **market analysis** (news + sentiment + price/conditions) as input for Phase 2.
 - **Pipeline:** Ingest (RSS, price, conditions) → Enrich (sentiment, asset tags) → Aggregate → Output (report + “last analysis” artifact).
-- **Analysis output:** `as_of`, `sources_used`, `summary`, `payload` (by_category, by_asset_sentiment, price_snapshot).
+- **Analysis output:** `as_of`, `sources_used`, `summary`, `payload` (by_category, by_asset_sentiment, **price_snapshot** / trends / divergence — Yahoo enrichment only for **high-count** tags, capped; see `aggregate.py`).
 - **Deliverables:** Ingestion, sentiment + tagging, market analysis output, optional MCP tools, Cursor rules.
 
 ---
 
 ## 4. Phase 2 — Trade recommendations (spec)
 
-- **Goal:** At most **5 structured recommendations per day** from analysis; user marks Took it / Skipped; updates only for taken trades.
-- **Recommendation schema:** `id`, `created_at`, `batch_id`, `asset_category`, `asset_id`, `buy_in_price`, `stop_loss`, `take_profit`, `expiry_date`, `rationale_ref`, `risk_tier`, `status` (pending | taken | skipped). Optional (Option B): `rationale_text` (LLM-generated short “why and risk”).
-- **Asset categories:** stocks, commodities, other (forex/crypto). Backlog: **indices** (§8.2).
-- **Daily cap:** One batch per day (batch_id = calendar day); at most 5 recs per day; engine ranks by sentiment + risk preference.
+- **Goal:** Up to **5 structured recommendations per category per day** (stocks, commodities, other, indices), then **global** correlation and **risk-budget** filters; user marks Took it / Skipped; updates only for open active trades until closed.
+- **Recommendation schema:** `id`, `created_at`, `batch_id`, `asset_category`, `asset_id`, `buy_in_price`, `stop_loss`, `take_profit`, `expiry_date`, `rationale_ref`, `rationale_text` (optional LLM), `risk_tier`, `direction`, `confidence_score`, `risk_reward`, `volatility_notes`, `suggested_risk_pct`, `status` (pending | taken | skipped).
+- **Asset categories:** **stocks**, **commodities**, **other** (e.g. forex), **indices** (implemented; see §9).
+- **Daily cap:** One batch per calendar day (`batch_id` = date); at most **5 per category** (~20 before trims); engine ranks within category then applies global gates.
 - **User feedback:** Took it → create **ActiveTrade** (recommendation_id, user_taken_at, current_sl, current_tp, expiry, last_updated). Skipped → status = skipped; no active trade.
 - **Scheduling:** Daily batch at configured time; update job (e.g. every 2h) only refreshes **active trades**.
 - **Risk tier:** conservative | moderate | aggressive; user preference (exposed in UI) filters/ranks candidates.
@@ -62,8 +62,8 @@
 
 | Principle | Implication |
 |-----------|-------------|
-| Don’t assault the user | At most 5 recommendations per day. |
-| Continue with the same set | Same batch until user responds; no new batch same day. |
+| Don’t assault the user | At most **5 per category** per day (~20 ceiling before filters). |
+| Continue with the same set | Same batch until user responds; no second batch same day unless refresh action. |
 | Respect risk preference | Tag risk_tier; favor conservative when user prefers. |
 | Updates only for taken trades | Took it → active trade gets SL/TP updates. Skipped → no updates. |
 
@@ -72,7 +72,7 @@
 | Condition | Action |
 |-----------|--------|
 | Same day, batch already exists | Do **not** create new batch. Run **update job** for active trades only. |
-| New calendar day | Create **one new batch** of ≤5 (batch_id = today). |
+| New calendar day | Create **one new batch** (batch_id = today), up to **5 per category**. |
 | User marks Took it | Create/update **active trade**; include in update job. |
 | User marks Skipped | status = skipped; no active trade; no future updates. |
 | Update job (e.g. every 2h) | Only **modifies active trades** (SL/TP, validity). Does not create new recommendations. |
@@ -81,7 +81,7 @@
 
 | # | Constraint | Note |
 |---|------------|------|
-| C1 | Max 5 recommendations per day | Engine returns at most 5 per batch. |
+| C1 | Max **5 per category** per day | Engine targets up to 5 × 4 categories; global correlation + risk budget may reduce count. |
 | C2 | One batch per day | batch_id = calendar day. |
 | C3 | No new batch same day | Guard: if today has pending batch, skip generation. |
 | C4 | Updates only for taken trades | Update job touches active_trades only. |
@@ -98,15 +98,16 @@
 ### 5.5 State model
 
 - **Recommendation:** status ∈ { pending | taken | skipped }. taken → one ActiveTrade; skipped → no active trade.
-- **ActiveTrade:** recommendation_id, user_taken_at, current_sl, current_tp, expiry, last_updated; updated by the periodic update job.
+- **ActiveTrade:** recommendation_id, user_taken_at, current_sl, current_tp, suggested_sl/tp, trade phases, expiry, last_updated, **outcome** / **outcome_at** / **closing_price** when closed; updated by the periodic job.
 
 ---
 
 ## 6. Tech stack (current)
 
-- **App:** `local_trading_bot_v2` (Python, FastAPI, SQLite, APScheduler).
-- **Data:** RSS ingestion, sentiment (VADER), asset tagging + dynamic ticker detection, market analysis aggregation, recommendation engine (yfinance for prices).
-- **UI:** Static HTML/CSS, dashboard, Recommendations / Analysis / Active trades pages, preferences (risk stance).
+- **App:** `local_trading_bot_v2` (Python **3.10+**, FastAPI, SQLite + aiosqlite, APScheduler).
+- **Data:** RSS ingestion; sentiment (VADER + optional FinBERT); tagging + ticker detection + **bounded** Yahoo lookups for sentiment–price snapshot (mention count + cap; blocklist); recommendation engine (yfinance); outcomes & Platt calibration.
+- **UI:** Static HTML/CSS — Dashboard, Recommendations (macro banner, calibration strip, context column), Research, Analysis, Active trades, **Journal**, Briefing; preferences include **risk budget** and LLM settings.
+- **API:** Regime status hydrates from live market context; heavy batch work can run **off the asyncio loop** (`asyncio.to_thread`) so the UI stays responsive.
 
 ---
 
@@ -120,15 +121,15 @@
 
 ## 8. Backlog / future refinements
 
-### 8.1 Dynamic ticker blocklist maintenance
+### 8.1 Dynamic ticker blocklist & Yahoo noise
 
-- **Problem:** Dynamic ticker detection produces false positives; we edit code (BLOCKLIST in ticker_detection.py) when new “possibly delisted” symbols appear in logs.
-- **Backlog:** Move blocklist to `data/blocklist.txt` (or script that suggests entries from logs). Load at runtime with in-code defaults as fallback.
+- **Done (hybrid):** In-code `_DEFAULT_BLOCKLIST` + optional **`data/blocklist.txt`**; `is_likely_ticker` / stricter extra-tag filter for price snapshots.
+- **Done (analysis):** Sentiment–price Yahoo calls limited to tags with **≥2 mentions**, **top 120 by count** (`aggregate.py`) to avoid log spam and multi-minute analysis runs.
+- **Ongoing:** Add symbols to `blocklist.txt` when new false positives appear in logs.
 
 ### 8.2 Indices as a recommendation category
 
-- **Context:** Users can trade indices (S&P 500, Dow, FTSE, VIX, etc.). We currently blocklist index symbols to avoid yfinance noise.
-- **Backlog:** Add **indices** category; support **up to 5 indices recommendations** per day. Map tags (SPX, DJI, FTSE, VIX) to yfinance symbols (e.g. ^GSPC, ^DJI, ^FTSE); add to tradeable universe; rank by sentiment; cap at 5.
+- **Done:** **indices** category in `ASSETS_BY_CATEGORY` (e.g. SPX, DJI, NDX, FTSE, Nikkei, Kospi, … with `^` Yahoo symbols); up to **5** index ideas per batch alongside other categories. (Older note about “blocklist index symbols” referred to *headline* false positives, not the curated index universe.)
 
 ### 8.3 Taken trades vs new batch
 
@@ -169,16 +170,13 @@
 
 We **adopt Option B (emulate)** in the app: no dependency on running Dexter; one Python codebase; rationale and/or “Research this ticker” implemented with our own context + one LLM call.
 
-**Planned work (Option B)**
+**Implemented (Option B — shipped)**
 
-1. **Rationale per recommendation (optional at batch time)**  
-   When building the daily batch, for each recommended asset we can call an LLM with context (analysis summary, by_asset_sentiment for that asset, buy_in_price, risk_tier). Prompt: one short paragraph “why this idea and main risk.” Store in a new field (e.g. `rationale_text`) or in a separate table keyed by recommendation_id. Show in Recommendations UI. Requires: LLM API key in app config; context builder; one-shot prompt; schema migration if we store on Recommendation.
+1. **Rationale per recommendation (batch time)** — `rationale_text` on `Recommendation`; `app/services/research/` builds context + multi-provider LLM; batch job fills when provider configured.
 
-2. **“Research this ticker” endpoint**  
-   `GET /api/research/{asset_id}` (and optional category): gather same context (latest analysis, sentiment for that asset, current price; optional: yfinance `.info` or Financial Datasets snapshot if we add a key). Single LLM call with the same style of prompt. Return `{ "summary": "…" }`. No storage; on-demand. Enables a “Research” button per row in the UI.
+2. **On-demand research** — `GET /api/research/summary?asset_id=...&category=...` with optional `generate=true`; **`GET /api/research/resolve?q=...`** for name→ticker; UI: Research page + per-row **Research** on Recommendations.
 
-3. **Richer context (optional later)**  
-   Add a small **research context** module: given (asset_id, category), return a dict: sentiment, price, optional fundamentals (yfinance `ticker.info` or one FD API call). Keeps the LLM prompt factual without reimplementing Dexter’s tool loop.
+3. **Richer context** — `build_research_context` includes yfinance `.info` slices, technicals, regime notes where applicable.
 
 **Option A (integrate Dexter)** remains in backlog: if we later want Dexter’s full depth (filings, DCF, multi-step planning), we can invoke Dexter as a service from the app instead of or in addition to the one-shot rationale.
 
@@ -211,7 +209,7 @@ We **adopt Option B (emulate)** in the app: no dependency on running Dexter; one
 | Blocklist from file | Done | `data/blocklist.txt`; one symbol per line, # comments |
 | **Practical Order: richer research context** | Done | yfinance `.info` (sector, industry, marketCap, shortName) in `build_research_context`; LLM prompt includes fundamentals |
 | **Practical Order: company name → ticker** | Done | `resolve_company_to_ticker()` in ticker_detection; `GET /api/research/resolve?q=...`; Research page "Resolve" button |
-| **Practical Order: optional daily briefing** | Done | Checklist (SPX move, VIX level, oil, recs today); `data/briefing_checklist.json` or default; job once/day; `daily_briefings` table; `GET /api/briefing/latest`, `GET /api/briefing/checklist`, `POST /api/briefing/run`; `/briefing` page |
+| **Practical Order: optional daily briefing** | Done | Default checklist: SPX move, VIX, **WTI, Brent, gold, silver** futures, recs today; optional `data/briefing_checklist.json`; `GET/POST` briefing APIs; `/briefing` page |
 | Export (CSV/table) | Not done | Optional |
 | Claude Equity Research | Not done | Optional |
 | UI / notifications | Partially done | Dashboard, pages; optional Telegram/Slack |
@@ -226,6 +224,22 @@ We **adopt Option B (emulate)** in the app: no dependency on running Dexter; one
 ---
 
 ## 10. Suggested next steps (order with Option B in mind)
+
+### 10.1 Next five priorities (backlog)
+
+Consolidated from §10 below and `docs/FUTURE_RECOMMENDATION_IMPROVEMENTS.md` (quick wins + Sections 6–9). Order is **suggested**, not mandatory.
+
+| # | Item | Scope / notes |
+|---|------|----------------|
+| 1 | ~~**Macro calendar forward-fill**~~ | **Done** — now **auto-fetched** from public sources (no API key): **FOMC** from Fed calendar HTML + press releases JSON; **CPI/NFP** pattern-based. Cached in `data/macro_calendar_cache.json` (7-day TTL). Static fallback if fetch fails. **API:** `GET /api/macro-calendar`, `POST /api/macro-calendar/refresh`. **UI:** `/calendar` page with status, upcoming events, refresh button. |
+| 2 | **Export (CSV)** | `GET /api/recommendations/export?format=csv` for today’s batch or pending; optional download control on Recommendations UI. |
+| 3 | **Calibrated confidence in API** | When Platt calibration is fitted, expose optional **`confidence_calibrated`** (or similar) on recommendation list/detail payloads so UI/API consumers see raw vs calibrated side by side. |
+| 4 | **MCP tools** (optional) | Thin wrappers: e.g. `get_latest_insight`, `get_sentiment_summary`, `get_oil_snapshot` over existing HTTP/DB paths. |
+| 5 | **Notifications** (optional) | Telegram / Slack (or webhook): e.g. daily batch ready, regime transition alerts, optional macro-day reminder. |
+
+Further ideas (larger than a single sprint): **A/B or shadow engine** (log alternate thresholds without changing live picks — Section 9 in future doc); **historical replay / backtest** (Section 6); **higher-frequency bars** (Section 9).
+
+---
 
 1. ~~**Taken assets vs new batch**~~ — Done: scheduler passes `exclude_taken` (from DB); engine skips in ideas + backfill (§5.4).
 2. ~~**Research / rationale (Option B — emulate Dexter)**~~ — Done: `app/services/research` (context + multi-provider LLM: OpenAI, Anthropic, Ollama, OpenRouter; config: `research_llm_provider`, `research_llm_model`, `*_api_key`, `ollama_base_url`), `rationale_text` on Recommendation, batch stores rationale when provider available, `GET /api/research/summary`, `GET /api/research/providers`.
@@ -286,8 +300,18 @@ We **adopt Option B (emulate)** in the app: no dependency on running Dexter; one
 | **Market context API** | Done | `GET /api/market/context`: regime, VIX, SPX trend, correlations, direction bias, thresholds |
 | **LLM prompt upgrade** | Done | Rationale now references market regime and multi-timeframe alignment |
 
+### Engine v3.1 — Ops, UI transparency, calibration
+
+| Item | Status | Notes |
+|------|--------|--------|
+| **Non-blocking batch build** | Done | `build_daily_candidates` runs in `asyncio.to_thread` so HTTP stays live during heavy work |
+| **Regime API hydration** | Done | `GET /api/regime/status` refreshes from `build_market_context` + `detect_regime_transition`; avoids stuck “unknown” before active-trade job |
+| **Recommendations API** | Done | Grouped list uses per-row price snapshot in a thread; `macro_overlay` on `GET /api/recommendations` |
+| **Survivor conflict note** | Done | `volatility_notes` can include `indicator conflict penalty: N (skip if ≥threshold)` |
+| **Calibration & journal** | Done | Dashboard Platt/Brier/ECE/buckets; `GET /api/calibration`; Journal page for closed trades |
+
 ---
 
 ## 11. One-line summary
 
-Phase 1 and Phase 2 core are done; **Engine v3** (regime detection, multi-TF alignment, EMA stack, confidence gating, cross-asset correlations, professional trade lifecycle with breakeven stops) is done. Next: UI refresh, CSV export (when needed), MCP optional.
+Phase 1–2 and **Engine v3** (+ sizing, risk budget, outcomes, calibration, journal, briefing commodities, macro overlay, log/Yahoo spam limits) are **done**. **Next:** see **§10.1** (CSV export, calibrated confidence field, MCP, notifications; macro calendar maintained through 2027).

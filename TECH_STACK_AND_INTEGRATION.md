@@ -1,9 +1,9 @@
 # Tech Stack and Claude Equity Research Integration
 
 **App location:** `local_trading_bot_v2` (this folder)  
-**Specs:** [TRADING_APP_PLAN.md](../TRADING_APP_PLAN.md) (scope, phases, schema) and [PLAN_MODE.md](../PLAN_MODE.md) (behaviour, constraints).
+**Implemented behaviour:** [PLAN_PROGRESS.md](PLAN_PROGRESS.md) is the in-repo source of truth. Original scope docs (`TRADING_APP_PLAN.md`, `PLAN_MODE.md`) may live elsewhere in a monorepo; they are **not** required paths inside this folder.
 
-This document recommends a concrete tech stack and how to integrate [claude-equity-research](https://github.com/quant-sentiment-ai/claude-equity-research) for stock analysis.
+This document describes the **chosen stack** (as implemented) and how to optionally integrate [claude-equity-research](https://github.com/quant-sentiment-ai/claude-equity-research) for richer stock narratives.
 
 ---
 
@@ -11,13 +11,13 @@ This document recommends a concrete tech stack and how to integrate [claude-equi
 
 | Layer | Choice | Rationale |
 |-------|--------|-----------|
-| **Language** | **Python 3.11+** | Strong fit for data pipelines, NLP/sentiment (VADER, TextBlob), RSS (feedparser), market data (yfinance, httpx), and one-off scripts. Single language for Phase 1 (analysis) and Phase 2 (recommendations + API + jobs). |
+| **Language** | **Python 3.10+** (see `README.md`) | Data pipelines, NLP/sentiment, RSS (feedparser), market data (yfinance), FastAPI, jobs—single language end-to-end. |
 | **API / app** | **FastAPI** | Async support, OpenAPI, minimal boilerplate. Serves market analysis, recommendations list, “Took it” / “Skipped”, active trades, and optional export (CSV). |
 | **Database** | **SQLite** (dev) or **PostgreSQL** (production) | Recommendations, active_trades, and optional analysis cache. SQLite keeps the app runnable with zero infra; Postgres when you need concurrency or remote access. Use a single schema satisfying PLAN_MODE (recommendations with batch_id, status; active_trades linked to recommendation_id). |
-| **Scheduled jobs** | **APScheduler** (in-process) or **Celery + Redis** | Daily batch (≤5 recommendations) and every-2h “update active trades only” job. APScheduler is enough for a single process; Celery if you later split workers. |
-| **Phase 1: ingestion** | **feedparser** (RSS), **httpx** (APIs), **yfinance** / **pandas** | Reuse feed list from codeops-trading-app; add oil/commodity feeds. Pull price and conditions from free tiers (EIA, OilPriceAPI, Alpha Vantage, etc.). |
-| **Phase 1: sentiment** | **VADER** or **TextBlob** (or small transformer) | Run on title/description; store sentiment_score and asset_tags. Lightweight and good enough for news headlines. |
-| **Phase 2: recommendation engine** | **Python** (rules + scoring) | Input: last market analysis + asset universe + user risk preference. Output: up to 5 recommendations with risk_tier (conservative/moderate/aggressive). No heavy ML required initially. |
+| **Scheduled jobs** | **APScheduler** (in-process, `app/jobs/scheduler.py`) | Configurable intervals: ingestion + analysis, daily recommendation batch, active-trade updates, daily briefing, feed cleanup. Celery + Redis only if you split workers later. |
+| **Phase 1: ingestion** | **feedparser** (RSS), **yfinance** / **pandas** | RSS feeds configured in-app; prices/technicals primarily from **yfinance**. |
+| **Phase 1: sentiment** | **VADER** (+ optional **FinBERT** blend if `requirements-optional.txt` installed) | `sentiment_score` + `asset_tags` on feed items; keyword tags + dynamic ticker detection. |
+| **Phase 2: recommendation engine** | **Python** (rules + scoring + regime context) | Input: latest `MarketAnalysis` payload + tradeable universe + preferences. Output: up to **5 recommendations per category** (stocks, commodities, other, indices) → **up to ~20** before correlation/risk-budget filters; ATR SL/TP, direction, confidence, optional LLM `rationale_text`. |
 
 ### Why not Node/Go for the main app?
 
@@ -34,12 +34,12 @@ This document recommends a concrete tech stack and how to integrate [claude-equi
 
 | What | Depends on Claude Code / Claude Equity Research? |
 |------|---------------------------------------------------|
-| **Phase 1: Market analysis** | **No.** RSS, price/conditions APIs, sentiment (VADER/TextBlob), aggregation, and the analysis report use only your stack (Python, feedparser, httpx, yfinance, etc.). |
-| **Phase 2: Recommendations (≤5/day)** | **No.** The recommendation engine takes your market analysis + asset universe + risk preference and outputs up to 5 ideas. For **oil, commodities, forex** the plan already uses “your own analysis (sentiment + conditions + price)”. |
-| **Phase 2: Stock recommendations** | **Optional.** For **stocks** (e.g. XOM, CVX, gold miners), you can either: (a) use the same pipeline (sentiment + price + conditions) and get usable stock ideas without any Claude, or (b) add richer “institutional-style” research later via Anthropic API or Claude Code. |
-| **Took it / Skipped, active trades, jobs** | **No.** All behaviour in PLAN_MODE is independent of Claude. |
+| **Phase 1: Market analysis** | **No.** RSS, yfinance-backed prices, sentiment (VADER + optional FinBERT), aggregation into `MarketAnalysis`. |
+| **Phase 2: Recommendations (daily batch)** | **No.** Engine uses analysis + universe + regime + preferences; up to **5 per category** (~20 before filters). Same stack for stocks, commodities, forex, indices. |
+| **Phase 2: Stock “research” prose** | **Optional.** In-app **research** service (Anthropic/OpenAI/Ollama/OpenRouter) adds rationales and on-demand summaries—**not** the same as the claude-equity-research plugin output format. |
+| **Took it / Skipped, active trades, journal, calibration** | **No.** Independent of Claude Code. |
 
-**Practical path:** Build Phase 1 and Phase 2 **without** Claude Code and without the Anthropic API. You get: ingestion, sentiment, market analysis, daily batch of ≤5 recommendations (including stocks via your own scoring), active trades, and updates. Add an “equity research” module (Anthropic API or Claude Code subprocess) later if you want fancier stock reports; until then, stock ideas come from your analysis pipeline like oil/commodities.
+**Practical path:** The shipped app already runs **without** Claude Code. You get: ingestion, sentiment, analysis, daily batch, active trades (ATR updates, outcomes, journal), calibration (Platt/Brier/ECE), briefing, and **optional** multi-provider research (`app/services/research/`: OpenAI, Anthropic, Ollama, OpenRouter). claude-equity-research remains optional for institutional-style *reports*, not for core signals.
 
 **Short-term trading:** For short-term trading (entry, SL, TP, expiry, sentiment- and conditions-driven), your pipeline alone is enough to reach the goal; you do not need Claude or the institutional report.
 
@@ -91,9 +91,9 @@ local_trading_bot_v2/
 │   │   ├── ingestion/     # RSS, price, conditions
 │   │   ├── sentiment/     # VADER/TextBlob, asset tagging
 │   │   ├── analysis/      # Aggregate → market analysis report
-│   │   ├── equity_research/  # Optional: Anthropic API or Claude Code (Option B/D)
-│   │   └── recommendations/  # Engine: analysis + universe → ≤5/day, risk_tier
-│   └── jobs/              # APScheduler: daily batch, every-2h active-trade updates
+│   │   ├── research/       # Optional LLM: rationales + on-demand summary (multi-provider)
+│   │   └── recommendations/  # Engine: analysis + universe → batch, risk_tier, sizing
+│   └── jobs/              # APScheduler wiring (see scheduler.py; intervals from settings)
 ├── data/                  # Optional: RSS cache, analysis output (if not only in DB)
 ├── tests/
 ├── .cursor/               # Optional: rules, MCP config
@@ -108,8 +108,8 @@ local_trading_bot_v2/
 
 | Question | Answer |
 |----------|--------|
-| **Best tech stack** | **Python 3.11+**, **FastAPI**, **SQLite/PostgreSQL**, **APScheduler**; **feedparser**, **httpx**, **yfinance**, **VADER/TextBlob** for Phase 1; same stack for Phase 2 (recommendation engine + API + jobs). |
+| **Best tech stack** | **Python 3.10+**, **FastAPI**, **SQLite** (default) / Postgres-ready URL, **APScheduler**; **feedparser**, **yfinance**, **pandas**, **VADER** (+ optional FinBERT); recommendation engine + static HTML UI. |
 | **Where to build** | This folder: `local_trading_bot_v2`. |
 | **Claude Code / Equity Research** | **Optional.** You can progress through Phase 1 and Phase 2 without it. If you add it later: use **Anthropic API + prompt reuse** (Option B) for stock ideas, or Option D (subprocess) for exact plugin output. |
 
-Implementation should follow [TRADING_APP_PLAN.md](../TRADING_APP_PLAN.md) for scope and order and [PLAN_MODE.md](../PLAN_MODE.md) for behaviour (daily batch, ≤5, risk tier, Took it/Skipped, update job only for active trades).
+For **what is implemented today**, use [PLAN_PROGRESS.md](PLAN_PROGRESS.md) and [README.md](README.md). Original TRADING_APP_PLAN / PLAN_MODE documents are optional external references if your team maintains them.

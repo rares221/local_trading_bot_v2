@@ -2,10 +2,10 @@
 
 Trading insight app: **market analysis** (RSS + sentiment + technicals), **regime-aware trade recommendations**, user feedback (**Took it / Skipped**), **active trade management** (ATR-based suggested SL/TP, signal alignment), **outcome logging & calibration**, **position sizing & risk budget**, **trade journal**, research rationales (multi-provider LLM), and an optional **daily briefing**.
 
-**Specs:** [TRADING_APP_PLAN.md](../TRADING_APP_PLAN.md) and [PLAN_MODE.md](../PLAN_MODE.md).  
-**Stack:** [TECH_STACK_AND_INTEGRATION.md](TECH_STACK_AND_INTEGRATION.md).  
-**Plan vs progress:** [PLAN_PROGRESS.md](PLAN_PROGRESS.md).  
-**Future ideas:** [docs/FUTURE_RECOMMENDATION_IMPROVEMENTS.md](docs/FUTURE_RECOMMENDATION_IMPROVEMENTS.md).
+**Living spec & progress:** [PLAN_PROGRESS.md](PLAN_PROGRESS.md) (architecture, constraints, what’s implemented).  
+**Stack & optional Claude integration:** [TECH_STACK_AND_INTEGRATION.md](TECH_STACK_AND_INTEGRATION.md).  
+**Future ideas:** [docs/FUTURE_RECOMMENDATION_IMPROVEMENTS.md](docs/FUTURE_RECOMMENDATION_IMPROVEMENTS.md).  
+*If your monorepo keeps original scope docs (`TRADING_APP_PLAN.md`, `PLAN_MODE.md`) **above** this folder, use those paths locally; they are not bundled in this repo snapshot.*
 
 ---
 
@@ -123,7 +123,7 @@ The **scheduler** starts with the app: ingestion + analysis (interval), daily ba
 | Page | URL | What it’s for |
 |------|-----|----------------|
 | **Dashboard** | `/dashboard` | Pipeline actions, risk stance, **risk budget per batch**, LLM settings, **calibration & regime status**, glossary / key concepts |
-| **Recommendations** | `/recommendations` | Today’s ideas; **Took it / Skip**; confidence, **suggested size %**, R:R |
+| **Recommendations** | `/recommendations` | Today’s ideas; **Took it / Skip**; confidence, **suggested size %**, R:R; **Context** column (technicals + regime notes); **macro** banner + **calibration** strip when APIs return them |
 | **Research** | `/research` | LLM research for any asset; company → ticker resolve |
 | **Market analysis** | `/analysis` | Latest report, sentiment, news by category |
 | **Active trades** | `/active-trades` | **Open** trades only (taken, not yet closed); update SL/TP; **Close manually** |
@@ -164,7 +164,7 @@ Same URLs; ensure port **8000** is exposed. On Windows, add Docker’s `bin` fol
 |--------|----------|-------------|
 | `GET` | `/api/health` | Health check |
 | `GET` | `/api/analysis/latest` | Latest market analysis |
-| `GET` | `/api/recommendations` | List recommendations (`?group_by=category`, filters) |
+| `GET` | `/api/recommendations` | List recommendations (`?group_by=category`, filters). Response includes `macro_overlay` when in a macro window (FOMC/CPI/NFP ±1 day). |
 | `POST` | `/api/recommendations/{id}/took-it` | Taken → creates active trade |
 | `POST` | `/api/recommendations/{id}/skipped` | Skipped |
 | `GET` | `/api/active-trades` | Open trades (add `?include_closed=true` for all) |
@@ -173,7 +173,9 @@ Same URLs; ensure port **8000** is exposed. On Windows, add Docker’s `bin` fol
 | `POST` | `/api/calibration/fit` | Fit Platt scaling (needs enough closed trades) |
 | `GET` | `/api/regime/status` | Regime snapshot / flags (for UI) |
 | `GET` | `/api/research/providers` | LLM providers + config |
-| `GET` | `/api/research/summary?...` | Research + optional LLM |
+| `GET` | `/api/research/resolve?q=...` | Company / phrase → ticker (cached + yfinance.Search) |
+| `GET` | `/api/research/summary?asset_id=...&category=...` | On-demand research + optional `generate=true` |
+| `GET` | `/api/market/context` | Regime, VIX/SPX context, correlations, thresholds |
 | `GET` | `/api/briefing/latest` | Latest briefing |
 | `POST` | `/api/briefing/run` | Run briefing now |
 | `GET` | `/api/preferences` | Risk, LLM, **risk_budget_1r** |
@@ -256,4 +258,4 @@ Automated test suites are minimal; the above is the main manual validation.
 
 ## Disclaimer
 
-All analysis and recommendations are for **educational and research purposes only**. Not financial advice. See API responses and [TRADING_APP_PLAN.md](../TRADING_APP_PLAN.md).
+All analysis and recommendations are for **educational and research purposes only**. Not financial advice. See API `disclaimer` fields and [PLAN_PROGRESS.md](PLAN_PROGRESS.md) §7.

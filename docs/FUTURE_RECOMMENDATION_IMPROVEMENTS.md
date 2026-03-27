@@ -193,7 +193,7 @@ After accumulating some closed trades:
 
 Further ideas from **Sections 6–9** or polish:
 
-1. **2026+ macro dates** — Extend `HIGH_IMPACT_DATES` in `macro_calendar.py` so the banner stays accurate after 2025.
+1. ~~**2026+ macro dates**~~ — **Done:** Now **auto-fetched** from public sources (no API key needed). `macro_calendar_fetcher.py` scrapes Fed calendar HTML + press releases JSON for FOMC; CPI/NFP are pattern-based. Cached locally with 7-day TTL; static fallback if fetch fails. **API:** `GET /api/macro-calendar`, `POST /api/macro-calendar/refresh`.
 2. **Show calibrated confidence in API** — If Platt is fitted, add optional `confidence_calibrated` to recommendation items.
 3. **A/B or shadow mode** — Run two threshold profiles and log which would have fired (Section 9).
 
