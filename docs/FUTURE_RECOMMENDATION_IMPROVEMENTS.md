@@ -19,14 +19,14 @@ This document outlines research-backed options to improve the accuracy of the re
 
 | Option | Description | Effort | Impact |
 |--------|-------------|--------|--------|
-| **Dynamic indicator weights** | Replace fixed 70% technical / 30% sentiment with weights that depend on regime (e.g. more weight to trend in risk_on, more to mean reversion in range). | Medium | High |
-| **Regime-specific thresholds** | Use different RSI/MACD/Stochastic thresholds per regime (e.g. stricter overbought in risk_off). | Low | Medium |
+| **Dynamic indicator weights** | Replace fixed 70% technical / 30% sentiment with weights that depend on regime (e.g. more weight to trend in risk_on, more to mean reversion in range). | Medium | High | ✅ **DONE** |
+| **Regime-specific thresholds** | Use different RSI/MACD/Stochastic thresholds per regime (e.g. stricter overbought in risk_off). | Low | Medium | ✅ **DONE** |
 | **Volume profile / VWAP** | Add volume-at-price or VWAP context to confirm levels and breakouts. | Medium | Medium |
 | **More timeframes** | Extend beyond daily vs weekly (e.g. 4H for swing, 1H for timing); score alignment across 3+ timeframes. | Medium | Medium |
 | **Volatility regime** | Separate ATR regime (expanding vs contracting) to adjust SL/TP width and avoid whipsaws. | Low | Medium |
 | **Indicator conflict rules** | Explicit rules when key indicators disagree (e.g. RSI overbought but MACD bullish) to reduce confidence or skip. | Low | Medium |
 
-**Implemented (Section 2):** All six items above are in place. Indicator conflicts apply a 0–25 penalty to confidence; candidates with penalty ≥ 20 are skipped (see `CONFLICT_SKIP_THRESHOLD` in the engine).
+**Implemented (Section 2):** All six items above are in place. (1) **Dynamic indicator weights:** `_regime_direction_weights()` and `_regime_tech_weights()` in `technicals.py` adjust sentiment/technical split and trend/mean-reversion balance per regime. (2) **Regime-specific thresholds:** `_regime_rsi_thresholds()` and `_regime_stoch_thresholds()` use stricter OB/OS levels in `risk_off`. Indicator conflicts apply a 0–25 penalty to confidence; candidates with penalty ≥ 25 are skipped (see `CONFLICT_SKIP_THRESHOLD` in the engine).
 
 ---
 

@@ -161,7 +161,17 @@ def _confidence_bucket(score: int | None) -> str:
 
 
 def _rec_to_item(r: Recommendation) -> dict:
+    from app.services.calibration import apply_platt_calibration, get_platt_params
+    
     score = getattr(r, "confidence_score", None)
+    
+    # Add calibrated confidence if Platt is fitted
+    platt_a, platt_b = get_platt_params()
+    confidence_calibrated = None
+    if score is not None and platt_a is not None and platt_b is not None:
+        # Return as percentage (0-100) for consistency with raw score
+        confidence_calibrated = round(apply_platt_calibration(score) * 100, 1)
+    
     item = {
         "id": r.id,
         "created_at": r.created_at.isoformat(),
@@ -175,6 +185,7 @@ def _rec_to_item(r: Recommendation) -> dict:
         "risk_tier": r.risk_tier,
         "direction": getattr(r, "direction", "long") or "long",
         "confidence_score": score,
+        "confidence_calibrated": confidence_calibrated,
         "confidence_bucket": _confidence_bucket(score),
         "risk_reward": getattr(r, "risk_reward", None),
         "suggested_risk_pct": getattr(r, "suggested_risk_pct", None),
@@ -245,6 +256,75 @@ async def list_recommendations(
             grouped[cat].append(item)
         return _with_disclaimer({"by_category": grouped, "items": items, "macro_overlay": macro_overlay})
     return _with_disclaimer({"items": items, "macro_overlay": macro_overlay})
+
+
+@router.get("/recommendations/export")
+async def export_recommendations_csv(
+    batch_id: str | None = None,
+    status: str | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Export recommendations as CSV. Defaults to today's batch.
+    Optional filters: batch_id (YYYY-MM-DD), status (pending|taken|skipped).
+    """
+    from fastapi.responses import StreamingResponse
+    import io
+    import csv
+
+    # Default to today's batch
+    if batch_id is None:
+        batch_id = date.today().isoformat()
+
+    q = select(Recommendation).order_by(Recommendation.created_at.desc())
+    if batch_id:
+        q = q.where(Recommendation.batch_id == batch_id)
+    if status:
+        q = q.where(Recommendation.status == status)
+    q = q.limit(200)
+    result = await db.execute(q)
+    recs = result.scalars().all()
+
+    # Build CSV in memory
+    output = io.StringIO()
+    writer = csv.writer(output)
+    
+    # Header row
+    writer.writerow([
+        "Asset", "Category", "Direction", "Entry", "Stop Loss", "Take Profit",
+        "R:R", "Confidence", "Bucket", "Size %", "Risk Tier", "Expiry",
+        "Status", "Batch", "Created At"
+    ])
+    
+    # Data rows
+    for r in recs:
+        score = getattr(r, "confidence_score", None)
+        writer.writerow([
+            r.asset_id,
+            r.asset_category,
+            getattr(r, "direction", "long") or "long",
+            r.buy_in_price,
+            r.stop_loss,
+            r.take_profit,
+            getattr(r, "risk_reward", None),
+            score,
+            _confidence_bucket(score),
+            getattr(r, "suggested_risk_pct", None),
+            r.risk_tier,
+            r.expiry_date.isoformat() if r.expiry_date else None,
+            r.status,
+            r.batch_id,
+            r.created_at.isoformat() if r.created_at else None,
+        ])
+
+    output.seek(0)
+    filename = f"recommendations_{batch_id}.csv"
+    
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
 
 
 @router.post("/recommendations/{recommendation_id}/took-it")
@@ -431,13 +511,13 @@ async def get_calibration(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
         outcome = getattr(t, "outcome", None) or ""
         if outcome == "hit_tp":
             buckets[bucket]["hit_tp"] += 1
-            brier_pairs.append((getattr(rec, "confidence_score", 0) or 0) / 100.0, 1.0)
+            brier_pairs.append(((getattr(rec, "confidence_score", 0) or 0) / 100.0, 1.0))
         elif outcome == "hit_sl":
             buckets[bucket]["hit_sl"] += 1
-            brier_pairs.append((getattr(rec, "confidence_score", 0) or 0) / 100.0, 0.0)
+            brier_pairs.append(((getattr(rec, "confidence_score", 0) or 0) / 100.0, 0.0))
         elif outcome == "expired":
             buckets[bucket]["expired"] += 1
-            brier_pairs.append((getattr(rec, "confidence_score", 0) or 0) / 100.0, 0.0)
+            brier_pairs.append(((getattr(rec, "confidence_score", 0) or 0) / 100.0, 0.0))
         elif outcome == "manual":
             buckets[bucket]["manual"] += 1
 
@@ -700,6 +780,77 @@ async def update_preferences(body: PreferencesUpdate) -> dict[str, Any]:
         return _with_disclaimer(out)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# --- Webhook Notifications ---
+
+@router.get("/notifications/config")
+async def get_notification_config() -> dict[str, Any]:
+    """Get webhook notification settings."""
+    from app.services.notifications import get_webhook_config
+    return _with_disclaimer(get_webhook_config())
+
+
+class NotificationConfigUpdate(BaseModel):
+    webhook_url: str | None = None
+    webhook_enabled: bool | None = None
+    notify_batch_ready: bool | None = None
+    notify_regime_change: bool | None = None
+    notify_macro_alert: bool | None = None
+    notify_trade_outcome: bool | None = None
+
+
+@router.patch("/notifications/config")
+async def update_notification_config(body: NotificationConfigUpdate) -> dict[str, Any]:
+    """Update webhook notification settings."""
+    from app.services.notifications import set_webhook_config
+    config = set_webhook_config(
+        webhook_url=body.webhook_url,
+        webhook_enabled=body.webhook_enabled,
+        notify_batch_ready=body.notify_batch_ready,
+        notify_regime_change=body.notify_regime_change,
+        notify_macro_alert=body.notify_macro_alert,
+        notify_trade_outcome=body.notify_trade_outcome,
+    )
+    config["message"] = "Notification settings saved."
+    return _with_disclaimer(config)
+
+
+@router.post("/notifications/test")
+async def test_notification() -> dict[str, Any]:
+    """Send a test notification to verify webhook configuration."""
+    from app.services.notifications import send_notification, get_webhook_config
+    
+    config = get_webhook_config()
+    if not config["webhook_url"]:
+        raise HTTPException(status_code=400, detail="No webhook URL configured")
+    
+    # Temporarily enable for test
+    test_data = {
+        "count": 5,
+        "categories": {"stocks": 2, "commodities": 1, "indices": 1, "other": 1}
+    }
+    
+    # Force send regardless of enabled status
+    from app.services.notifications import _format_message
+    import httpx
+    
+    payload = _format_message("batch_ready", test_data)
+    payload["embeds"][0]["title"] = "🧪 Test Notification"
+    payload["embeds"][0]["description"] = "Webhook is configured correctly!"
+    payload["text"] = "🧪 Test Notification\nWebhook is configured correctly!"
+    
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(config["webhook_url"], json=payload)
+            if resp.status_code < 300:
+                return _with_disclaimer({"ok": True, "message": "Test notification sent successfully!"})
+            else:
+                raise HTTPException(status_code=502, detail=f"Webhook returned {resp.status_code}")
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="Webhook request timed out")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to send: {str(e)}")
 
 
 # --- Actions (same logic as scripts; for UI buttons) ---

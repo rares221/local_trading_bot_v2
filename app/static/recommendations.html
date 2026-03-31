@@ -162,6 +162,13 @@
     <div id="macro-banner" class="alert alert--warning mb-2" style="display:none;" role="status" aria-live="polite"></div>
     <div id="calibration-strip" class="recommendations-calibration mb-2" style="display:none;" aria-label="Calibration summary"></div>
 
+    <div class="flex gap-2 mb-2" style="justify-content:flex-end;">
+      <a href="/api/recommendations/export" class="btn btn--secondary" id="export-btn" download>
+        <span data-icon="file-text"></span>
+        <span class="btn-label">Export CSV</span>
+      </a>
+    </div>
+
     <div id="loading" class="loading-overlay"><span class="spinner spinner--lg"></span> Loading recommendations&hellip;</div>
     <div id="content" style="display:none;">
       <section class="card" id="stocks-section">

@@ -243,13 +243,16 @@ Further ideas (larger than a single sprint): **A/B or shadow engine** (log alter
 
 1. ~~**Taken assets vs new batch**~~ — Done: scheduler passes `exclude_taken` (from DB); engine skips in ideas + backfill (§5.4).
 2. ~~**Research / rationale (Option B — emulate Dexter)**~~ — Done: `app/services/research` (context + multi-provider LLM: OpenAI, Anthropic, Ollama, OpenRouter; config: `research_llm_provider`, `research_llm_model`, `*_api_key`, `ollama_base_url`), `rationale_text` on Recommendation, batch stores rationale when provider available, `GET /api/research/summary`, `GET /api/research/providers`.
-3. **Export (CSV)** — `GET /api/recommendations/export?format=csv` for today’s batch or pending.
+3. ~~**Export (CSV)**~~ — Done: `GET /api/recommendations/export` returns CSV for today's batch. UI: "Export CSV" button on Recommendations page.
 4. ~~**Active-trade update logic**~~ — Done: original SL/TP preserved; suggested_* + `active_trade_levels` history; API and UI show original, suggested, and per-run table with timestamps.
 5. ~~**Blocklist from file**~~ — Done: `data/blocklist.txt` loaded at runtime; in-code defaults as fallback (§8.1).
 6. ~~**Indices category**~~ — Done: SPX/DJI/NDX/FTSE/VIX in ASSETS_BY_CATEGORY; recommendations + Research an asset (§8.2).
 7. ~~**Feed-item cleanup**~~ — Done: daily job at 04:00 deletes feed_items where fetched_at older than feed_max_age_days.
-8. **MCP tools** (optional) — get_latest_insight, get_sentiment_summary, get_oil_snapshot.
-9. **UI / notifications** (optional) — Telegram/Slack, etc.
+8. ~~**R:R Minimum Filter**~~ — Done: `MIN_RISK_REWARD = 1.5` in engine; candidates with R:R < 1.5 are skipped.
+9. ~~**Webhook Notifications**~~ — Done: `app/services/notifications.py` sends alerts via Discord/Slack/generic webhook. Events: batch_ready, regime_change. API + UI on Dashboard.
+10. ~~**Dynamic indicator weights**~~ — Done: `_regime_direction_weights()` and `_regime_tech_weights()` in `technicals.py`.
+11. ~~**Regime-specific thresholds**~~ — Done: `_regime_rsi_thresholds()` and `_regime_stoch_thresholds()` use stricter OB/OS in `risk_off`.
+12. **MCP tools** (optional) — get_latest_insight, get_sentiment_summary, get_oil_snapshot.
 
 ---
 

@@ -151,6 +151,21 @@ async def job_daily_batch() -> None:
                 session.add(rec)
             await session.commit()
             print(f"[BATCH] Saved {len(candidates)} recommendations")
+            
+            # Send notification
+            try:
+                from app.services.notifications import send_notification, EVENT_BATCH_READY
+                cats = {}
+                for c in candidates:
+                    cat = c.asset_category or "other"
+                    cats[cat] = cats.get(cat, 0) + 1
+                await send_notification(EVENT_BATCH_READY, {
+                    "count": len(candidates),
+                    "categories": cats,
+                    "batch_id": batch_id,
+                })
+            except Exception as notify_exc:
+                print(f"[BATCH] Notification failed (non-critical): {notify_exc}")
     except Exception as exc:
         print(f"[BATCH] ERROR: {exc}")
         import traceback
@@ -176,6 +191,17 @@ async def job_update_active_trades() -> None:
     transition, regime_id = await asyncio.to_thread(_regime_prep)
     if transition:
         print(f"[UPDATE_TRADES] {transition.description()}")
+        # Send regime change notification
+        try:
+            from app.services.notifications import send_notification, EVENT_REGIME_CHANGE
+            flagged = get_trades_needing_review(transition)
+            await send_notification(EVENT_REGIME_CHANGE, {
+                "old_regime": transition.old_regime,
+                "new_regime": transition.new_regime,
+                "flagged_count": len(flagged) if flagged else 0,
+            })
+        except Exception as notify_exc:
+            print(f"[UPDATE_TRADES] Notification failed (non-critical): {notify_exc}")
 
     async with async_session_factory() as session:
         # Load latest analysis for sentiment lookup

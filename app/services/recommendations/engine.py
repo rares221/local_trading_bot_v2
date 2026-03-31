@@ -42,6 +42,9 @@ CONFLICT_SKIP_THRESHOLD = 25  # raised from 20 to allow more candidates through
 # Skip adding a candidate if its return correlation with any already-selected recommendation exceeds this (avoid over-concentration).
 CORRELATION_THRESHOLD = 0.75
 
+# Minimum Risk:Reward ratio to include a recommendation (skip trades where reward doesn't justify risk).
+MIN_RISK_REWARD = 1.5
+
 # Macro-day confidence penalty: see `MACRO_DAY_CONFIDENCE_PENALTY` in `app.services.macro_calendar`.
 
 # Daily batch: up to this many recommendations **per** category (stocks, commodities, other, indices).
@@ -652,6 +655,14 @@ def _build_candidate(
 
     # Risk:Reward ratio
     rr = calc_risk_reward(price, sl, tp)
+
+    # Skip candidates with poor R:R (reward doesn't justify risk)
+    if rr is not None and rr < MIN_RISK_REWARD:
+        logger.info(
+            "[ENGINE] Skip %s (%s): R:R=%.2f < %.2f minimum",
+            asset_id, symbol, rr, MIN_RISK_REWARD,
+        )
+        return None
 
     # Volatility notes (include trend alignment info)
     vol_notes = _build_volatility_notes(snap, direction)
