@@ -757,19 +757,30 @@ async def get_correlation_matrix() -> dict[str, Any]:
     asset_names = {"^GSPC": "SPX", "^VIX": "VIX", "GC=F": "Gold", "CL=F": "Oil", "DX-Y.NYB": "USD", "^TNX": "10Y Yield"}
     
     def _build_matrix():
-        returns = {}
+        # Fetch all data first
+        all_data = {}
         for sym in assets:
             df = fetch_ohlcv(sym, period="30d")
-            if df is not None and len(df) >= 20:
+            if df is not None and len(df) >= 10:
                 close = df["Close"]
-                daily_ret = close.pct_change().dropna().tail(20)
-                returns[asset_names.get(sym, sym)] = daily_ret.values
+                daily_ret = close.pct_change().dropna()
+                # Use date index for alignment
+                daily_ret.index = pd.to_datetime(daily_ret.index).date
+                all_data[asset_names.get(sym, sym)] = daily_ret
         
-        if len(returns) < 2:
+        if len(all_data) < 2:
             return None
         
-        # Build DataFrame and compute correlation
-        ret_df = pd.DataFrame(returns)
+        # Build DataFrame with date alignment (inner join on dates)
+        ret_df = pd.DataFrame(all_data)
+        ret_df = ret_df.dropna()  # Only keep rows where all assets have data
+        
+        if len(ret_df) < 5:
+            return None
+        
+        # Use last 20 rows (or all if fewer)
+        ret_df = ret_df.tail(20)
+        
         corr = ret_df.corr()
         return corr.round(3).to_dict()
     
@@ -824,12 +835,13 @@ async def refresh_macro_calendar() -> dict[str, Any]:
 
 @router.get("/preferences")
 async def get_preferences() -> dict[str, Any]:
-    """Return user preferences (risk stance + research LLM provider/model/URL + risk budget + sentiment decay)."""
-    from app.core.preferences import get_preferred_risk, get_research_llm_config, get_risk_budget_1r, get_sentiment_half_life
+    """Return user preferences (risk stance + research LLM provider/model/URL + risk budget + sentiment decay + confidence thresholds)."""
+    from app.core.preferences import get_preferred_risk, get_research_llm_config, get_risk_budget_1r, get_sentiment_half_life, get_confidence_thresholds
     out = {
         "preferred_risk": get_preferred_risk(),
         "risk_budget_1r": get_risk_budget_1r(),
         "sentiment_half_life_hours": get_sentiment_half_life(),
+        "confidence_thresholds": get_confidence_thresholds(),
     }
     out.update(get_research_llm_config())
     return _with_disclaimer(out)
@@ -842,14 +854,18 @@ class PreferencesUpdate(BaseModel):
     ollama_base_url: str | None = None
     risk_budget_1r: float | None = None
     sentiment_half_life_hours: float | None = None
+    confidence_threshold_risk_on: int | None = None
+    confidence_threshold_cautious: int | None = None
+    confidence_threshold_risk_off: int | None = None
 
 
 @router.patch("/preferences")
 async def update_preferences(body: PreferencesUpdate) -> dict[str, Any]:
-    """Update preferences. Risk: conservative|moderate|aggressive. LLM: provider, model, ollama_base_url. Risk budget: 0-50. Sentiment half-life: 1-168 hours."""
+    """Update preferences. Risk: conservative|moderate|aggressive. LLM: provider, model, ollama_base_url. Risk budget: 0-50. Sentiment half-life: 1-168 hours. Confidence thresholds: 0-80."""
     from app.core.preferences import (
         set_preferred_risk, set_research_llm_config, get_preferred_risk, get_research_llm_config,
-        set_risk_budget_1r, get_risk_budget_1r, set_sentiment_half_life, get_sentiment_half_life
+        set_risk_budget_1r, get_risk_budget_1r, set_sentiment_half_life, get_sentiment_half_life,
+        set_confidence_thresholds, get_confidence_thresholds
     )
     try:
         if body.preferred_risk is not None:
@@ -864,10 +880,17 @@ async def update_preferences(body: PreferencesUpdate) -> dict[str, Any]:
             set_risk_budget_1r(body.risk_budget_1r)
         if body.sentiment_half_life_hours is not None:
             set_sentiment_half_life(body.sentiment_half_life_hours)
+        if body.confidence_threshold_risk_on is not None or body.confidence_threshold_cautious is not None or body.confidence_threshold_risk_off is not None:
+            set_confidence_thresholds(
+                risk_on=body.confidence_threshold_risk_on,
+                cautious=body.confidence_threshold_cautious,
+                risk_off=body.confidence_threshold_risk_off,
+            )
         out = {
             "preferred_risk": get_preferred_risk(),
             "risk_budget_1r": get_risk_budget_1r(),
             "sentiment_half_life_hours": get_sentiment_half_life(),
+            "confidence_thresholds": get_confidence_thresholds(),
         }
         out.update(get_research_llm_config())
         out["message"] = "Preferences saved."

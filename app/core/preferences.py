@@ -132,3 +132,49 @@ def set_sentiment_half_life(value: float) -> float:
     data["sentiment_half_life_hours"] = val
     _save_prefs(data)
     return val
+
+
+# Confidence thresholds per regime (minimum confidence to include a recommendation)
+_DEFAULT_CONFIDENCE_THRESHOLDS = {"risk_on": 30, "cautious": 35, "risk_off": 40}
+_MIN_CONFIDENCE = 0
+_MAX_CONFIDENCE = 80
+
+
+def get_confidence_thresholds() -> dict[str, int]:
+    """Return min confidence thresholds per regime. Defaults: risk_on=30, cautious=35, risk_off=40."""
+    data = _load_prefs()
+    thresholds = data.get("confidence_thresholds")
+    if not isinstance(thresholds, dict):
+        return _DEFAULT_CONFIDENCE_THRESHOLDS.copy()
+    result = _DEFAULT_CONFIDENCE_THRESHOLDS.copy()
+    for regime in ("risk_on", "cautious", "risk_off"):
+        if regime in thresholds:
+            try:
+                val = int(thresholds[regime])
+                result[regime] = max(_MIN_CONFIDENCE, min(_MAX_CONFIDENCE, val))
+            except (ValueError, TypeError):
+                pass
+    return result
+
+
+def set_confidence_thresholds(
+    risk_on: int | None = None,
+    cautious: int | None = None,
+    risk_off: int | None = None,
+) -> dict[str, int]:
+    """Save confidence thresholds per regime (0-80). Returns current thresholds."""
+    data = _load_prefs()
+    current = data.get("confidence_thresholds") or {}
+    if not isinstance(current, dict):
+        current = {}
+    
+    if risk_on is not None:
+        current["risk_on"] = max(_MIN_CONFIDENCE, min(_MAX_CONFIDENCE, int(risk_on)))
+    if cautious is not None:
+        current["cautious"] = max(_MIN_CONFIDENCE, min(_MAX_CONFIDENCE, int(cautious)))
+    if risk_off is not None:
+        current["risk_off"] = max(_MIN_CONFIDENCE, min(_MAX_CONFIDENCE, int(risk_off)))
+    
+    data["confidence_thresholds"] = current
+    _save_prefs(data)
+    return get_confidence_thresholds()

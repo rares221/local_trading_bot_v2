@@ -61,6 +61,21 @@
       font-size: 10px; color: var(--muted-foreground);
     }
 
+    /* ── Indicator badges (trend, volatility) ── */
+    .indicator-badges {
+      display: inline-flex; gap: 3px; margin-left: 6px; vertical-align: middle;
+    }
+    .indicator-badge {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 16px; height: 16px; border-radius: 3px;
+      font-size: 10px; font-weight: 700; line-height: 1;
+      cursor: help;
+    }
+    .indicator-badge--green { background: rgba(16,185,129,0.2); color: #10b981; }
+    .indicator-badge--red { background: rgba(239,68,68,0.2); color: #ef4444; }
+    .indicator-badge--yellow { background: rgba(245,158,11,0.2); color: #f59e0b; }
+    .indicator-badge--blue { background: rgba(59,130,246,0.2); color: #3b82f6; }
+
     /* ── Chart area ── */
     .research-chart-wrap {
       padding: var(--space-2) var(--space-3) var(--space-2);
@@ -331,6 +346,30 @@
       return '<td class="col-context text-xs text-muted ctx-wrap" title="' + escapeAttr(vn) + '"><span class="ctx-text">' + escapeAttr(vn) + '</span></td>';
     }
 
+    /* ── Extract volatility regime and trend alignment from notes ── */
+    function parseVolatilityNotes(notes) {
+      const result = { volRegime: null, trendAligned: null, emaStack: null, sector: null };
+      if (!notes) return result;
+      
+      // Vol regime: stable | expanding | contracting
+      const volMatch = notes.match(/Vol regime:\s*(\w+)/i);
+      if (volMatch) result.volRegime = volMatch[1].toLowerCase();
+      
+      // MTF: aligned | conflicting
+      const mtfMatch = notes.match(/MTF:\s*(\w+)/i);
+      if (mtfMatch) result.trendAligned = mtfMatch[1].toLowerCase() === 'aligned';
+      
+      // EMA: bullish_stack | bearish_stack | mixed
+      const emaMatch = notes.match(/EMA:\s*(\w+)/i);
+      if (emaMatch) result.emaStack = emaMatch[1].toLowerCase();
+      
+      // Sector info
+      const sectorMatch = notes.match(/Sector\s*\(([^)]+)\):\s*([^;]+)/i);
+      if (sectorMatch) result.sector = { name: sectorMatch[1], regime: sectorMatch[2].trim() };
+      
+      return result;
+    }
+
     /* ── Render metrics bar ── */
     function renderMetrics(rec, context) {
       const isLong = (rec.direction || 'long') !== 'short';
@@ -340,6 +379,9 @@
       const slPct  = (entry && sl) ? (sl - entry) / entry : null;
       const tpPct  = (entry && tp) ? (tp - entry) / entry : null;
       const sent   = context ? context.sentiment_avg : null;
+      
+      // Parse volatility notes for badges
+      const parsed = parseVolatilityNotes(rec.volatility_notes);
 
       const metrics = [
         { label: 'Entry',      value: fmtPrice(entry),                  hint: 'Buy-in price',         cls: '' },
@@ -349,6 +391,23 @@
         { label: 'Confidence', value: rec.confidence_score != null ? rec.confidence_score + '%' : '—', hint: rec.confidence_bucket || '', cls: rec.confidence_score >= 70 ? 'up' : rec.confidence_score >= 40 ? '' : 'down' },
         { label: 'Sentiment',  value: sent != null ? fmtSent(sent) : '—', hint: sent != null ? (sent > 0.1 ? 'Positive' : sent < -0.1 ? 'Negative' : 'Neutral') : '', cls: sent != null ? (sent > 0.1 ? 'up' : sent < -0.1 ? 'down' : '') : '' },
       ];
+      
+      // Add volatility regime
+      if (parsed.volRegime) {
+        const volCls = parsed.volRegime === 'expanding' ? 'down' : parsed.volRegime === 'contracting' ? 'up' : '';
+        metrics.push({ label: 'Vol Regime', value: parsed.volRegime, hint: parsed.volRegime === 'expanding' ? 'Widening stops' : parsed.volRegime === 'contracting' ? 'Tighter stops' : 'Normal', cls: volCls });
+      }
+      
+      // Add trend alignment
+      if (parsed.trendAligned !== null) {
+        metrics.push({ label: 'Trend', value: parsed.trendAligned ? '✓ Aligned' : '✗ Conflicting', hint: 'Multi-timeframe', cls: parsed.trendAligned ? 'up' : 'down' });
+      }
+      
+      // Add sector info
+      if (parsed.sector) {
+        const sectorCls = parsed.sector.regime.includes('risk on') ? 'up' : parsed.sector.regime.includes('risk off') ? 'down' : '';
+        metrics.push({ label: 'Sector', value: parsed.sector.name, hint: parsed.sector.regime, cls: sectorCls });
+      }
 
       modalMetrics.innerHTML = metrics.map(m => `
         <div class="research-metric">
@@ -639,8 +698,23 @@
           '<button class="btn btn-sm btn--secondary" data-do="research">' + icon('search', 13) + ' Research</button>'
         : '<button class="btn btn-sm btn--secondary" data-do="research">' + icon('search', 13) + ' Research</button>';
       const sizePct = rec.suggested_risk_pct != null ? rec.suggested_risk_pct.toFixed(2) + '%' : '—';
+      
+      // Parse volatility notes for indicator badges
+      const parsed = parseVolatilityNotes(rec.volatility_notes);
+      let indicators = '';
+      if (parsed.trendAligned === true) {
+        indicators += '<span class="indicator-badge indicator-badge--green" title="Multi-TF Aligned">↑</span>';
+      } else if (parsed.trendAligned === false) {
+        indicators += '<span class="indicator-badge indicator-badge--red" title="Multi-TF Conflicting">↓</span>';
+      }
+      if (parsed.volRegime === 'expanding') {
+        indicators += '<span class="indicator-badge indicator-badge--yellow" title="Vol Expanding">⚡</span>';
+      } else if (parsed.volRegime === 'contracting') {
+        indicators += '<span class="indicator-badge indicator-badge--blue" title="Vol Contracting">◆</span>';
+      }
+      
       tr.innerHTML =
-        '<td class="col-asset font-semibold">' + rec.asset_id + '</td>' +
+        '<td class="col-asset font-semibold">' + rec.asset_id + (indicators ? '<span class="indicator-badges">' + indicators + '</span>' : '') + '</td>' +
         '<td class="col-dir">' + dirBadge(rec.direction) + '</td>' +
         '<td class="col-num-sm num">' + fmtNum(rec.buy_in_price) + '</td>' +
         '<td class="col-num-sm num">' + fmtNum(rec.current_price) + '</td>' +

@@ -188,11 +188,21 @@ def _all_assets() -> list[tuple[str, str, str, str]]:
 # Candidate with direction + expiry + technicals
 # ---------------------------------------------------------------------------
 
-def _suggested_risk_pct(confidence: int, risk_reward: Optional[float]) -> float:
+def _suggested_risk_pct(
+    confidence: int,
+    risk_reward: Optional[float],
+    trend_aligned: bool = False,
+    sector_aligned: bool = False,
+) -> float:
     """
     Suggested risk per trade as % of capital (half-Kelly style when R:R known; else tier-based).
-    Capped at 2%, floored at 0. If Kelly is negative (no mathematical edge), use tier fallback
-    so Size stays consistent with confidence and risk-budget sums make sense.
+    
+    Adjustments:
+    - Trend aligned: +20% size boost (multi-timeframe confirmation)
+    - Sector aligned: +10% size boost (sector supports direction)
+    - Both aligned: +30% total boost
+    
+    Capped at 2.5%, floored at 0.1%.
     """
     p = (confidence or 0) / 100.0
 
@@ -208,11 +218,23 @@ def _suggested_risk_pct(confidence: int, risk_reward: Optional[float]) -> float:
     if risk_reward is not None and risk_reward > 1.0:
         # half-Kelly: f = 0.5 * (p * R - 1) / (R - 1)
         k = 0.5 * (p * risk_reward - 1.0) / (risk_reward - 1.0)
-        kelly_pct = min(2.0, max(0.0, 100.0 * k))
-        if kelly_pct >= 0.01:
-            return round(kelly_pct, 2)
-        return round(_tier_fallback(), 2)
-    return round(_tier_fallback(), 2)
+        base_pct = max(0.0, 100.0 * k)
+        if base_pct < 0.01:
+            base_pct = _tier_fallback()
+    else:
+        base_pct = _tier_fallback()
+    
+    # Apply alignment boosts
+    multiplier = 1.0
+    if trend_aligned:
+        multiplier += 0.20  # +20% for multi-TF alignment
+    if sector_aligned:
+        multiplier += 0.10  # +10% for sector alignment
+    
+    final_pct = base_pct * multiplier
+    
+    # Cap at 2.5%, floor at 0.1%
+    return round(min(2.5, max(0.1, final_pct)), 2)
 
 
 @dataclass
@@ -551,6 +573,52 @@ def _build_volatility_notes(snap: Optional[TechnicalSnapshot], direction: str) -
 # Sector regime adjustment
 # ---------------------------------------------------------------------------
 
+def _correlation_divergence_penalty(market_ctx: MarketContext, category: str, asset_id: str) -> int:
+    """
+    Calculate confidence penalty when cross-asset correlations are diverging.
+    
+    Divergences signal potential regime shifts or market stress, increasing uncertainty.
+    
+    Penalties:
+    - SPX/VIX divergence (both moving same direction): -8 for stocks/indices
+    - Gold/USD divergence (both moving same direction): -5 for commodities
+    - Gold/SPX divergence: -5 for all (risk sentiment unclear)
+    
+    Assets directly involved in a diverging pair get higher penalties.
+    """
+    if not market_ctx.has_divergence_warning:
+        return 0
+    
+    penalty = 0
+    asset_upper = asset_id.upper()
+    
+    for cs in market_ctx.correlation_signals:
+        if not cs.diverging:
+            continue
+        
+        pair = cs.pair_name
+        
+        # SPX/VIX divergence — major warning for equities
+        if pair == "spx_vix_inverse":
+            if category in ("stocks", "indices"):
+                penalty += 8
+            else:
+                penalty += 3  # still a warning for other assets
+        
+        # Gold/USD divergence — warning for commodities
+        elif pair == "gold_usd_inverse":
+            if category == "commodities" or "GOLD" in asset_upper or "XAU" in asset_upper:
+                penalty += 6
+            else:
+                penalty += 2
+        
+        # Gold/SPX divergence — risk sentiment unclear
+        elif pair == "gold_spx_risk":
+            penalty += 5
+    
+    return min(penalty, 15)  # cap total penalty
+
+
 def _sector_regime_adjustment(sector_regime: SectorRegime, direction: str) -> int:
     """
     Calculate confidence adjustment based on sector regime and trade direction.
@@ -700,6 +768,21 @@ def _build_candidate(
                     regime_note = f"{regime_note}; {sector_note}"
                 else:
                     regime_note = sector_note
+        
+        # Cross-asset correlation divergence penalty
+        if market_ctx.has_divergence_warning:
+            div_penalty = _correlation_divergence_penalty(market_ctx, category, asset_id)
+            if div_penalty > 0:
+                confidence = max(0, confidence - div_penalty)
+                score -= div_penalty / 20
+                logger.debug("[ENGINE] %s: correlation divergence penalty=%d → conf=%d", asset_id, div_penalty, confidence)
+                div_pairs = [cs.pair_name for cs in market_ctx.correlation_signals if cs.diverging]
+                div_note = f"Correlation divergence ({', '.join(div_pairs)})"
+                if regime_note:
+                    regime_note = f"{regime_note}; {div_note}"
+                else:
+                    regime_note = div_note
+    
     # Sentiment–price divergence: reduce confidence when sentiment and price move in opposite directions
     if _has_sentiment_divergence(category, asset_id, by_asset_sentiment):
         confidence = max(0, confidence - 10)
@@ -751,7 +834,15 @@ def _build_candidate(
         suffix = f"indicator conflict penalty: {conflict_penalty} (skip if ≥{CONFLICT_SKIP_THRESHOLD})"
         vol_notes = f"{vol_notes}; {suffix}" if vol_notes else suffix
 
-    suggested_risk = _suggested_risk_pct(confidence, rr)
+    # Determine if sector is aligned with trade direction
+    sector_aligned = False
+    if sector_regime:
+        if sector_regime.regime == "risk_on" and direction == "long":
+            sector_aligned = True
+        elif sector_regime.regime == "risk_off" and direction == "short":
+            sector_aligned = True
+    
+    suggested_risk = _suggested_risk_pct(confidence, rr, trend_aligned=trend_aligned, sector_aligned=sector_aligned)
     return Candidate(
         asset_category=category,
         asset_id=asset_id,

@@ -449,23 +449,20 @@ class MarketContext:
     def min_confidence_threshold(self) -> int:
         """
         Minimum confidence to include a recommendation.
-        Uses adaptive thresholds if available (based on empirical hit rates),
-        otherwise falls back to static defaults:
-        risk_on: 30 (more permissive), cautious: 35, risk_off: 40 (stricter).
+        Priority: 1) Adaptive thresholds (if enabled), 2) User-configured thresholds, 3) Defaults.
         """
         from app.services.adaptive_thresholds import get_adaptive_threshold, is_adaptive_enabled
         
+        # First try adaptive thresholds (based on empirical hit rates)
         if is_adaptive_enabled():
             adaptive = get_adaptive_threshold(self.regime.regime)
             if adaptive is not None:
                 return adaptive
         
-        # Fallback to static thresholds
-        if self.regime.regime == "risk_on":
-            return 30
-        elif self.regime.regime == "risk_off":
-            return 40
-        return 35
+        # Then try user-configured thresholds
+        from app.core.preferences import get_confidence_thresholds
+        thresholds = get_confidence_thresholds()
+        return thresholds.get(self.regime.regime, 35)
 
     def max_recommendations_per_category(self) -> int:
         """

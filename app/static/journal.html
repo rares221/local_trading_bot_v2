@@ -133,19 +133,43 @@
       </div>
       <div class="stat-card">
         <span class="stat-label">Hit TP</span>
-        <span class="stat-value" id="stat-tp">—</span>
+        <span class="stat-value" id="stat-tp" style="color:#10b981;">—</span>
       </div>
       <div class="stat-card">
         <span class="stat-label">Hit SL</span>
-        <span class="stat-value" id="stat-sl">—</span>
+        <span class="stat-value" id="stat-sl" style="color:#ef4444;">—</span>
       </div>
       <div class="stat-card">
         <span class="stat-label">Expired</span>
         <span class="stat-value" id="stat-expired">—</span>
       </div>
       <div class="stat-card">
-        <span class="stat-label">Manual</span>
-        <span class="stat-value" id="stat-manual">—</span>
+        <span class="stat-label">Avg R:R (Wins)</span>
+        <span class="stat-value" id="stat-avg-rr">—</span>
+        <span class="stat-hint">Average risk:reward on winning trades</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">Avg Confidence</span>
+        <span class="stat-value" id="stat-avg-conf">—</span>
+        <span class="stat-hint">Mean confidence score</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">Profit Factor</span>
+        <span class="stat-value" id="stat-profit-factor">—</span>
+        <span class="stat-hint">Gross wins / Gross losses</span>
+      </div>
+    </div>
+    
+    <div class="stats-grid" id="best-worst-section" style="display:none;">
+      <div class="stat-card" style="grid-column: span 2;">
+        <span class="stat-label" style="color:#10b981;">Best Trade</span>
+        <span class="stat-value" id="stat-best-trade" style="font-size:1rem;">—</span>
+        <span class="stat-hint" id="stat-best-hint">—</span>
+      </div>
+      <div class="stat-card" style="grid-column: span 2;">
+        <span class="stat-label" style="color:#ef4444;">Worst Trade</span>
+        <span class="stat-value" id="stat-worst-trade" style="font-size:1rem;">—</span>
+        <span class="stat-hint" id="stat-worst-hint">—</span>
       </div>
     </div>
 
@@ -258,25 +282,91 @@
 
     function renderStats() {
       const section = document.getElementById('stats-section');
+      const bestWorstSection = document.getElementById('best-worst-section');
+      
       if (filteredTrades.length === 0) {
         section.style.display = 'none';
+        bestWorstSection.style.display = 'none';
         return;
       }
       section.style.display = 'grid';
+      bestWorstSection.style.display = 'grid';
 
       const total = filteredTrades.length;
-      const tp = filteredTrades.filter(t => t.outcome === 'hit_tp').length;
-      const sl = filteredTrades.filter(t => t.outcome === 'hit_sl').length;
+      const tpTrades = filteredTrades.filter(t => t.outcome === 'hit_tp');
+      const slTrades = filteredTrades.filter(t => t.outcome === 'hit_sl');
+      const tp = tpTrades.length;
+      const sl = slTrades.length;
       const expired = filteredTrades.filter(t => t.outcome === 'expired').length;
-      const manual = filteredTrades.filter(t => t.outcome === 'manual').length;
       const winrate = (tp + sl > 0) ? (tp / (tp + sl) * 100).toFixed(1) + '%' : '—';
+      
+      // Avg R:R on winning trades
+      const winRRs = tpTrades.map(t => t.risk_reward).filter(rr => rr != null && rr > 0);
+      const avgRR = winRRs.length > 0 ? (winRRs.reduce((a, b) => a + b, 0) / winRRs.length).toFixed(1) + ':1' : '—';
+      
+      // Avg confidence
+      const confs = filteredTrades.map(t => t.confidence_score).filter(c => c != null);
+      const avgConf = confs.length > 0 ? Math.round(confs.reduce((a, b) => a + b, 0) / confs.length) + '%' : '—';
+      
+      // Profit factor (simplified: count wins * avg RR vs count losses)
+      // More accurate: sum of (TP distance * wins) / sum of (SL distance * losses)
+      let grossWins = 0, grossLosses = 0;
+      tpTrades.forEach(t => {
+        if (t.buy_in_price && t.closing_price) {
+          const pnl = t.direction === 'short' 
+            ? t.buy_in_price - t.closing_price 
+            : t.closing_price - t.buy_in_price;
+          if (pnl > 0) grossWins += pnl;
+        }
+      });
+      slTrades.forEach(t => {
+        if (t.buy_in_price && t.closing_price) {
+          const pnl = t.direction === 'short' 
+            ? t.closing_price - t.buy_in_price 
+            : t.buy_in_price - t.closing_price;
+          if (pnl > 0) grossLosses += pnl;
+        }
+      });
+      const profitFactor = grossLosses > 0 ? (grossWins / grossLosses).toFixed(2) : (grossWins > 0 ? '∞' : '—');
 
       document.getElementById('stat-total').textContent = total;
       document.getElementById('stat-winrate').textContent = winrate;
+      document.getElementById('stat-winrate').style.color = parseFloat(winrate) >= 55 ? '#10b981' : parseFloat(winrate) >= 45 ? '#f59e0b' : '#ef4444';
       document.getElementById('stat-tp').textContent = tp;
       document.getElementById('stat-sl').textContent = sl;
       document.getElementById('stat-expired').textContent = expired;
-      document.getElementById('stat-manual').textContent = manual;
+      document.getElementById('stat-avg-rr').textContent = avgRR;
+      document.getElementById('stat-avg-conf').textContent = avgConf;
+      document.getElementById('stat-profit-factor').textContent = profitFactor;
+      document.getElementById('stat-profit-factor').style.color = parseFloat(profitFactor) >= 1.5 ? '#10b981' : parseFloat(profitFactor) >= 1 ? '#f59e0b' : '#ef4444';
+      
+      // Best and worst trades
+      let best = null, worst = null;
+      filteredTrades.forEach(t => {
+        if (!t.buy_in_price || !t.closing_price) return;
+        const pnlPct = t.direction === 'short'
+          ? ((t.buy_in_price - t.closing_price) / t.buy_in_price) * 100
+          : ((t.closing_price - t.buy_in_price) / t.buy_in_price) * 100;
+        t._pnlPct = pnlPct;
+        if (!best || pnlPct > best._pnlPct) best = t;
+        if (!worst || pnlPct < worst._pnlPct) worst = t;
+      });
+      
+      if (best) {
+        document.getElementById('stat-best-trade').textContent = best.asset_id + ' (' + (best._pnlPct >= 0 ? '+' : '') + best._pnlPct.toFixed(1) + '%)';
+        document.getElementById('stat-best-hint').textContent = best.direction.toUpperCase() + ' | ' + best.outcome.replace('_', ' ') + ' | Conf: ' + (best.confidence_score || '?') + '%';
+      } else {
+        document.getElementById('stat-best-trade').textContent = '—';
+        document.getElementById('stat-best-hint').textContent = '—';
+      }
+      
+      if (worst) {
+        document.getElementById('stat-worst-trade').textContent = worst.asset_id + ' (' + (worst._pnlPct >= 0 ? '+' : '') + worst._pnlPct.toFixed(1) + '%)';
+        document.getElementById('stat-worst-hint').textContent = worst.direction.toUpperCase() + ' | ' + worst.outcome.replace('_', ' ') + ' | Conf: ' + (worst.confidence_score || '?') + '%';
+      } else {
+        document.getElementById('stat-worst-trade').textContent = '—';
+        document.getElementById('stat-worst-hint').textContent = '—';
+      }
     }
 
     async function load() {

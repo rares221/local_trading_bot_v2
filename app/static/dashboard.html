@@ -152,6 +152,24 @@
           <input type="number" id="sentiment-decay" class="input" style="max-width:200px;" min="1" max="168" step="1" placeholder="24">
           <p class="meta mt-1">How quickly old news loses influence. <strong>24h</strong> (default) = news from 24h ago has half the weight. Lower = more reactive to recent news. Higher = longer memory.</p>
         </div>
+        <div class="form-group mt-2">
+          <label>Minimum confidence thresholds per regime</label>
+          <p class="meta mb-1">Candidates below these thresholds are excluded. Lower = more permissive, higher = stricter.</p>
+          <div class="flex gap-2" style="flex-wrap:wrap;">
+            <div>
+              <label for="conf-risk-on" class="meta" style="font-size:11px;">Risk-On</label>
+              <input type="number" id="conf-risk-on" class="input" style="width:80px;" min="0" max="80" step="5" placeholder="30">
+            </div>
+            <div>
+              <label for="conf-cautious" class="meta" style="font-size:11px;">Cautious</label>
+              <input type="number" id="conf-cautious" class="input" style="width:80px;" min="0" max="80" step="5" placeholder="35">
+            </div>
+            <div>
+              <label for="conf-risk-off" class="meta" style="font-size:11px;">Risk-Off</label>
+              <input type="number" id="conf-risk-off" class="input" style="width:80px;" min="0" max="80" step="5" placeholder="40">
+            </div>
+          </div>
+        </div>
       </section>
 
       <!-- LLM provider -->
@@ -360,16 +378,45 @@
     const riskSel = document.getElementById('preferred-risk');
     const riskBudgetInput = document.getElementById('risk-budget');
     const sentimentDecayInput = document.getElementById('sentiment-decay');
+    const confRiskOnInput = document.getElementById('conf-risk-on');
+    const confCautiousInput = document.getElementById('conf-cautious');
+    const confRiskOffInput = document.getElementById('conf-risk-off');
     fetch('/api/preferences').then(r=>r.json()).then(d => {
       if (d.preferred_risk) riskSel.value = d.preferred_risk;
       if (d.risk_budget_1r != null) riskBudgetInput.value = d.risk_budget_1r;
       if (d.sentiment_half_life_hours != null) sentimentDecayInput.value = d.sentiment_half_life_hours;
+      if (d.confidence_thresholds) {
+        confRiskOnInput.value = d.confidence_thresholds.risk_on ?? 30;
+        confCautiousInput.value = d.confidence_thresholds.cautious ?? 35;
+        confRiskOffInput.value = d.confidence_thresholds.risk_off ?? 40;
+      }
     }).catch(()=>{});
+    // Suggested confidence thresholds per risk stance
+    const suggestedThresholds = {
+      conservative: { risk_on: 40, cautious: 45, risk_off: 50 },
+      moderate:     { risk_on: 30, cautious: 35, risk_off: 40 },
+      aggressive:   { risk_on: 20, cautious: 25, risk_off: 30 },
+    };
+    
     riskSel.addEventListener('change', () => {
+      const stance = riskSel.value;
+      const suggested = suggestedThresholds[stance] || suggestedThresholds.moderate;
+      
+      // Auto-update confidence thresholds
+      confRiskOnInput.value = suggested.risk_on;
+      confCautiousInput.value = suggested.cautious;
+      confRiskOffInput.value = suggested.risk_off;
+      
+      // Save all together
       fetch('/api/preferences', {
         method:'PATCH', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({preferred_risk: riskSel.value})
-      }).then(r=>r.json()).then(d => showToast(d.message || 'Saved.', true))
+        body: JSON.stringify({
+          preferred_risk: stance,
+          confidence_threshold_risk_on: suggested.risk_on,
+          confidence_threshold_cautious: suggested.cautious,
+          confidence_threshold_risk_off: suggested.risk_off,
+        })
+      }).then(r=>r.json()).then(d => showToast('Risk stance updated with suggested thresholds.', true))
         .catch(e => showToast('Failed: ' + e.message, false));
     });
     riskBudgetInput.addEventListener('change', () => {
@@ -396,6 +443,24 @@
       }).then(r=>r.json()).then(d => showToast(d.message || 'Saved.', true))
         .catch(e => showToast('Failed: ' + e.message, false));
     });
+
+    function saveConfidenceThreshold(regime, inputEl) {
+      const val = parseInt(inputEl.value);
+      if (isNaN(val) || val < 0 || val > 80) {
+        showToast('Confidence threshold must be 0-80', false);
+        return;
+      }
+      const body = {};
+      body['confidence_threshold_' + regime] = val;
+      fetch('/api/preferences', {
+        method:'PATCH', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(body)
+      }).then(r=>r.json()).then(d => showToast(d.message || 'Saved.', true))
+        .catch(e => showToast('Failed: ' + e.message, false));
+    }
+    confRiskOnInput.addEventListener('change', () => saveConfidenceThreshold('risk_on', confRiskOnInput));
+    confCautiousInput.addEventListener('change', () => saveConfidenceThreshold('cautious', confCautiousInput));
+    confRiskOffInput.addEventListener('change', () => saveConfidenceThreshold('risk_off', confRiskOffInput));
 
     /* Sector Regimes */
     async function loadSectorRegimes() {

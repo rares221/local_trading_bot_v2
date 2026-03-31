@@ -255,7 +255,8 @@ Further ideas (larger than a single sprint): **A/B or shadow engine** (log alter
 12. ~~**Sector-specific regimes**~~ — Done: `detect_sector_regime()` and `detect_all_sector_regimes()` in `market_context.py`. Tracks tech, energy, financials, healthcare, consumer, industrials, materials, commodities via sector ETFs. API: `GET /api/market/sectors`. UI: Sector Regimes panel on Dashboard. **Engine integration:** `_sector_regime_adjustment()` adjusts confidence ±5-8 based on sector regime alignment with trade direction; relative strength vs SPX adds ±3.
 13. ~~**Sentiment decay tuning**~~ — Done: `sentiment_half_life_hours` configurable via preferences (1-168h, default 24h). `_get_sentiment_half_life()` in `aggregate.py`. UI: input on Dashboard.
 14. ~~**Correlation matrix UI**~~ — Done: `GET /api/market/correlations` returns 20-day rolling correlations for SPX, VIX, Gold, Oil, USD, 10Y Yield + divergence signals. UI: Correlation Matrix panel on Dashboard with color-coded table.
-15. **MCP tools** (optional) — get_latest_insight, get_sentiment_summary, get_oil_snapshot.
+15. ~~**Correlation divergence penalty**~~ — Done: `_correlation_divergence_penalty()` in engine applies confidence penalty when cross-asset relationships break down. SPX/VIX divergence: -8 for stocks/indices; Gold/USD: -6 for commodities; Gold/SPX: -5 for all. Capped at -15 total.
+16. **MCP tools** (optional) — get_latest_insight, get_sentiment_summary, get_oil_snapshot.
 
 ---
 
