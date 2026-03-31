@@ -31,6 +31,8 @@ from app.services.market_context import (
     build_market_context,
     check_trend_alignment,
     TrendAlignment,
+    get_sector_for_asset,
+    SectorRegime,
 )
 from app.services.macro_calendar import MACRO_DAY_CONFIDENCE_PENALTY, is_high_impact_day
 
@@ -546,6 +548,55 @@ def _build_volatility_notes(snap: Optional[TechnicalSnapshot], direction: str) -
 
 
 # ---------------------------------------------------------------------------
+# Sector regime adjustment
+# ---------------------------------------------------------------------------
+
+def _sector_regime_adjustment(sector_regime: SectorRegime, direction: str) -> int:
+    """
+    Calculate confidence adjustment based on sector regime and trade direction.
+    
+    - Sector risk_on + long direction: +5 (sector supports the trade)
+    - Sector risk_off + short direction: +5 (sector supports the trade)
+    - Sector risk_on + short direction: -5 (trading against sector trend)
+    - Sector risk_off + long direction: -8 (trading against weak sector)
+    - Sector cautious: 0 (neutral)
+    
+    Also considers relative strength vs SPX:
+    - Outperforming sector (rs > 2%): additional +3 for longs
+    - Underperforming sector (rs < -2%): additional +3 for shorts, -3 for longs
+    """
+    adj = 0
+    regime = sector_regime.regime
+    rs = sector_regime.relative_strength
+    
+    # Base adjustment from sector regime
+    if regime == "risk_on":
+        if direction == "long":
+            adj += 5  # sector bullish, going long = aligned
+        else:
+            adj -= 5  # sector bullish, going short = against trend
+    elif regime == "risk_off":
+        if direction == "short":
+            adj += 5  # sector bearish, going short = aligned
+        else:
+            adj -= 8  # sector bearish, going long = risky
+    # cautious = 0 adjustment
+    
+    # Relative strength adjustment
+    if rs is not None:
+        if rs > 0.02:  # outperforming SPX by >2%
+            if direction == "long":
+                adj += 3
+        elif rs < -0.02:  # underperforming SPX by >2%
+            if direction == "short":
+                adj += 3
+            else:
+                adj -= 3
+    
+    return adj
+
+
+# ---------------------------------------------------------------------------
 # Candidate builder
 # ---------------------------------------------------------------------------
 
@@ -586,8 +637,16 @@ def _build_candidate(
 
     # Market regime direction override for equities
     regime_note = None
+    sector_regime: Optional[SectorRegime] = None
     if market_ctx:
         regime_note = market_ctx.regime.description
+        
+        # Check sector-specific regime if available
+        sector = get_sector_for_asset(asset_id, category)
+        if sector and sector in market_ctx.sector_regimes:
+            sector_regime = market_ctx.sector_regimes[sector]
+            logger.debug("[ENGINE] %s: sector=%s, sector_regime=%s", asset_id, sector, sector_regime.regime)
+        
         # In risk_off, don't go long on stocks/indices unless very strong signal
         if market_ctx.regime.regime == "risk_off" and direction == "long":
             if category in ("stocks", "indices"):
@@ -624,6 +683,23 @@ def _build_candidate(
         confidence = max(0, min(100, confidence + adj))
         if adj != 0:
             logger.debug("[ENGINE] %s: regime conf adj=%d → %d", asset_id, adj, confidence)
+        
+        # Sector-specific regime adjustment
+        if sector_regime:
+            sector_adj = _sector_regime_adjustment(sector_regime, direction)
+            if sector_adj != 0:
+                confidence = max(0, min(100, confidence + sector_adj))
+                score += sector_adj / 20  # also adjust ranking score
+                logger.debug("[ENGINE] %s: sector regime adj=%d → conf=%d", asset_id, sector_adj, confidence)
+                # Add sector info to regime note
+                sector_note = f"Sector ({sector_regime.sector}): {sector_regime.regime.replace('_', ' ')}"
+                if sector_regime.relative_strength is not None:
+                    rs_pct = sector_regime.relative_strength * 100
+                    sector_note += f" ({rs_pct:+.1f}% vs SPX)"
+                if regime_note:
+                    regime_note = f"{regime_note}; {sector_note}"
+                else:
+                    regime_note = sector_note
     # Sentiment–price divergence: reduce confidence when sentiment and price move in opposite directions
     if _has_sentiment_divergence(category, asset_id, by_asset_sentiment):
         confidence = max(0, confidence - 10)
@@ -826,9 +902,12 @@ def build_daily_candidates(
     global _last_market_context
     clear_cache()
 
-    market_ctx = build_market_context()
+    market_ctx = build_market_context(include_sectors=True)
     _last_market_context = market_ctx
     logger.info("Market regime: %s", market_ctx.regime.description)
+    if market_ctx.sector_regimes:
+        sector_summary = ", ".join(f"{s}={sr.regime}" for s, sr in market_ctx.sector_regimes.items())
+        logger.info("Sector regimes: %s", sector_summary)
 
     cap = max_per_category if max_per_category is not None else MAX_RECOMMENDATIONS_PER_CATEGORY
     cap = max(1, int(cap))

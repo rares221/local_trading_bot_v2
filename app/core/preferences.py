@@ -105,3 +105,30 @@ def set_risk_budget_1r(value: float) -> float:
     data["risk_budget_1r"] = val
     _save_prefs(data)
     return val
+
+
+# Sentiment decay half-life (hours). Default 24h = items from 24h ago have half the weight.
+_DEFAULT_SENTIMENT_HALF_LIFE = 24.0
+_MIN_SENTIMENT_HALF_LIFE = 1.0
+_MAX_SENTIMENT_HALF_LIFE = 168.0  # 1 week
+
+
+def get_sentiment_half_life() -> float:
+    """Return sentiment decay half-life in hours. Default 24h."""
+    data = _load_prefs()
+    val = data.get("sentiment_half_life_hours")
+    if val is None:
+        return _DEFAULT_SENTIMENT_HALF_LIFE
+    try:
+        return max(_MIN_SENTIMENT_HALF_LIFE, min(_MAX_SENTIMENT_HALF_LIFE, float(val)))
+    except (ValueError, TypeError):
+        return _DEFAULT_SENTIMENT_HALF_LIFE
+
+
+def set_sentiment_half_life(value: float) -> float:
+    """Save sentiment decay half-life (1.0–168.0 hours). Returns saved value."""
+    val = max(_MIN_SENTIMENT_HALF_LIFE, min(_MAX_SENTIMENT_HALF_LIFE, float(value)))
+    data = _load_prefs()
+    data["sentiment_half_life_hours"] = val
+    _save_prefs(data)
+    return val

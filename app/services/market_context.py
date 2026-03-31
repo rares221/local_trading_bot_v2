@@ -100,6 +100,106 @@ def detect_market_regime() -> MarketRegime:
 
 
 # ---------------------------------------------------------------------------
+# Sector-specific regime detection
+# ---------------------------------------------------------------------------
+
+# Sector ETF proxies for regime detection
+SECTOR_ETFS = {
+    "tech": "XLK",       # Technology Select Sector SPDR
+    "energy": "XLE",     # Energy Select Sector SPDR
+    "financials": "XLF", # Financial Select Sector SPDR
+    "healthcare": "XLV", # Health Care Select Sector SPDR
+    "consumer": "XLY",   # Consumer Discretionary Select Sector SPDR
+    "industrials": "XLI", # Industrial Select Sector SPDR
+    "materials": "XLB",  # Materials Select Sector SPDR
+    "utilities": "XLU",  # Utilities Select Sector SPDR
+    "commodities": "DBC", # Invesco DB Commodity Index
+}
+
+
+@dataclass
+class SectorRegime:
+    sector: str
+    regime: str  # "risk_on" | "risk_off" | "cautious"
+    trend: str   # "bullish" | "bearish" | "neutral"
+    above_sma50: bool | None = None
+    above_sma200: bool | None = None
+    relative_strength: float | None = None  # vs SPX
+
+
+def detect_sector_regime(sector: str) -> SectorRegime | None:
+    """
+    Detect regime for a specific sector using its ETF proxy.
+    Returns None if sector not recognized or data unavailable.
+    """
+    etf = SECTOR_ETFS.get(sector.lower())
+    if not etf:
+        return None
+    
+    df = fetch_ohlcv(etf, period="250d")
+    if df is None or len(df) < 50:
+        return None
+    
+    close = df["Close"]
+    current = float(close.iloc[-1])
+    
+    # SMA 50 and 200
+    sma50 = float(close.rolling(50).mean().iloc[-1])
+    above_50 = current > sma50
+    
+    above_200 = None
+    if len(close) >= 200:
+        sma200 = float(close.rolling(200).mean().iloc[-1])
+        above_200 = current > sma200
+    
+    # Trend determination
+    if above_200 is not None:
+        if current > sma50 and current > sma200:
+            trend = "bullish"
+        elif current < sma50 and current < sma200:
+            trend = "bearish"
+        else:
+            trend = "neutral"
+    else:
+        trend = "bullish" if above_50 else "bearish"
+    
+    # Relative strength vs SPX (20-day return comparison)
+    rel_strength = None
+    spx_df = fetch_ohlcv("^GSPC", period="30d")
+    if spx_df is not None and len(spx_df) >= 20 and len(df) >= 20:
+        sector_ret = (current / float(close.iloc[-20])) - 1
+        spx_ret = (float(spx_df["Close"].iloc[-1]) / float(spx_df["Close"].iloc[-20])) - 1
+        rel_strength = round(sector_ret - spx_ret, 4)
+    
+    # Regime: combine trend with relative strength
+    if trend == "bullish" and (rel_strength is None or rel_strength > -0.02):
+        regime = "risk_on"
+    elif trend == "bearish" and (rel_strength is None or rel_strength < 0.02):
+        regime = "risk_off"
+    else:
+        regime = "cautious"
+    
+    return SectorRegime(
+        sector=sector,
+        regime=regime,
+        trend=trend,
+        above_sma50=above_50,
+        above_sma200=above_200,
+        relative_strength=rel_strength,
+    )
+
+
+def detect_all_sector_regimes() -> dict[str, SectorRegime]:
+    """Detect regime for all tracked sectors. Returns dict of sector -> SectorRegime."""
+    results = {}
+    for sector in SECTOR_ETFS:
+        sr = detect_sector_regime(sector)
+        if sr:
+            results[sector] = sr
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Multi-timeframe trend alignment
 # ---------------------------------------------------------------------------
 
@@ -314,6 +414,7 @@ def check_cross_asset_signals() -> list[CorrelationSignal]:
 class MarketContext:
     regime: MarketRegime
     correlation_signals: list[CorrelationSignal] = field(default_factory=list)
+    sector_regimes: dict[str, SectorRegime] = field(default_factory=dict)
     has_divergence_warning: bool = False
 
     @property
@@ -381,14 +482,63 @@ class MarketContext:
         return " | ".join(parts)
 
 
-def build_market_context() -> MarketContext:
-    """Build full market context: regime + correlations. Called once per batch."""
+def build_market_context(include_sectors: bool = True) -> MarketContext:
+    """Build full market context: regime + correlations + sector regimes. Called once per batch."""
     regime = detect_market_regime()
     corr_signals = check_cross_asset_signals()
     has_div = any(cs.diverging for cs in corr_signals)
+    
+    sector_regimes = {}
+    if include_sectors:
+        sector_regimes = detect_all_sector_regimes()
 
     return MarketContext(
         regime=regime,
         correlation_signals=corr_signals,
+        sector_regimes=sector_regimes,
         has_divergence_warning=has_div,
     )
+
+
+def get_sector_for_asset(asset_id: str, category: str) -> str | None:
+    """
+    Map an asset to its sector for sector-specific regime lookup.
+    Returns sector name or None if not mapped.
+    """
+    # Tech stocks
+    tech_stocks = {"AAPL", "MSFT", "GOOGL", "GOOG", "META", "NVDA", "AMD", "INTC", "TSLA", "AMZN", "NFLX", "CRM", "ORCL", "ADBE", "CSCO"}
+    # Energy stocks and commodities
+    energy_assets = {"XOM", "CVX", "COP", "SLB", "OXY", "CL=F", "BZ=F", "NG=F", "Brent", "WTI", "Crude"}
+    # Financials
+    financials = {"JPM", "BAC", "WFC", "GS", "MS", "C", "BLK", "SCHW", "AXP"}
+    # Healthcare
+    healthcare = {"JNJ", "UNH", "PFE", "ABBV", "MRK", "LLY", "TMO", "ABT", "BMY"}
+    # Consumer
+    consumer = {"WMT", "HD", "MCD", "NKE", "SBUX", "TGT", "LOW", "COST"}
+    # Industrials
+    industrials = {"CAT", "BA", "HON", "UPS", "GE", "MMM", "LMT", "RTX"}
+    # Materials / precious metals
+    materials = {"GC=F", "SI=F", "Gold", "Silver", "HG=F", "Copper", "NEM", "FCX"}
+    
+    asset_upper = asset_id.upper()
+    
+    if asset_upper in tech_stocks or "^IXIC" in asset_upper or "NDX" in asset_upper:
+        return "tech"
+    if asset_upper in energy_assets or any(x in asset_upper for x in ["OIL", "CRUDE", "BRENT", "WTI"]):
+        return "energy"
+    if asset_upper in financials:
+        return "financials"
+    if asset_upper in healthcare:
+        return "healthcare"
+    if asset_upper in consumer:
+        return "consumer"
+    if asset_upper in industrials:
+        return "industrials"
+    if asset_upper in materials or any(x in asset_upper for x in ["GOLD", "SILVER", "COPPER"]):
+        return "materials"
+    
+    # Category-based fallback
+    if category == "commodities":
+        return "commodities"
+    
+    return None

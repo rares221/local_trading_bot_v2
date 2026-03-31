@@ -712,6 +712,86 @@ async def health() -> dict[str, str]:
     return {"status": "ok", "app": "local_trading_bot_v2"}
 
 
+# --- Sector Regimes ---
+
+@router.get("/market/sectors")
+async def get_sector_regimes() -> dict[str, Any]:
+    """
+    Get regime status for all tracked sectors (tech, energy, financials, etc.).
+    Each sector has its own trend and regime based on sector ETF performance.
+    """
+    from app.services.market_context import detect_all_sector_regimes
+    
+    sectors = await asyncio.to_thread(detect_all_sector_regimes)
+    
+    return _with_disclaimer({
+        "sectors": {
+            name: {
+                "regime": sr.regime,
+                "trend": sr.trend,
+                "above_sma50": sr.above_sma50,
+                "above_sma200": sr.above_sma200,
+                "relative_strength_vs_spx": sr.relative_strength,
+            }
+            for name, sr in sectors.items()
+        },
+        "count": len(sectors),
+    })
+
+
+@router.get("/market/correlations")
+async def get_correlation_matrix() -> dict[str, Any]:
+    """
+    Get cross-asset correlation signals and a correlation matrix for key assets.
+    Includes divergence warnings and 20-day return correlations.
+    """
+    from app.services.market_context import check_cross_asset_signals, CORRELATION_PAIRS
+    from app.services.technicals import fetch_ohlcv
+    import pandas as pd
+    
+    # Get correlation signals
+    signals = await asyncio.to_thread(check_cross_asset_signals)
+    
+    # Build correlation matrix for key assets
+    assets = ["^GSPC", "^VIX", "GC=F", "CL=F", "DX-Y.NYB", "^TNX"]
+    asset_names = {"^GSPC": "SPX", "^VIX": "VIX", "GC=F": "Gold", "CL=F": "Oil", "DX-Y.NYB": "USD", "^TNX": "10Y Yield"}
+    
+    def _build_matrix():
+        returns = {}
+        for sym in assets:
+            df = fetch_ohlcv(sym, period="30d")
+            if df is not None and len(df) >= 20:
+                close = df["Close"]
+                daily_ret = close.pct_change().dropna().tail(20)
+                returns[asset_names.get(sym, sym)] = daily_ret.values
+        
+        if len(returns) < 2:
+            return None
+        
+        # Build DataFrame and compute correlation
+        ret_df = pd.DataFrame(returns)
+        corr = ret_df.corr()
+        return corr.round(3).to_dict()
+    
+    matrix = await asyncio.to_thread(_build_matrix)
+    
+    return _with_disclaimer({
+        "signals": [
+            {
+                "pair": cs.pair_name,
+                "asset_a": cs.asset_a, "a_direction": cs.a_direction,
+                "asset_b": cs.asset_b, "b_direction": cs.b_direction,
+                "expected": cs.expected_relationship,
+                "diverging": cs.diverging,
+                "signal": cs.signal,
+            }
+            for cs in signals
+        ],
+        "correlation_matrix": matrix,
+        "has_divergence": any(cs.diverging for cs in signals),
+    })
+
+
 # --- Macro Calendar ---
 
 @router.get("/macro-calendar")
@@ -744,9 +824,13 @@ async def refresh_macro_calendar() -> dict[str, Any]:
 
 @router.get("/preferences")
 async def get_preferences() -> dict[str, Any]:
-    """Return user preferences (risk stance + research LLM provider/model/URL + risk budget)."""
-    from app.core.preferences import get_preferred_risk, get_research_llm_config, get_risk_budget_1r
-    out = {"preferred_risk": get_preferred_risk(), "risk_budget_1r": get_risk_budget_1r()}
+    """Return user preferences (risk stance + research LLM provider/model/URL + risk budget + sentiment decay)."""
+    from app.core.preferences import get_preferred_risk, get_research_llm_config, get_risk_budget_1r, get_sentiment_half_life
+    out = {
+        "preferred_risk": get_preferred_risk(),
+        "risk_budget_1r": get_risk_budget_1r(),
+        "sentiment_half_life_hours": get_sentiment_half_life(),
+    }
     out.update(get_research_llm_config())
     return _with_disclaimer(out)
 
@@ -757,12 +841,16 @@ class PreferencesUpdate(BaseModel):
     research_llm_model: str | None = None
     ollama_base_url: str | None = None
     risk_budget_1r: float | None = None
+    sentiment_half_life_hours: float | None = None
 
 
 @router.patch("/preferences")
 async def update_preferences(body: PreferencesUpdate) -> dict[str, Any]:
-    """Update preferences. Risk: conservative|moderate|aggressive. LLM: provider (openai|anthropic|ollama|openrouter), model, ollama_base_url. Risk budget: 0.0-10.0 (1.0 = 100%)."""
-    from app.core.preferences import set_preferred_risk, set_research_llm_config, get_preferred_risk, get_research_llm_config, set_risk_budget_1r, get_risk_budget_1r
+    """Update preferences. Risk: conservative|moderate|aggressive. LLM: provider, model, ollama_base_url. Risk budget: 0-50. Sentiment half-life: 1-168 hours."""
+    from app.core.preferences import (
+        set_preferred_risk, set_research_llm_config, get_preferred_risk, get_research_llm_config,
+        set_risk_budget_1r, get_risk_budget_1r, set_sentiment_half_life, get_sentiment_half_life
+    )
     try:
         if body.preferred_risk is not None:
             set_preferred_risk(body.preferred_risk)
@@ -774,7 +862,13 @@ async def update_preferences(body: PreferencesUpdate) -> dict[str, Any]:
             )
         if body.risk_budget_1r is not None:
             set_risk_budget_1r(body.risk_budget_1r)
-        out = {"preferred_risk": get_preferred_risk(), "risk_budget_1r": get_risk_budget_1r()}
+        if body.sentiment_half_life_hours is not None:
+            set_sentiment_half_life(body.sentiment_half_life_hours)
+        out = {
+            "preferred_risk": get_preferred_risk(),
+            "risk_budget_1r": get_risk_budget_1r(),
+            "sentiment_half_life_hours": get_sentiment_half_life(),
+        }
         out.update(get_research_llm_config())
         out["message"] = "Preferences saved."
         return _with_disclaimer(out)

@@ -15,7 +15,17 @@ from app.services.recommendations import get_price_snapshot, get_previous_price_
 from app.services.sentiment import tag_event_types
 
 # Half-life for sentiment decay in hours: items from 24h ago have half the weight
-SENTIMENT_HALF_LIFE_HOURS = 24.0
+# Now configurable via preferences; this is just the fallback default
+_DEFAULT_SENTIMENT_HALF_LIFE_HOURS = 24.0
+
+
+def _get_sentiment_half_life() -> float:
+    """Get sentiment half-life from preferences, with fallback to default."""
+    try:
+        from app.core.preferences import get_sentiment_half_life
+        return get_sentiment_half_life()
+    except Exception:
+        return _DEFAULT_SENTIMENT_HALF_LIFE_HOURS
 
 # Sentiment–price snapshot: do not call Yahoo for every unique tag (hundreds of false
 # positives → huge log spam, slow analysis). Only tags with enough mentions, capped.
@@ -58,7 +68,8 @@ def _decay_weight(item_time: datetime | None, now: datetime) -> float:
     if item_time.tzinfo is None:
         item_time = item_time.replace(tzinfo=timezone.utc)
     age_hours = max(0, (now - item_time).total_seconds() / 3600)
-    return math.exp(-0.693 * age_hours / SENTIMENT_HALF_LIFE_HOURS)
+    half_life = _get_sentiment_half_life()
+    return math.exp(-0.693 * age_hours / half_life)
 
 
 def _age_hours(item_time: datetime | None, now: datetime) -> float:
