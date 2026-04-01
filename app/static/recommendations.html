@@ -76,6 +76,19 @@
     .indicator-badge--yellow { background: rgba(245,158,11,0.2); color: #f59e0b; }
     .indicator-badge--blue { background: rgba(59,130,246,0.2); color: #3b82f6; }
 
+    /* Raw vs Platt-calibrated confidence in table */
+    .conf-cell {
+      display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+      min-width: 0;
+    }
+    .conf-cal {
+      font-size: 10px; font-weight: 500; color: var(--muted-foreground);
+      font-variant-numeric: tabular-nums;
+      line-height: 1.2;
+    }
+    .conf-cal.conf-cal--up { color: #10b981; }
+    .conf-cal.conf-cal--down { color: #ef4444; }
+
     /* ── Chart area ── */
     .research-chart-wrap {
       padding: var(--space-2) var(--space-3) var(--space-2);
@@ -169,6 +182,8 @@
       <summary style="cursor:pointer;font-weight:600;font-size:13px;color:var(--foreground);">Understanding Recommendations (click to expand)</summary>
       <div class="text-sm text-muted" style="margin-top:var(--space-2);line-height:1.6;">
         <p><strong>Confidence Score:</strong> 0-100 rating based on sentiment + technical alignment. Higher = stronger conviction. Grouped into buckets: Low (0-40), Medium (40-60), High (60-80), Very High (80-100).</p>
+        <p style="margin-top:8px;"><strong>Calibrated (cal):</strong> When Platt scaling is fitted on the Dashboard (≥10 closed trades), the Conf column shows a second line: model-adjusted score on the same 0-100 scale. Compare raw vs cal to see optimism or pessimism vs historical outcomes.</p>
+        <p style="margin-top:8px;"><strong>B (shadow):</strong> If A/B shadow mode is on in the Dashboard when the batch is built, <strong>B</strong> shows whether that row would pass a second confidence gate (live regime min + your delta). Live picks are unchanged; this is for comparison only.</p>
         <p style="margin-top:8px;"><strong>Size:</strong> Suggested position size (% of capital at risk) calculated from confidence and risk-reward using half-Kelly formula.</p>
         <p style="margin-top:8px;"><strong>Market Regime:</strong> Current conditions affect which assets appear and their direction. <span style="color:#10b981;">Risk-On</span> = more aggressive longs; <span style="color:#ef4444;">Risk-Off</span> = defensive, may flip to shorts.</p>
       </div>
@@ -322,6 +337,38 @@
       const cls = score >= 70 ? 'badge--green' : score >= 40 ? 'badge--yellow' : 'badge--red';
       return `<span class="badge ${cls}">${score}%</span>`;
     }
+
+    /** Raw badge + optional Platt-calibrated subline (same 0-100 scale as API). */
+    function confCell(rec) {
+      const main = confBadge(rec.confidence_score);
+      const cal = rec.confidence_calibrated;
+      if (cal == null || cal === '') {
+        return '<div class="conf-cell">' + main + '</div>';
+      }
+      const calNum = Number(cal);
+      const calTone = calNum >= 70 ? ' conf-cal--up' : calNum < 40 ? ' conf-cal--down' : '';
+      return (
+        '<div class="conf-cell" title="Platt-calibrated score from closed-trade outcomes (0-100 scale)">' +
+        main +
+        '<span class="conf-cal' + calTone + '">cal ' + calNum + '%</span>' +
+        '</div>'
+      );
+    }
+
+    /** Shadow profile B: recorded when batch was built with shadow mode on */
+    function shadowCell(rec) {
+      if (rec.shadow_b_threshold == null && rec.min_confidence_gate == null && rec.shadow_b_pass == null) {
+        return '<span class="text-muted text-sm">—</span>';
+      }
+      const pass = rec.shadow_b_pass === true;
+      const thr = rec.shadow_b_threshold != null ? rec.shadow_b_threshold : '—';
+      const live = rec.min_confidence_gate != null ? rec.min_confidence_gate : '—';
+      const title = 'Live min ' + live + ' → B min ' + thr + ' (conf ' + (rec.confidence_score ?? '—') + ')';
+      if (pass) {
+        return '<span class="badge badge--green" title="' + escapeAttr(title) + '">B ✓</span>';
+      }
+      return '<span class="badge badge--red" title="' + escapeAttr(title) + '">B ✗</span>';
+    }
     function statusBadge(s) {
       if (s === 'taken')   return '<span class="badge badge--green">Taken</span>';
       if (s === 'skipped') return '<span class="badge badge--gray">Skipped</span>';
@@ -391,6 +438,26 @@
         { label: 'Confidence', value: rec.confidence_score != null ? rec.confidence_score + '%' : '—', hint: rec.confidence_bucket || '', cls: rec.confidence_score >= 70 ? 'up' : rec.confidence_score >= 40 ? '' : 'down' },
         { label: 'Sentiment',  value: sent != null ? fmtSent(sent) : '—', hint: sent != null ? (sent > 0.1 ? 'Positive' : sent < -0.1 ? 'Negative' : 'Neutral') : '', cls: sent != null ? (sent > 0.1 ? 'up' : sent < -0.1 ? 'down' : '') : '' },
       ];
+      const calRaw = rec.confidence_calibrated;
+      if (calRaw != null && calRaw !== '') {
+        const calNum = Number(calRaw);
+        metrics.splice(5, 0, {
+          label: 'Calibrated',
+          value: calNum + '%',
+          hint: 'Platt scaling from closed trades',
+          cls: calNum >= 70 ? 'up' : calNum >= 40 ? '' : 'down',
+        });
+      }
+      if (rec.shadow_b_threshold != null || rec.shadow_b_pass != null) {
+        const liveG = rec.min_confidence_gate != null ? rec.min_confidence_gate : '—';
+        const bThr = rec.shadow_b_threshold != null ? rec.shadow_b_threshold : '—';
+        metrics.push({
+          label: 'Shadow B',
+          value: rec.shadow_b_pass ? 'Pass' : 'Fail',
+          hint: 'Live min ' + liveG + ' → B min ' + bThr,
+          cls: rec.shadow_b_pass ? 'up' : 'down',
+        });
+      }
       
       // Add volatility regime
       if (parsed.volRegime) {
@@ -734,7 +801,8 @@
         '<td class="col-num-sm num">' + fmtNum(rec.stop_loss) + '</td>' +
         '<td class="col-num-sm num">' + fmtNum(rec.take_profit) + '</td>' +
         '<td class="col-rr num">' + fmtRR(rec.risk_reward) + '</td>' +
-        '<td class="col-conf">' + confBadge(rec.confidence_score) + '</td>' +
+        '<td class="col-conf">' + confCell(rec) + '</td>' +
+        '<td class="col-shadow text-center">' + shadowCell(rec) + '</td>' +
         '<td class="col-risk"><span class="badge badge--gray">' + (rec.risk_tier || '—') + '</span></td>' +
         '<td class="col-size num text-sm">' + sizePct + '</td>' +
         '<td class="col-expiry text-sm">' + fmtExpiry(rec.expiry_date) + '</td>' +
@@ -811,9 +879,23 @@
       const macroEl = document.getElementById('macro-banner');
       const calEl = document.getElementById('calibration-strip');
       try {
-        const r    = await fetch('/api/recommendations?group_by=category');
+        const [r, calR] = await Promise.all([
+          fetch('/api/recommendations?group_by=category'),
+          fetch('/api/calibration').catch(() => null),
+        ]);
         const data = await r.json();
         const by   = data.by_category || {};
+        renderMacroBanner(data.macro_overlay);
+        if (calR && calR.ok) {
+          try {
+            const calData = await calR.json();
+            renderCalibrationStrip(calData);
+          } catch (_) {
+            if (calEl) calEl.style.display = 'none';
+          }
+        } else if (calEl) {
+          calEl.style.display = 'none';
+        }
         render('stocks-head',      'stocks-body',      'stocks-section',      by.stocks);
         render('commodities-head', 'commodities-body', 'commodities-section', by.commodities);
         render('indices-head',     'indices-body',     'indices-section',     by.indices);

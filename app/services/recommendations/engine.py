@@ -254,6 +254,10 @@ class Candidate:
     market_regime_note: Optional[str] = None
     _score: float = 0.0
     suggested_risk_pct: float = 0.5  # suggested risk % of capital (position sizing)
+    # A/B shadow: live batch unchanged; optional alternate min-confidence gate (logged to DB)
+    min_confidence_gate: Optional[int] = None
+    shadow_b_threshold: Optional[int] = None
+    shadow_b_pass: Optional[bool] = None
 
 
 # ---------------------------------------------------------------------------
@@ -1073,6 +1077,34 @@ def build_daily_candidates(
             "[ENGINE] High-impact macro day: applied confidence penalty %d to %d candidates",
             MACRO_DAY_CONFIDENCE_PENALTY, len(out),
         )
+
+    # Shadow profile B: alternate min-confidence gate (does not change who is in the batch)
+    from app.core.preferences import get_shadow_mode_config
+
+    sm = get_shadow_mode_config()
+    if sm.get("enabled"):
+        min_live = market_ctx.min_confidence_threshold()
+        delta = int(sm.get("confidence_delta", 0))
+        min_b = max(0, min(100, min_live + delta))
+        for c in out:
+            conf = c.confidence_score or 0
+            c.min_confidence_gate = min_live
+            c.shadow_b_threshold = min_b
+            c.shadow_b_pass = conf >= min_b
+        n_pass_b = sum(1 for c in out if c.shadow_b_pass)
+        logger.info(
+            "[ENGINE] Shadow mode B: live_min=%d delta=%d → B_threshold=%d | %d/%d rows would pass B",
+            min_live,
+            delta,
+            min_b,
+            n_pass_b,
+            len(out),
+        )
+    else:
+        for c in out:
+            c.min_confidence_gate = None
+            c.shadow_b_threshold = None
+            c.shadow_b_pass = None
 
     logger.info(
         "[ENGINE] Final batch: %d candidates (≤%d per category), total risk budget used: %.2f%% / %.2f%%",

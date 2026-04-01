@@ -192,6 +192,9 @@ def _rec_to_item(r: Recommendation) -> dict:
         "volatility_notes": getattr(r, "volatility_notes", None),
         "status": r.status,
         "rationale_text": getattr(r, "rationale_text", None),
+        "min_confidence_gate": getattr(r, "min_confidence_gate", None),
+        "shadow_b_threshold": getattr(r, "shadow_b_threshold", None),
+        "shadow_b_pass": getattr(r, "shadow_b_pass", None),
     }
     return item
 
@@ -293,12 +296,14 @@ async def export_recommendations_csv(
     writer.writerow([
         "Asset", "Category", "Direction", "Entry", "Stop Loss", "Take Profit",
         "R:R", "Confidence", "Bucket", "Size %", "Risk Tier", "Expiry",
-        "Status", "Batch", "Created At"
+        "Status", "Batch", "Created At",
+        "MinConfGate", "ShadowBThreshold", "ShadowBPass",
     ])
     
     # Data rows
     for r in recs:
         score = getattr(r, "confidence_score", None)
+        sbp = getattr(r, "shadow_b_pass", None)
         writer.writerow([
             r.asset_id,
             r.asset_category,
@@ -315,6 +320,9 @@ async def export_recommendations_csv(
             r.status,
             r.batch_id,
             r.created_at.isoformat() if r.created_at else None,
+            getattr(r, "min_confidence_gate", None),
+            getattr(r, "shadow_b_threshold", None),
+            sbp if sbp is None else ("1" if sbp else "0"),
         ])
 
     output.seek(0)
@@ -619,6 +627,14 @@ async def fit_calibration(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
     return _with_disclaimer({"ok": True, "message": f"Platt calibration fitted on {len(confidences)} trades.", "a": a, "b": b})
 
 
+@router.post("/calibration/clear")
+async def clear_calibration() -> dict[str, Any]:
+    """Clear fitted Platt parameters from memory and delete the persisted file."""
+    from app.services.calibration import clear_platt_params
+    clear_platt_params()
+    return _with_disclaimer({"ok": True, "message": "Platt calibration cleared."})
+
+
 @router.get("/regime/status")
 async def get_regime_status(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
     """
@@ -836,12 +852,22 @@ async def refresh_macro_calendar() -> dict[str, Any]:
 @router.get("/preferences")
 async def get_preferences() -> dict[str, Any]:
     """Return user preferences (risk stance + research LLM provider/model/URL + risk budget + sentiment decay + confidence thresholds)."""
-    from app.core.preferences import get_preferred_risk, get_research_llm_config, get_risk_budget_1r, get_sentiment_half_life, get_confidence_thresholds
+    from app.core.preferences import (
+        get_preferred_risk,
+        get_research_llm_config,
+        get_risk_budget_1r,
+        get_sentiment_half_life,
+        get_confidence_thresholds,
+        get_shadow_mode_config,
+    )
+    sm = get_shadow_mode_config()
     out = {
         "preferred_risk": get_preferred_risk(),
         "risk_budget_1r": get_risk_budget_1r(),
         "sentiment_half_life_hours": get_sentiment_half_life(),
         "confidence_thresholds": get_confidence_thresholds(),
+        "shadow_mode_enabled": sm["enabled"],
+        "shadow_confidence_delta": sm["confidence_delta_stored"],
     }
     out.update(get_research_llm_config())
     return _with_disclaimer(out)
@@ -857,6 +883,8 @@ class PreferencesUpdate(BaseModel):
     confidence_threshold_risk_on: int | None = None
     confidence_threshold_cautious: int | None = None
     confidence_threshold_risk_off: int | None = None
+    shadow_mode_enabled: bool | None = None
+    shadow_confidence_delta: int | None = None
 
 
 @router.patch("/preferences")
@@ -865,7 +893,7 @@ async def update_preferences(body: PreferencesUpdate) -> dict[str, Any]:
     from app.core.preferences import (
         set_preferred_risk, set_research_llm_config, get_preferred_risk, get_research_llm_config,
         set_risk_budget_1r, get_risk_budget_1r, set_sentiment_half_life, get_sentiment_half_life,
-        set_confidence_thresholds, get_confidence_thresholds
+        set_confidence_thresholds, get_confidence_thresholds, set_shadow_mode, get_shadow_mode_config,
     )
     try:
         if body.preferred_risk is not None:
@@ -886,11 +914,19 @@ async def update_preferences(body: PreferencesUpdate) -> dict[str, Any]:
                 cautious=body.confidence_threshold_cautious,
                 risk_off=body.confidence_threshold_risk_off,
             )
+        if body.shadow_mode_enabled is not None or body.shadow_confidence_delta is not None:
+            set_shadow_mode(
+                enabled=body.shadow_mode_enabled,
+                confidence_delta=body.shadow_confidence_delta,
+            )
+        sm = get_shadow_mode_config()
         out = {
             "preferred_risk": get_preferred_risk(),
             "risk_budget_1r": get_risk_budget_1r(),
             "sentiment_half_life_hours": get_sentiment_half_life(),
             "confidence_thresholds": get_confidence_thresholds(),
+            "shadow_mode_enabled": sm["enabled"],
+            "shadow_confidence_delta": sm["confidence_delta_stored"],
         }
         out.update(get_research_llm_config())
         out["message"] = "Preferences saved."

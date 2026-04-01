@@ -147,6 +147,9 @@ async def job_daily_batch() -> None:
                     volatility_notes=_combined_notes,
                     status="pending",
                     suggested_risk_pct=getattr(c, "suggested_risk_pct", None),
+                    min_confidence_gate=getattr(c, "min_confidence_gate", None),
+                    shadow_b_threshold=getattr(c, "shadow_b_threshold", None),
+                    shadow_b_pass=getattr(c, "shadow_b_pass", None),
                 )
                 session.add(rec)
             await session.commit()

@@ -210,9 +210,9 @@ We **adopt Option B (emulate)** in the app: no dependency on running Dexter; one
 | **Practical Order: richer research context** | Done | yfinance `.info` (sector, industry, marketCap, shortName) in `build_research_context`; LLM prompt includes fundamentals |
 | **Practical Order: company name → ticker** | Done | `resolve_company_to_ticker()` in ticker_detection; `GET /api/research/resolve?q=...`; Research page "Resolve" button |
 | **Practical Order: optional daily briefing** | Done | Default checklist: SPX move, VIX, **WTI, Brent, gold, silver** futures, recs today; optional `data/briefing_checklist.json`; `GET/POST` briefing APIs; `/briefing` page |
-| Export (CSV/table) | Not done | Optional |
+| Export (CSV/table) | Done | `GET /api/recommendations/export`; Export CSV on Recommendations page |
 | Claude Equity Research | Not done | Optional |
-| UI / notifications | Partially done | Dashboard, pages; optional Telegram/Slack |
+| UI / notifications | Partially done | Dashboard + webhook notifications; optional Telegram / native Slack |
 
 ### Constraints status
 
@@ -232,10 +232,10 @@ Consolidated from §10 below and `docs/FUTURE_RECOMMENDATION_IMPROVEMENTS.md` (q
 | # | Item | Scope / notes |
 |---|------|----------------|
 | 1 | ~~**Macro calendar forward-fill**~~ | **Done** — now **auto-fetched** from public sources (no API key): **FOMC** from Fed calendar HTML + press releases JSON; **CPI/NFP** pattern-based. Cached in `data/macro_calendar_cache.json` (7-day TTL). Static fallback if fetch fails. **API:** `GET /api/macro-calendar`, `POST /api/macro-calendar/refresh`. **UI:** `/calendar` page with status, upcoming events, refresh button. |
-| 2 | **Export (CSV)** | `GET /api/recommendations/export?format=csv` for today’s batch or pending; optional download control on Recommendations UI. |
-| 3 | **Calibrated confidence in API** | When Platt calibration is fitted, expose optional **`confidence_calibrated`** (or similar) on recommendation list/detail payloads so UI/API consumers see raw vs calibrated side by side. |
+| 2 | ~~**Export (CSV)**~~ | **Done** — `GET /api/recommendations/export`; Export CSV button on Recommendations page. |
+| 3 | ~~**Calibrated confidence in API + UI**~~ | **Done** — `confidence_calibrated` on `_rec_to_item` / grouped recommendations when Platt is fitted. Recommendations page: Conf column shows **cal X%** subline; Research modal adds **Calibrated** metric; calibration strip loads with the page. |
 | 4 | **MCP tools** (optional) | Thin wrappers: e.g. `get_latest_insight`, `get_sentiment_summary`, `get_oil_snapshot` over existing HTTP/DB paths. |
-| 5 | **Notifications** (optional) | Telegram / Slack (or webhook): e.g. daily batch ready, regime transition alerts, optional macro-day reminder. |
+| 5 | **Notifications** (optional) | **Webhooks:** Done (Dashboard). **Remaining:** Telegram or native Slack app beyond generic webhook URL; optional macro-day reminder tuning. |
 
 Further ideas (larger than a single sprint): **A/B or shadow engine** (log alternate thresholds without changing live picks — Section 9 in future doc); **historical replay / backtest** (Section 6); **higher-frequency bars** (Section 9).
 
@@ -321,4 +321,4 @@ Further ideas (larger than a single sprint): **A/B or shadow engine** (log alter
 
 ## 11. One-line summary
 
-Phase 1–2 and **Engine v3** (+ sizing, risk budget, outcomes, calibration, journal, briefing commodities, macro overlay, log/Yahoo spam limits) are **done**. **Next:** see **§10.1** (CSV export, calibrated confidence field, MCP, notifications; macro calendar maintained through 2027).
+Phase 1–2 and **Engine v3** (+ sizing, risk budget, outcomes, calibration, journal, briefing commodities, macro overlay, log/Yahoo spam limits) are **done**. **Next:** see **§10.1** (remaining optional: MCP; extra notification channels; macro calendar cache). CSV export and calibrated confidence (API + Recommendations UI) are **done**.

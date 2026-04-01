@@ -178,3 +178,42 @@ def set_confidence_thresholds(
     data["confidence_thresholds"] = current
     _save_prefs(data)
     return get_confidence_thresholds()
+
+
+# A/B shadow mode: alternate min-confidence gate (logged per recommendation; live batch unchanged)
+_DEFAULT_SHADOW_DELTA = 5
+_MIN_SHADOW_DELTA = -20
+_MAX_SHADOW_DELTA = 30
+
+
+def get_shadow_mode_config() -> dict[str, Any]:
+    """Return shadow_mode_enabled and confidence_delta (applied to live min confidence for profile B)."""
+    data = _load_prefs()
+    enabled = bool(data.get("shadow_mode_enabled"))
+    raw = data.get("shadow_confidence_delta", _DEFAULT_SHADOW_DELTA)
+    try:
+        delta = int(raw)
+    except (TypeError, ValueError):
+        delta = _DEFAULT_SHADOW_DELTA
+    delta = max(_MIN_SHADOW_DELTA, min(_MAX_SHADOW_DELTA, delta))
+    return {
+        "enabled": enabled,
+        "confidence_delta": delta if enabled else 0,
+        "confidence_delta_stored": delta,
+    }
+
+
+def set_shadow_mode(
+    enabled: bool | None = None,
+    confidence_delta: int | None = None,
+) -> dict[str, Any]:
+    """Persist shadow toggles. Delta is clamped to [-20, 30]. Positive = stricter profile B."""
+    data = _load_prefs()
+    if enabled is not None:
+        data["shadow_mode_enabled"] = bool(enabled)
+    if confidence_delta is not None:
+        data["shadow_confidence_delta"] = max(
+            _MIN_SHADOW_DELTA, min(_MAX_SHADOW_DELTA, int(confidence_delta))
+        )
+    _save_prefs(data)
+    return get_shadow_mode_config()
