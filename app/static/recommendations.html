@@ -755,7 +755,7 @@
     }
 
     /* ── Table helpers ── */
-    const THEAD = '<tr><th>Asset</th><th>Dir</th><th class="num">Entry</th><th class="num">Current</th><th class="num">SL</th><th class="num">TP</th><th class="num">R:R</th><th title="Raw score; &quot;cal&quot; line when Platt is fitted">Conf</th><th title="Shadow profile B: pass/fail vs alternate min confidence">B</th><th>Risk</th><th class="num">Size</th><th>Expiry</th><th>Context</th><th>Status</th><th>Actions</th></tr>';
+    const THEAD = '<tr><th>Asset</th><th>Dir</th><th class="num">Entry</th><th class="num">Current</th><th class="num">SL</th><th class="num">TP</th><th class="num">R:R</th><th>Conf</th><th>Risk</th><th class="num">Size</th><th>Expiry</th><th>Actions</th></tr>';
 
     function buildRow(rec) {
       const tr = document.createElement('tr');
@@ -765,7 +765,7 @@
           '<button class="btn btn-sm btn--secondary" data-do="research">' + icon('search', 13) + ' Research</button>'
         : '<button class="btn btn-sm btn--secondary" data-do="research">' + icon('search', 13) + ' Research</button>';
       const sizePct = rec.suggested_risk_pct != null ? rec.suggested_risk_pct.toFixed(2) + '%' : '—';
-      
+
       // Parse volatility notes for indicator badges
       const parsed = parseVolatilityNotes(rec.volatility_notes);
       let indicators = '';
@@ -779,9 +779,22 @@
       } else if (parsed.volRegime === 'contracting') {
         indicators += '<span class="indicator-badge indicator-badge--blue" title="Vol Contracting">◆</span>';
       }
-      
+
+      const notesHtml = escapeAttr(rec.volatility_notes || '—');
+      const dropdownId = 'drop-' + rec.id;
+
       tr.innerHTML =
-        '<td class="col-asset font-semibold">' + rec.asset_id + (indicators ? '<span class="indicator-badges">' + indicators + '</span>' : '') + '</td>' +
+        '<td class="col-asset font-semibold">' +
+          '<div class="asset-dropdown-wrap">' +
+            '<button class="asset-btn" data-dropdown="' + dropdownId + '">' +
+              rec.asset_id + (indicators ? '<span class="indicator-badges">' + indicators + '</span>' : '') +
+            '</button>' +
+            '<div class="asset-dropdown" id="' + dropdownId + '">' +
+              '<div class="asset-dropdown-row"><span class="asset-dropdown-label">Status</span>' + statusBadge(rec.status) + '</div>' +
+              '<div class="asset-dropdown-row asset-dropdown-notes"><span class="asset-dropdown-label">Notes</span><span>' + notesHtml + '</span></div>' +
+            '</div>' +
+          '</div>' +
+        '</td>' +
         '<td class="col-dir">' + dirBadge(rec.direction) + '</td>' +
         '<td class="col-num-sm num">' + fmtNum(rec.buy_in_price) + '</td>' +
         '<td class="col-num-sm num">' + fmtNum(rec.current_price) + '</td>' +
@@ -793,9 +806,18 @@
         '<td class="col-risk"><span class="badge badge--gray">' + (rec.risk_tier || '—') + '</span></td>' +
         '<td class="col-size num text-sm">' + sizePct + '</td>' +
         '<td class="col-expiry text-sm">' + fmtExpiry(rec.expiry_date) + '</td>' +
-        contextCell(rec) +
-        '<td class="col-status">' + statusBadge(rec.status) + '</td>' +
         '<td class="col-actions"><div class="btn-group-rec">' + actions + '</div></td>';
+      const assetBtn = tr.querySelector('.asset-btn');
+      if (assetBtn) {
+        assetBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const dd = document.getElementById(assetBtn.dataset.dropdown);
+          const isOpen = dd.classList.contains('open');
+          document.querySelectorAll('.asset-dropdown.open').forEach(d => d.classList.remove('open'));
+          if (!isOpen) dd.classList.add('open');
+        });
+      }
+
       tr.querySelectorAll('button[data-do]').forEach(btn => {
         btn.addEventListener('click', async () => {
           const act = btn.dataset.do;
@@ -814,7 +836,7 @@
       head.innerHTML = THEAD;
       body.innerHTML = '';
       if (!items || items.length === 0) {
-        body.innerHTML = '<tr><td colspan="15" class="table-empty">No recommendations in this category</td></tr>';
+        body.innerHTML = '<tr><td colspan="12" class="table-empty">No recommendations in this category</td></tr>';
         return;
       }
       items.forEach(rec => body.appendChild(buildRow(rec)));
@@ -887,6 +909,11 @@
       document.getElementById('content').style.display = 'block';
     }
     load();
+
+    // Close asset dropdowns when clicking outside
+    document.addEventListener('click', () => {
+      document.querySelectorAll('.asset-dropdown.open').forEach(d => d.classList.remove('open'));
+    });
   </script>
 </body>
 </html>

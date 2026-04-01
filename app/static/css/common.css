@@ -87,9 +87,9 @@ a { color: var(--primary); }
 /* Layout */
 .app { max-width: 720px; margin: 0 auto; padding: var(--space-3) var(--space-2) var(--space-6); }
 .app--wide { max-width: 1280px; }
-/* Recommendations: use nearly full viewport width so wide tables avoid horizontal scroll */
+/* Recommendations: full viewport width so tables expand with browser */
 .app--recommendations {
-  max-width: min(1680px, calc(100vw - 24px));
+  max-width: 100%;
   width: 100%;
   padding-left: var(--space-2);
   padding-right: var(--space-2);
@@ -233,42 +233,44 @@ td .btn-sm { margin: 0 2px; }
   }
 }
 .table--recommendations {
-  table-layout: fixed;
+  table-layout: auto;
   width: 100%;
   font-size: 13px;
 }
 .table--recommendations th,
 .table--recommendations td {
   padding: 8px 6px;
-  vertical-align: top;
+  vertical-align: middle;
+  white-space: nowrap;
 }
-.table--recommendations th {
-  white-space: normal;
-  line-height: 1.25;
-  hyphens: auto;
+.table--recommendations .col-asset { white-space: nowrap; }
+
+/* Asset dropdown */
+.asset-dropdown-wrap { position: relative; display: inline-block; }
+.asset-btn {
+  background: none; border: none; padding: 0; cursor: pointer;
+  font-weight: 600; font-size: inherit; color: inherit; text-align: left;
+  display: flex; align-items: center; gap: 4px;
 }
-.table--recommendations .col-asset { width: 5.5rem; }
-.table--recommendations .col-dir { width: 4.25rem; }
-.table--recommendations .col-num-sm { width: 4.5rem; }
-.table--recommendations .col-rr { width: 3.5rem; }
-.table--recommendations .col-conf { width: 4rem; }
-.table--recommendations .col-risk { width: 5.5rem; }
-.table--recommendations .col-size { width: 3.75rem; }
-.table--recommendations .col-expiry { width: 8.5rem; }
-.table--recommendations .col-context { width: 32%; min-width: 0; }
-.table--recommendations .col-status { width: 5rem; }
-.table--recommendations .col-actions { width: 11rem; min-width: 0; }
-.table--recommendations .col-context,
-.table--recommendations .col-context .ctx-text {
-  white-space: normal;
-  word-break: break-word;
-  overflow-wrap: anywhere;
+.asset-btn:hover { text-decoration: underline; }
+.asset-dropdown {
+  position: absolute; top: calc(100% + 4px); left: 0; z-index: 50;
+  background: var(--background); border: 1px solid var(--border);
+  border-radius: var(--radius); box-shadow: 0 4px 16px rgba(0,0,0,.12);
+  padding: 10px 12px; min-width: 260px; width: max-content; max-width: 520px;
+  flex-direction: column; gap: 8px; display: none;
 }
+.asset-dropdown.open { display: flex; }
+.asset-dropdown-row { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; }
+.asset-dropdown-label { font-weight: 600; color: var(--muted-foreground); min-width: 44px; flex-shrink: 0; padding-top: 1px; }
+.asset-dropdown-notes span { color: var(--foreground); line-height: 1.5; white-space: normal; word-break: break-word; }
+.table--recommendations .col-actions { white-space: nowrap; }
 .table--recommendations .col-actions .btn-group-rec {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 4px;
   justify-content: flex-end;
+  white-space: nowrap;
 }
 .table--recommendations .num { font-size: 12px; }
 
