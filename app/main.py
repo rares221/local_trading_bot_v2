@@ -16,6 +16,11 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    try:
+        from app.services.calibration import load_platt_from_disk
+        load_platt_from_disk()
+    except Exception:
+        pass
     # Refresh macro calendar cache if stale (runs in background, non-blocking)
     try:
         from app.services.macro_calendar import refresh_dates

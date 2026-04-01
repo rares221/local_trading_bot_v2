@@ -31,6 +31,10 @@ class Recommendation(Base):
     volatility_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")  # pending | taken | skipped
     suggested_risk_pct: Mapped[Optional[float]] = mapped_column(Float, nullable=True)  # position sizing: suggested risk % of capital
+    # A/B shadow: logged at batch time; live gate unchanged
+    min_confidence_gate: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    shadow_b_threshold: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    shadow_b_pass: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
 
     active_trade: Mapped[Optional["ActiveTrade"]] = relationship("ActiveTrade", back_populates="recommendation", uselist=False)
 

@@ -1,10 +1,15 @@
 """
 Confidence calibration using historical outcomes. Platt scaling (logistic regression)
 or isotonic regression to map raw confidence -> calibrated probability.
+
+Parameters persist to ``data/platt_calibration.json`` so they survive process restarts.
 """
 from typing import Optional
+import json
 import math
 import logging
+
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -12,6 +17,40 @@ logger = logging.getLogger(__name__)
 # Updated by fit_calibration() when enough outcomes exist.
 _platt_a: Optional[float] = None
 _platt_b: Optional[float] = None
+
+
+def _platt_path():
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    return settings.data_dir / "platt_calibration.json"
+
+
+def load_platt_from_disk() -> None:
+    """Load Platt (a, b) from disk into process memory. Safe to call multiple times."""
+    global _platt_a, _platt_b
+    path = _platt_path()
+    if not path.is_file():
+        return
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        a, b = data.get("a"), data.get("b")
+        if a is None or b is None:
+            return
+        _platt_a, _platt_b = float(a), float(b)
+        logger.info("[CALIBRATION] Loaded Platt params from disk: a=%.4f b=%.4f", _platt_a, _platt_b)
+    except Exception as e:
+        logger.warning("[CALIBRATION] Could not load platt_calibration.json: %s", e)
+
+
+def clear_platt_params() -> None:
+    """Remove in-memory Platt params and delete the persistence file."""
+    global _platt_a, _platt_b
+    _platt_a, _platt_b = None, None
+    path = _platt_path()
+    try:
+        if path.is_file():
+            path.unlink()
+    except OSError as e:
+        logger.warning("[CALIBRATION] Could not delete platt file: %s", e)
 
 
 def fit_platt_calibration(confidences: list[float], outcomes: list[float]) -> tuple[float, float]:
@@ -65,10 +104,16 @@ def apply_platt_calibration(raw_confidence: int) -> float:
 
 
 def set_platt_params(a: float, b: float) -> None:
-    """Set fitted Platt parameters (called after fit_calibration)."""
+    """Set fitted Platt parameters (called after fit_calibration) and persist to disk."""
     global _platt_a, _platt_b
     _platt_a = a
     _platt_b = b
+    try:
+        path = _platt_path()
+        path.write_text(json.dumps({"a": a, "b": b}, indent=2), encoding="utf-8")
+        logger.info("[CALIBRATION] Saved Platt params to %s", path)
+    except Exception as e:
+        logger.error("[CALIBRATION] Failed to save Platt params: %s", e, exc_info=True)
 
 
 def get_platt_params() -> tuple[Optional[float], Optional[float]]:
