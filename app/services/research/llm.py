@@ -14,7 +14,10 @@ from app.services.research.providers import (
 
 SYSTEM_PROMPT = (
     "You are a concise trading research assistant. In 2–4 sentences only, "
-    "explain why this trade idea might make sense and the main risk. "
+    "explain why this SPECIFIC trade direction (the Direction field provided) might make sense and the main risk. "
+    "CRITICAL: If Direction is 'short', frame the rationale around why the asset may decline — "
+    "do NOT argue for a long/bullish position. If Direction is 'long', argue why it may rise. "
+    "Reference key technicals, sentiment, and market conditions. "
     "No disclaimers; factual and neutral."
 )
 
@@ -25,13 +28,38 @@ def _format_user_content(context: dict[str, Any]) -> str:
     risk = context.get("risk_tier")
     headlines = context.get("headlines") or []
     asset = context.get("asset_id", "this asset")
-    parts = [f"Asset: {asset}."]
+    fundamentals = context.get("fundamentals") or {}
+    direction = context.get("direction", "long")
+    parts = [f"Asset: {asset}.", f"Direction: {direction}."]
     if sentiment is not None:
-        parts.append(f"Recent sentiment (avg): {sentiment:.3f}.")
+        parts.append(f"Recent sentiment (weighted avg): {sentiment:.3f}.")
     if price is not None:
         parts.append(f"Current/reference price: {price}.")
     if risk:
         parts.append(f"Risk tier: {risk}.")
+    vol_notes = context.get("volatility_notes")
+    if vol_notes:
+        parts.append(f"Technicals: {vol_notes}.")
+    if fundamentals:
+        fparts = []
+        if fundamentals.get("sector"):
+            fparts.append(f"sector {fundamentals['sector']}")
+        if fundamentals.get("industry"):
+            fparts.append(f"industry {fundamentals['industry']}")
+        if fundamentals.get("market_cap") is not None:
+            mc = fundamentals["market_cap"]
+            if mc >= 1_000_000_000_000:
+                fparts.append("market cap ~trillion")
+            elif mc >= 1_000_000_000:
+                fparts.append("large-cap")
+            elif mc >= 300_000_000:
+                fparts.append("mid-cap")
+            else:
+                fparts.append("small-cap")
+        if fundamentals.get("short_name"):
+            fparts.append(f"({fundamentals['short_name']})")
+        if fparts:
+            parts.append("Fundamentals: " + ", ".join(fparts) + ".")
     if headlines:
         parts.append("Headlines: " + " | ".join(headlines[:2]))
     return "\n".join(parts)
@@ -117,12 +145,14 @@ async def _call_ollama(model: str, system: str, user: str, base_url: str) -> str
 
 async def generate_rationale(context: dict[str, Any]) -> str | None:
     """
-    One-shot LLM call using the configured provider (research_llm_provider + research_llm_model).
+    One-shot LLM call using the configured provider (from preferences or config).
     Returns 2–4 sentences on why this idea might make sense and main risk, or None if unavailable/fails.
     """
     from app.core.config import settings
+    from app.core.preferences import get_research_llm_config
 
-    provider_id = (settings.research_llm_provider or "openai").strip().lower()
+    cfg = get_research_llm_config()
+    provider_id = (cfg.get("research_llm_provider") or "openai").strip().lower()
     provider = get_provider_by_id(provider_id)
     if not provider:
         provider_id = "openai"
@@ -132,12 +162,13 @@ async def generate_rationale(context: dict[str, Any]) -> str | None:
     if not is_available(provider_id, api_key):
         return None
 
-    model = (settings.research_llm_model or "").strip() or provider.default_model
+    model = (cfg.get("research_llm_model") or "").strip() or provider.default_model
     if not model:
         return None
 
     system = SYSTEM_PROMPT
     user = _format_user_content(context)
+    ollama_base_url = (cfg.get("ollama_base_url") or "").strip() or (settings.ollama_base_url or "http://localhost:11434")
 
     try:
         if provider_id == "openai":
@@ -145,9 +176,10 @@ async def generate_rationale(context: dict[str, Any]) -> str | None:
         if provider_id == "anthropic":
             return await _call_anthropic(model, system, user, api_key or "")
         if provider_id == "ollama":
-            return await _call_ollama(model, system, user, settings.ollama_base_url or "http://localhost:11434")
+            return await _call_ollama(model, system, user, ollama_base_url)
         if provider_id == "openrouter":
             return await _call_openrouter(model, system, user, api_key or "")
-    except Exception:
-        pass
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("LLM call failed (%s/%s): %s", provider_id, model, exc)
     return None

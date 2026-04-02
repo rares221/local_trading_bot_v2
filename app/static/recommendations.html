@@ -8,92 +8,912 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/css/common.css">
+  <script src="/static/js/icons.js"></script>
+  <style>
+    /* ── Research modal overrides ── */
+    .research-modal {
+      max-width: min(1100px, 95vw);
+      width: 100%;
+      max-height: 92vh;
+    }
+    .research-modal .modal__header {
+      padding: var(--space-2) var(--space-3);
+      gap: var(--space-2);
+    }
+    .modal-header-info {
+      display: flex; flex-direction: column; gap: 2px; min-width: 0;
+    }
+    .modal-asset-title {
+      display: flex; align-items: center; gap: 8px;
+      font-size: 1.1rem; font-weight: 700; margin: 0;
+    }
+    .modal-asset-meta {
+      font-size: 12px; color: var(--muted-foreground);
+      display: flex; gap: 8px; flex-wrap: wrap; align-items: center;
+    }
+    .modal-asset-meta span { display: flex; align-items: center; gap: 3px; }
+
+    /* ── Metrics bar ── */
+    .research-metrics {
+      display: flex; flex-wrap: wrap; gap: 1px;
+      background: var(--border);
+      border-top: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+    }
+    .research-metric {
+      flex: 1 1 100px;
+      display: flex; flex-direction: column; gap: 2px;
+      padding: 10px 14px;
+      background: var(--card);
+    }
+    .research-metric__label {
+      font-size: 10px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: .06em; color: var(--muted-foreground);
+    }
+    .research-metric__value {
+      font-size: 1rem; font-weight: 700; font-variant-numeric: tabular-nums;
+      font-family: var(--font-mono);
+      color: var(--foreground);
+    }
+    .research-metric__value.up   { color: #10b981; }
+    .research-metric__value.down { color: #ef4444; }
+    .research-metric__hint {
+      font-size: 10px; color: var(--muted-foreground);
+    }
+
+    /* ── Indicator badges (trend, volatility) ── */
+    .indicator-badges {
+      display: inline-flex; gap: 3px; margin-left: 6px; vertical-align: middle;
+    }
+    .indicator-badge {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 16px; height: 16px; border-radius: 3px;
+      font-size: 10px; font-weight: 700; line-height: 1;
+      cursor: help;
+    }
+    .indicator-badge--green { background: rgba(16,185,129,0.2); color: #10b981; }
+    .indicator-badge--red { background: rgba(239,68,68,0.2); color: #ef4444; }
+    .indicator-badge--yellow { background: rgba(245,158,11,0.2); color: #f59e0b; }
+    .indicator-badge--blue { background: rgba(59,130,246,0.2); color: #3b82f6; }
+
+    /* Raw vs Platt-calibrated confidence in table */
+    .conf-cell {
+      display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+      min-width: 0;
+    }
+    .conf-cal {
+      font-size: 10px; font-weight: 500; color: var(--muted-foreground);
+      font-variant-numeric: tabular-nums;
+      line-height: 1.2;
+    }
+    .conf-cal.conf-cal--up { color: #10b981; }
+    .conf-cal.conf-cal--down { color: #ef4444; }
+
+    /* ── Chart area ── */
+    .research-chart-wrap {
+      padding: var(--space-2) var(--space-3) var(--space-2);
+      background: #0f172a;
+      border-top: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+    }
+    .research-chart-wrap .chart-title { color: #94a3b8; }
+    .research-chart-wrap .chart-legend { color: #94a3b8; }
+    .chart-disclaimer { color: #475569; }
+    .research-chart-wrap .chart-header {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 8px;
+    }
+    .research-chart-wrap .chart-title {
+      font-size: 12px; font-weight: 600; color: var(--muted-foreground);
+      text-transform: uppercase; letter-spacing: .05em;
+    }
+    .research-chart-wrap .chart-legend {
+      display: flex; gap: 12px; font-size: 11px; color: var(--muted-foreground);
+    }
+    .research-chart-wrap .chart-legend span {
+      display: flex; align-items: center; gap: 4px;
+    }
+    .legend-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .chart-disclaimer {
+      font-size: 10px; color: var(--muted-foreground);
+      text-align: right; margin-top: 4px; font-style: italic;
+    }
+
+    /* ── Content body ── */
+    .research-body { padding: var(--space-3); overflow-y: auto; flex: 1; }
+    .research-section { margin-bottom: var(--space-2); }
+    .research-section-label {
+      font-size: 11px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: .06em; color: var(--muted-foreground);
+      margin-bottom: 8px; display: flex; align-items: center; gap: 6px;
+    }
+    .research-section-label::after {
+      content: ''; flex: 1; height: 1px; background: var(--border);
+    }
+    .research-summary-text {
+      font-size: 14px; line-height: 1.75; color: var(--foreground);
+    }
+    .research-summary-text p { margin: 0 0 10px; }
+    .research-summary-text p:last-child { margin-bottom: 0; }
+
+    .headlines-list {
+      display: flex; flex-direction: column; gap: 6px;
+    }
+    .headline-item {
+      display: flex; align-items: flex-start; gap: 8px;
+      padding: 8px 10px;
+      background: var(--secondary); border-radius: var(--radius);
+      font-size: 13px; line-height: 1.45; color: var(--foreground);
+    }
+    .headline-dot {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: var(--primary); margin-top: 4px; flex-shrink: 0;
+    }
+
+    /* Confidence arc */
+    .conf-arc-wrap {
+      display: flex; align-items: center; gap: 6px;
+    }
+    .conf-arc {
+      width: 32px; height: 16px; overflow: visible;
+    }
+  </style>
 </head>
 <body>
   <nav class="nav">
-    <a href="/dashboard">Dashboard</a>
-    <a href="/recommendations" class="active">Recommendations</a>
-    <a href="/analysis">Market analysis</a>
-    <a href="/active-trades">Active trades</a>
-    <a href="/docs" target="_blank" rel="noopener">API docs</a>
+    <a href="/dashboard"><span data-icon="layout-dashboard"></span> Dashboard</a>
+    <a href="/recommendations" class="active"><span data-icon="list-checks"></span> Recommendations</a>
+    <a href="/research"><span data-icon="search"></span> Research</a>
+    <a href="/analysis"><span data-icon="bar-chart-2"></span> Analysis</a>
+    <a href="/active-trades"><span data-icon="activity"></span> Active trades</a>
+    <a href="/journal"><span data-icon="book-open"></span> Journal</a>
+    <a href="/briefing"><span data-icon="newspaper"></span> Briefing</a>
+    <a href="/calendar"><span data-icon="calendar"></span> Calendar</a>
   </nav>
 
-  <main class="app app--wide">
+  <main class="app app--wide app--recommendations">
     <h1 class="page-title">Recommendations</h1>
-    <p class="page-desc">Today's batch by category. Use "Took it" or "Skipped" per row. Trades you take appear on <a href="/active-trades">Active trades</a>. (Workflow: run pipeline on Dashboard first.)</p>
+    <p class="page-desc">Today's trade ideas grouped by category. Mark each as "Took it" or "Skip". Run the pipeline from the <a href="/dashboard">Dashboard</a> first.</p>
 
-    <section class="card" id="stocks">
-      <h2 class="section-title">Stocks</h2>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr><th>Asset</th><th class="num">Buy</th><th class="num">SL</th><th class="num">TP</th><th>Risk</th><th>Status</th><th>Actions</th></tr>
-          </thead>
-          <tbody id="stocks-body"></tbody>
-        </table>
+    <details class="mb-3" style="padding:var(--space-2);background:var(--secondary);border:1px solid var(--border);border-radius:var(--radius);">
+      <summary style="cursor:pointer;font-weight:600;font-size:13px;color:var(--foreground);">Understanding Recommendations (click to expand)</summary>
+      <div class="text-sm text-muted" style="margin-top:var(--space-2);line-height:1.6;">
+        <p><strong>Confidence Score:</strong> 0-100 rating based on sentiment + technical alignment. Higher = stronger conviction. Grouped into buckets: Low (0-40), Medium (40-60), High (60-80), Very High (80-100).</p>
+        <p style="margin-top:8px;"><strong>Calibrated (cal):</strong> When Platt scaling is fitted on the Dashboard (≥10 closed trades), the Conf column shows a second line: model-adjusted score on the same 0-100 scale. Compare raw vs cal to see optimism or pessimism vs historical outcomes.</p>
+        <p style="margin-top:8px;"><strong>B (shadow):</strong> If A/B shadow mode is on in the Dashboard when the batch is built, <strong>B</strong> shows whether that row would pass a second confidence gate (live regime min + your delta). Live picks are unchanged; this is for comparison only.</p>
+        <p style="margin-top:8px;"><strong>Size:</strong> Suggested position size (% of capital at risk) calculated from confidence and risk-reward using half-Kelly formula.</p>
+        <p style="margin-top:8px;"><strong>Market Regime:</strong> Current conditions affect which assets appear and their direction. <span style="color:#10b981;">Risk-On</span> = more aggressive longs; <span style="color:#ef4444;">Risk-Off</span> = defensive, may flip to shorts.</p>
       </div>
-    </section>
-    <section class="card" id="commodities">
-      <h2 class="section-title">Commodities</h2>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr><th>Asset</th><th class="num">Buy</th><th class="num">SL</th><th class="num">TP</th><th>Risk</th><th>Status</th><th>Actions</th></tr>
-          </thead>
-          <tbody id="commodities-body"></tbody>
-        </table>
-      </div>
-    </section>
-    <section class="card" id="other">
-      <h2 class="section-title">Other</h2>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr><th>Asset</th><th class="num">Buy</th><th class="num">SL</th><th class="num">TP</th><th>Risk</th><th>Status</th><th>Actions</th></tr>
-          </thead>
-          <tbody id="other-body"></tbody>
-        </table>
-      </div>
-    </section>
+    </details>
 
-    <p class="disclaimer">Educational use only. Not financial advice.</p>
+    <div id="macro-banner" class="alert alert--warning mb-2" style="display:none;" role="status" aria-live="polite"></div>
+    <div id="calibration-strip" class="recommendations-calibration mb-2" style="display:none;" aria-label="Calibration summary"></div>
+
+    <div class="flex gap-2 mb-2" style="justify-content:flex-end;">
+      <a href="/api/recommendations/export" class="btn btn--secondary" id="export-btn" download>
+        <span data-icon="file-text"></span>
+        <span class="btn-label">Export CSV</span>
+      </a>
+    </div>
+
+    <div id="loading" class="loading-overlay"><span class="spinner spinner--lg"></span> Loading recommendations&hellip;</div>
+    <div id="content" style="display:none;">
+      <section class="card" id="stocks-section">
+        <h2 class="section-title">Stocks</h2>
+        <div class="table-wrap table-wrap--recommendations"><table class="table--recommendations"><thead id="stocks-head"></thead><tbody id="stocks-body"></tbody></table></div>
+      </section>
+      <section class="card" id="commodities-section">
+        <h2 class="section-title">Commodities</h2>
+        <div class="table-wrap table-wrap--recommendations"><table class="table--recommendations"><thead id="commodities-head"></thead><tbody id="commodities-body"></tbody></table></div>
+      </section>
+      <section class="card" id="indices-section">
+        <h2 class="section-title">Indices</h2>
+        <div class="table-wrap table-wrap--recommendations"><table class="table--recommendations"><thead id="indices-head"></thead><tbody id="indices-body"></tbody></table></div>
+      </section>
+      <section class="card" id="other-section">
+        <h2 class="section-title">Other</h2>
+        <div class="table-wrap table-wrap--recommendations"><table class="table--recommendations"><thead id="other-head"></thead><tbody id="other-body"></tbody></table></div>
+      </section>
+    </div>
+
+    <p class="disclaimer">Educational and research purposes only. Not financial advice.</p>
   </main>
 
+  <!-- Research modal -->
+  <div id="research-modal" class="modal-overlay" role="dialog" aria-modal="true" aria-hidden="true" hidden>
+    <div class="modal research-modal">
+
+      <!-- Header -->
+      <div class="modal__header">
+        <div class="modal-header-info">
+          <h2 class="modal-asset-title">
+            <span id="modal-dir-badge"></span>
+            <span id="modal-asset-name">—</span>
+          </h2>
+          <div class="modal-asset-meta" id="modal-asset-meta"></div>
+        </div>
+        <button type="button" class="modal__close" id="modal-close" aria-label="Close">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+
+      <!-- Metrics bar -->
+      <div class="research-metrics" id="modal-metrics"></div>
+
+      <!-- Forecast chart -->
+      <div class="research-chart-wrap" id="modal-chart-wrap" style="display:none;">
+        <div class="chart-header">
+          <span class="chart-title">Monte Carlo GBM · 500 paths · 14-day horizon</span>
+          <span id="chart-prob" style="font-size:11px;color:#94a3b8;font-family:var(--font-mono);"></span>
+        </div>
+        <div style="position:relative;height:220px;"><canvas id="research-chart"></canvas></div>
+        <p class="chart-disclaimer">GBM Monte Carlo · σ derived from SL distance · μ from confidence score · not a price prediction</p>
+      </div>
+
+      <!-- Body: summary + headlines -->
+      <div class="research-body" id="modal-body-wrap">
+        <div class="research-section">
+          <div class="research-section-label">Research Summary</div>
+          <div id="modal-summary"></div>
+        </div>
+        <div class="research-section" id="modal-headlines-section" style="display:none;">
+          <div class="research-section-label">Latest Headlines</div>
+          <div class="headlines-list" id="modal-headlines"></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
   <script>
-    function row(rec) {
+    /* Lazy-load Chart.js only when the Research modal is first opened */
+    let _chartJsReady = false;
+    let _chartJsLoading = false;
+    let _chartJsQueue = [];
+
+    function loadChartJs(cb) {
+      if (_chartJsReady) { cb(); return; }
+      _chartJsQueue.push(cb);
+      if (_chartJsLoading) return;
+      _chartJsLoading = true;
+      const s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js';
+      s.onload = () => {
+        _chartJsReady = true;
+        _chartJsQueue.forEach(fn => fn());
+        _chartJsQueue = [];
+      };
+      document.head.appendChild(s);
+    }
+  </script>
+  <script>
+    /* ── Modal state ── */
+    const overlay     = document.getElementById('research-modal');
+    const modalName   = document.getElementById('modal-asset-name');
+    const modalDir    = document.getElementById('modal-dir-badge');
+    const modalMeta   = document.getElementById('modal-asset-meta');
+    const modalMetrics= document.getElementById('modal-metrics');
+    const modalSum    = document.getElementById('modal-summary');
+    const modalHlSec  = document.getElementById('modal-headlines-section');
+    const modalHl     = document.getElementById('modal-headlines');
+    const chartWrap   = document.getElementById('modal-chart-wrap');
+    let _chart        = null;
+
+    function closeModal() {
+      overlay.hidden = true;
+      overlay.style.display = 'none';
+      if (_chart) { _chart.destroy(); _chart = null; }
+    }
+    document.getElementById('modal-close').addEventListener('click', closeModal);
+    overlay.addEventListener('click', e => { if (e.target === overlay) closeModal(); });
+    document.addEventListener('keydown', e => { if (e.key === 'Escape' && !overlay.hidden) closeModal(); });
+
+    /* ── Helpers ── */
+    function fmtPrice(v) { return v != null ? '$' + Number(v).toFixed(2) : '—'; }
+    function fmtRR(v)    { return v != null ? Number(v).toFixed(1) + ':1' : '—'; }
+    function fmtPct(v)   { return v != null ? (Number(v) >= 0 ? '+' : '') + (Number(v) * 100).toFixed(1) + '%' : '—'; }
+    function fmtSent(v)  { return v != null ? Number(v).toFixed(2) : '—'; }
+    function fmtMktCap(v) {
+      if (!v) return null;
+      if (v >= 1e12) return '$' + (v/1e12).toFixed(1) + 'T';
+      if (v >= 1e9)  return '$' + (v/1e9).toFixed(1) + 'B';
+      if (v >= 1e6)  return '$' + (v/1e6).toFixed(1) + 'M';
+      return '$' + v;
+    }
+
+    /* ── Direction badge ── */
+    function dirBadge(dir) {
+      if (!dir) return '';
+      const isShort = dir === 'short';
+      return `<span class="badge ${isShort ? 'badge--red' : 'badge--green'}" style="font-size:13px;">${isShort ? 'SHORT' : 'LONG'}</span>`;
+    }
+
+    /* ── Confidence badge (inline for table) ── */
+    function confBadge(score) {
+      if (score == null) return '<span class="badge badge--gray">—</span>';
+      const cls = score >= 70 ? 'badge--green' : score >= 40 ? 'badge--yellow' : 'badge--red';
+      return `<span class="badge ${cls}">${score}%</span>`;
+    }
+
+    /** Raw badge + optional Platt-calibrated subline (same 0-100 scale as API). */
+    function confCell(rec) {
+      const main = confBadge(rec.confidence_score);
+      const cal = rec.confidence_calibrated;
+      if (cal == null || cal === '') {
+        return '<div class="conf-cell">' + main + '</div>';
+      }
+      const calNum = Number(cal);
+      const calTone = calNum >= 70 ? ' conf-cal--up' : calNum < 40 ? ' conf-cal--down' : '';
+      return (
+        '<div class="conf-cell" title="Platt-calibrated score from closed-trade outcomes (0-100 scale)">' +
+        main +
+        '<span class="conf-cal' + calTone + '">cal ' + calNum + '%</span>' +
+        '</div>'
+      );
+    }
+
+    /** Shadow profile B: recorded when batch was built with shadow mode on */
+    function shadowCell(rec) {
+      if (rec.shadow_b_threshold == null && rec.min_confidence_gate == null && rec.shadow_b_pass == null) {
+        return '<span class="text-muted text-sm">—</span>';
+      }
+      const pass = rec.shadow_b_pass === true;
+      const thr = rec.shadow_b_threshold != null ? rec.shadow_b_threshold : '—';
+      const live = rec.min_confidence_gate != null ? rec.min_confidence_gate : '—';
+      const title = 'Live min ' + live + ' → B min ' + thr + ' (conf ' + (rec.confidence_score ?? '—') + ')';
+      if (pass) {
+        return '<span class="badge badge--green" title="' + escapeAttr(title) + '">B ✓</span>';
+      }
+      return '<span class="badge badge--red" title="' + escapeAttr(title) + '">B ✗</span>';
+    }
+    function statusBadge(s) {
+      if (s === 'taken')   return '<span class="badge badge--green">Taken</span>';
+      if (s === 'skipped') return '<span class="badge badge--gray">Skipped</span>';
+      return '<span class="badge badge--blue">Pending</span>';
+    }
+    function fmtNum(v)  { return v != null ? Number(v).toFixed(2) : '—'; }
+    function fmtExpiry(iso) {
+      if (!iso) return '—';
+      const exp = new Date(iso + 'T00:00:00');
+      const now = new Date(); now.setHours(0,0,0,0);
+      const days = Math.round((exp - now) / 86400000);
+      const label = days <= 0 ? 'today' : days === 1 ? '1 day' : days + ' days';
+      return exp.toLocaleDateString() + ' <span class="text-sm text-muted">(' + label + ')</span>';
+    }
+    function escapeAttr(s) {
+      if (s == null || s === '') return '';
+      return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+    function contextCell(rec) {
+      const vn = rec.volatility_notes || '';
+      if (!vn.trim()) return '<td class="col-context text-xs text-muted">—</td>';
+      return '<td class="col-context text-xs text-muted ctx-wrap" title="' + escapeAttr(vn) + '"><span class="ctx-text">' + escapeAttr(vn) + '</span></td>';
+    }
+
+    /* ── Extract volatility regime and trend alignment from notes ── */
+    function parseVolatilityNotes(notes) {
+      const result = { volRegime: null, trendAligned: null, emaStack: null, sector: null };
+      if (!notes) return result;
+      
+      // Vol regime: stable | expanding | contracting
+      const volMatch = notes.match(/Vol regime:\s*(\w+)/i);
+      if (volMatch) result.volRegime = volMatch[1].toLowerCase();
+      
+      // MTF: aligned | conflicting
+      const mtfMatch = notes.match(/MTF:\s*(\w+)/i);
+      if (mtfMatch) result.trendAligned = mtfMatch[1].toLowerCase() === 'aligned';
+      
+      // EMA: bullish_stack | bearish_stack | mixed
+      const emaMatch = notes.match(/EMA:\s*(\w+)/i);
+      if (emaMatch) result.emaStack = emaMatch[1].toLowerCase();
+      
+      // Sector info
+      const sectorMatch = notes.match(/Sector\s*\(([^)]+)\):\s*([^;]+)/i);
+      if (sectorMatch) result.sector = { name: sectorMatch[1], regime: sectorMatch[2].trim() };
+      
+      return result;
+    }
+
+    /* ── Render metrics bar ── */
+    function renderMetrics(rec, context) {
+      const isLong = (rec.direction || 'long') !== 'short';
+      const entry  = rec.buy_in_price;
+      const sl     = rec.stop_loss;
+      const tp     = rec.take_profit;
+      const slPct  = (entry && sl) ? (sl - entry) / entry : null;
+      const tpPct  = (entry && tp) ? (tp - entry) / entry : null;
+      const sent   = context ? context.sentiment_avg : null;
+      
+      // Parse volatility notes for badges
+      const parsed = parseVolatilityNotes(rec.volatility_notes);
+
+      const metrics = [
+        { label: 'Entry',      value: fmtPrice(entry),                  hint: 'Buy-in price',         cls: '' },
+        { label: 'Stop Loss',  value: fmtPrice(sl),                     hint: slPct != null ? fmtPct(slPct) + ' risk' : '', cls: 'down' },
+        { label: 'Take Profit',value: fmtPrice(tp),                     hint: tpPct != null ? fmtPct(tpPct) + ' upside' : '', cls: 'up' },
+        { label: 'Risk:Reward',value: fmtRR(rec.risk_reward),           hint: 'Reward per unit risk', cls: '' },
+        { label: 'Confidence', value: rec.confidence_score != null ? rec.confidence_score + '%' : '—', hint: rec.confidence_bucket || '', cls: rec.confidence_score >= 70 ? 'up' : rec.confidence_score >= 40 ? '' : 'down' },
+        { label: 'Sentiment',  value: sent != null ? fmtSent(sent) : '—', hint: sent != null ? (sent > 0.1 ? 'Positive' : sent < -0.1 ? 'Negative' : 'Neutral') : '', cls: sent != null ? (sent > 0.1 ? 'up' : sent < -0.1 ? 'down' : '') : '' },
+      ];
+      const calRaw = rec.confidence_calibrated;
+      if (calRaw != null && calRaw !== '') {
+        const calNum = Number(calRaw);
+        metrics.splice(5, 0, {
+          label: 'Calibrated',
+          value: calNum + '%',
+          hint: 'Platt scaling from closed trades',
+          cls: calNum >= 70 ? 'up' : calNum >= 40 ? '' : 'down',
+        });
+      }
+      if (rec.shadow_b_threshold != null || rec.shadow_b_pass != null) {
+        const liveG = rec.min_confidence_gate != null ? rec.min_confidence_gate : '—';
+        const bThr = rec.shadow_b_threshold != null ? rec.shadow_b_threshold : '—';
+        metrics.push({
+          label: 'Shadow B',
+          value: rec.shadow_b_pass ? 'Pass' : 'Fail',
+          hint: 'Live min ' + liveG + ' → B min ' + bThr,
+          cls: rec.shadow_b_pass ? 'up' : 'down',
+        });
+      }
+      
+      // Add volatility regime
+      if (parsed.volRegime) {
+        const volCls = parsed.volRegime === 'expanding' ? 'down' : parsed.volRegime === 'contracting' ? 'up' : '';
+        metrics.push({ label: 'Vol Regime', value: parsed.volRegime, hint: parsed.volRegime === 'expanding' ? 'Widening stops' : parsed.volRegime === 'contracting' ? 'Tighter stops' : 'Normal', cls: volCls });
+      }
+      
+      // Add trend alignment
+      if (parsed.trendAligned !== null) {
+        metrics.push({ label: 'Trend', value: parsed.trendAligned ? '✓ Aligned' : '✗ Conflicting', hint: 'Multi-timeframe', cls: parsed.trendAligned ? 'up' : 'down' });
+      }
+      
+      // Add sector info
+      if (parsed.sector) {
+        const sectorCls = parsed.sector.regime.includes('risk on') ? 'up' : parsed.sector.regime.includes('risk off') ? 'down' : '';
+        metrics.push({ label: 'Sector', value: parsed.sector.name, hint: parsed.sector.regime, cls: sectorCls });
+      }
+
+      modalMetrics.innerHTML = metrics.map(m => `
+        <div class="research-metric">
+          <span class="research-metric__label">${m.label}</span>
+          <span class="research-metric__value ${m.cls}">${m.value}</span>
+          ${m.hint ? `<span class="research-metric__hint">${m.hint}</span>` : ''}
+        </div>
+      `).join('');
+    }
+
+    /* ── Render forecast chart ── */
+    function renderChart(rec) {
+      const entry = rec.buy_in_price;
+      const sl    = rec.stop_loss;
+      const tp    = rec.take_profit;
+      if (!entry || !sl || !tp) { chartWrap.style.display = 'none'; return; }
+
+      chartWrap.style.display = 'block';
+      loadChartJs(() => _buildChart(rec));
+    }
+
+    function _buildChart(rec) {
+      const entry  = rec.buy_in_price;
+      const sl     = rec.stop_loss;
+      const tp     = rec.take_profit;
+      const days   = 14;
+      const N      = 500;
+      const conf   = Math.max(0.01, Math.min(0.99, (rec.confidence_score || 50) / 100));
+      const isLong = (rec.direction || 'long') !== 'short';
+
+      /* ── GBM parameters ──
+         σ: implied daily vol — TP-SL log-range assumed ≈ 2σ√T
+         μ: daily drift — expected log-return weighted by confidence        */
+      const logRange = Math.abs(Math.log(tp / sl));
+      const sigma    = logRange / (2 * Math.sqrt(days));
+      const logTP    = Math.log(tp / entry);
+      const logSL    = Math.log(sl / entry);
+      const mu       = (conf * logTP + (1 - conf) * logSL) / days;
+      const driftAdj = mu - 0.5 * sigma * sigma; /* Itô correction */
+
+      /* ── Box-Muller: U(0,1) → N(0,1) ── */
+      function randn() {
+        const u1 = Math.random(), u2 = Math.random();
+        return Math.sqrt(-2 * Math.log(Math.max(u1, 1e-10))) * Math.cos(2 * Math.PI * u2);
+      }
+
+      /* ── Monte Carlo: 500 GBM paths ── */
+      const allPaths = [];
+      for (let p = 0; p < N; p++) {
+        const path = [entry];
+        let S = entry;
+        for (let t = 0; t < days; t++) {
+          S = S * Math.exp(driftAdj + sigma * randn());
+          path.push(S);
+        }
+        allPaths.push(path);
+      }
+
+      /* ── Percentile bands at each timestep ── */
+      const bands = { p10: [], p25: [], p50: [], p75: [], p90: [] };
+      for (let t = 0; t <= days; t++) {
+        const vals = allPaths.map(path => path[t]).sort((a, b) => a - b);
+        const n = vals.length;
+        bands.p10.push(vals[Math.floor(0.10 * n)]);
+        bands.p25.push(vals[Math.floor(0.25 * n)]);
+        bands.p50.push(vals[Math.floor(0.50 * n)]);
+        bands.p75.push(vals[Math.floor(0.75 * n)]);
+        bands.p90.push(vals[Math.floor(0.90 * n)]);
+      }
+
+      /* ── Probability of reaching TP before SL ── */
+      let tpHits = 0;
+      allPaths.forEach(path => {
+        for (let t = 1; t <= days; t++) {
+          if (isLong  && path[t] >= tp) { tpHits++; break; }
+          if (!isLong && path[t] <= tp) { tpHits++; break; }
+          if (isLong  && path[t] <= sl) break;
+          if (!isLong && path[t] >= sl) break;
+        }
+      });
+      const probEl = document.getElementById('chart-prob');
+      if (probEl) probEl.textContent = `P(TP) = ${Math.round(tpHits / N * 100)}%`;
+
+      /* ── Reference lines ── */
+      const tpLine    = Array(days + 1).fill(tp);
+      const slLine    = Array(days + 1).fill(sl);
+      const entryLine = Array(days + 1).fill(entry);
+
+      /* Y bounds: contain all bands + TP/SL */
+      const allEdge = [...bands.p10, ...bands.p90, tp, sl];
+      const yPad = (Math.max(...allEdge) - Math.min(...allEdge)) * 0.06;
+      const yMin = Math.min(...allEdge) - yPad;
+      const yMax = Math.max(...allEdge) + yPad;
+
+      const labels    = ['Now', ...Array.from({length: days}, (_, i) => `D${i+1}`)];
+      const gridColor = 'rgba(255,255,255,.06)';
+      const textColor = '#94a3b8';
+
+      if (_chart) { _chart.destroy(); }
+      const ctx = document.getElementById('research-chart').getContext('2d');
+      _chart = new Chart(ctx, {
+        type: 'line',
+        plugins: [{ id: 'darkBg', beforeDraw: c => {
+          const ctx2 = c.ctx; ctx2.save();
+          ctx2.fillStyle = '#0f172a';
+          ctx2.fillRect(0, 0, c.width, c.height);
+          ctx2.restore();
+        }}],
+        data: {
+          labels,
+          datasets: [
+            /* Outer band — lower edge (p10) */
+            { label: '',       data: bands.p10, fill: false,  borderColor: 'rgba(129,140,248,.15)', borderWidth: 1,   pointRadius: 0, tension: 0.3 },
+            /* Outer lower fill: p10 → p25 */
+            { label: '80% CI', data: bands.p25, fill: '-1',   borderColor: 'rgba(129,140,248,.2)',  borderWidth: 0.5, backgroundColor: 'rgba(129,140,248,.07)', pointRadius: 0, tension: 0.3 },
+            /* Inner lower anchor (invisible — fill target) */
+            { label: '',       data: bands.p25, fill: false,  borderColor: 'transparent',           borderWidth: 0,   pointRadius: 0, tension: 0.3 },
+            /* Inner band fill: p25 → p75 */
+            { label: '50% CI', data: bands.p75, fill: '-1',   borderColor: 'rgba(129,140,248,.2)',  borderWidth: 0.5, backgroundColor: 'rgba(129,140,248,.13)', pointRadius: 0, tension: 0.3 },
+            /* Outer upper anchor (invisible) */
+            { label: '',       data: bands.p75, fill: false,  borderColor: 'transparent',           borderWidth: 0,   pointRadius: 0, tension: 0.3 },
+            /* Outer upper fill: p75 → p90 */
+            { label: '',       data: bands.p90, fill: '-1',   borderColor: 'rgba(129,140,248,.15)', borderWidth: 1,   backgroundColor: 'rgba(129,140,248,.07)', pointRadius: 0, tension: 0.3 },
+            /* Median path */
+            { label: 'Median',       data: bands.p50,  fill: false, borderColor: '#818cf8',              borderWidth: 2.5, pointRadius: 0, tension: 0.3 },
+            /* Reference lines */
+            { label: 'Take Profit',  data: tpLine,     fill: false, borderColor: 'rgba(16,185,129,.7)',  borderWidth: 1.5, borderDash: [6,3], pointRadius: 0, tension: 0 },
+            { label: 'Stop Loss',    data: slLine,     fill: false, borderColor: 'rgba(239,68,68,.7)',   borderWidth: 1.5, borderDash: [6,3], pointRadius: 0, tension: 0 },
+            { label: 'Entry',        data: entryLine,  fill: false, borderColor: 'rgba(251,191,36,.45)', borderWidth: 1,   borderDash: [4,4], pointRadius: 0, tension: 0 },
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: { duration: 500, easing: 'easeOutQuart' },
+          plugins: {
+            legend: {
+              display: true,
+              labels: {
+                filter: item => !!item.text,
+                color: '#94a3b8', font: { size: 11 }, boxWidth: 12, padding: 14,
+              }
+            },
+            tooltip: {
+              mode: 'index', intersect: false,
+              filter: item => ['Median', 'Take Profit', 'Stop Loss', 'Entry', '80% CI', '50% CI'].includes(item.dataset.label),
+              callbacks: {
+                label: ctx => ctx.dataset.label ? ` ${ctx.dataset.label}: $${ctx.parsed.y.toFixed(2)}` : null
+              }
+            },
+          },
+          scales: {
+            x: {
+              grid: { color: gridColor },
+              ticks: { color: textColor, font: { size: 10 }, maxTicksLimit: 8 },
+            },
+            y: {
+              min: yMin, max: yMax,
+              grid: { color: gridColor },
+              ticks: {
+                color: textColor,
+                font: { size: 10, family: 'JetBrains Mono, monospace' },
+                callback: v => '$' + Number(v).toFixed(2),
+                maxTicksLimit: 6,
+              },
+            },
+          },
+          interaction: { mode: 'index', intersect: false },
+        },
+      });
+    }
+
+    /* ── Render summary text (break into readable paragraphs) ── */
+    function renderSummaryText(text) {
+      if (!text || !text.trim()) {
+        modalSum.innerHTML = '<span class="text-muted" style="font-style:italic;">No summary available.</span>';
+        return;
+      }
+      /* Split on sentence-ending punctuation followed by whitespace */
+      const sentences = text.trim().split(/(?<=[.!?])\s+/);
+      const paras = [];
+      let current = [];
+      sentences.forEach((s, i) => {
+        current.push(s);
+        /* Group ~2-3 sentences per paragraph, or break on "The primary risk", "However", "Technically" */
+        const isBreak = /^(The primary risk|However|Technically|The key risk|Note that|Risks include)/i.test(sentences[i+1] || '');
+        if (current.length >= 3 || isBreak) {
+          paras.push(current.join(' '));
+          current = [];
+        }
+      });
+      if (current.length) paras.push(current.join(' '));
+
+      modalSum.innerHTML = '<div class="research-summary-text">' +
+        paras.map(p => `<p>${escHtml(p)}</p>`).join('') +
+        '</div>';
+    }
+
+    function escHtml(s) {
+      return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+
+    /* ── Render headlines ── */
+    function renderHeadlines(headlines) {
+      if (!headlines || headlines.length === 0) { modalHlSec.style.display = 'none'; return; }
+      modalHlSec.style.display = 'block';
+      modalHl.innerHTML = headlines.map(h =>
+        `<div class="headline-item"><span class="headline-dot"></span>${escHtml(h)}</div>`
+      ).join('');
+    }
+
+    /* ── Main open function ── */
+    async function showResearch(assetId, category, text, rec) {
+      /* Reset */
+      modalName.textContent = assetId;
+      modalDir.innerHTML = dirBadge(rec ? rec.direction : 'long');
+      modalMeta.innerHTML = `<span>${category}</span>`;
+      modalMetrics.innerHTML = '';
+      modalSum.innerHTML = '<div class="loading-overlay" style="padding:var(--space-3);"><span class="spinner"></span> Loading&hellip;</div>';
+      modalHlSec.style.display = 'none';
+      chartWrap.style.display = 'none';
+
+      overlay.hidden = false;
+      overlay.style.display = 'flex';
+
+      /* Render metrics and chart immediately from rec data */
+      if (rec) {
+        renderMetrics(rec, null);
+        renderChart(rec);
+      }
+
+      /* If we already have text, show it now */
+      if (text && text.trim()) {
+        renderSummaryText(text.trim());
+      }
+
+      /* Fetch context (generate=false → fast, no LLM call) for fundamentals + headlines */
+      const contextUrl = '/api/research/summary?asset_id=' + encodeURIComponent(assetId) +
+                         '&category=' + encodeURIComponent(category) + '&generate=false';
+      try {
+        const cr = await fetch(contextUrl);
+        const cd = await cr.json();
+        const ctx = cd.context || {};
+
+        /* Update header meta with fundamentals */
+        const fund = ctx.fundamentals || {};
+        const metaParts = [category];
+        if (fund.short_name)  metaParts.unshift(fund.short_name);
+        if (fund.sector)      metaParts.push(fund.sector);
+        if (fund.industry)    metaParts.push(fund.industry);
+        const cap = fmtMktCap(fund.market_cap);
+        if (cap) metaParts.push(cap);
+        modalMeta.innerHTML = metaParts.map(p => `<span>${escHtml(p)}</span>`).join('<span style="opacity:.3">·</span>');
+
+        /* Update metrics with real sentiment */
+        if (rec) renderMetrics(rec, ctx);
+
+        /* Headlines */
+        renderHeadlines(ctx.headlines || []);
+      } catch (_) { /* non-critical */ }
+
+      /* If no existing text, generate via LLM */
+      if (!text || !text.trim()) {
+        try {
+          const genUrl = '/api/research/summary?asset_id=' + encodeURIComponent(assetId) +
+                         '&category=' + encodeURIComponent(category) + '&generate=true';
+          const gr = await fetch(genUrl);
+          const gd = await gr.json();
+          if (gd.summary && gd.summary.trim()) {
+            renderSummaryText(gd.summary.trim());
+          } else {
+            modalSum.innerHTML = '<span class="text-muted" style="font-style:italic;">No summary returned. Check LLM provider on Dashboard.</span>';
+          }
+        } catch (e) {
+          modalSum.innerHTML = '<span class="text-muted" style="font-style:italic;">Failed to generate: ' + escHtml(e.message) + '</span>';
+        }
+      }
+    }
+
+    /* ── Table helpers ── */
+    const THEAD = '<tr><th>Asset</th><th>Dir</th><th class="num">Entry</th><th class="num">Current</th><th class="num">SL</th><th class="num">TP</th><th class="num">R:R</th><th>Conf</th><th>Risk</th><th class="num">Size</th><th>Expiry</th><th>Actions</th></tr>';
+
+    function buildRow(rec) {
       const tr = document.createElement('tr');
       const actions = rec.status === 'pending'
-        ? `<button type="button" class="btn btn-sm btn--primary" data-id="${rec.id}" data-do="took-it">Took it</button><button type="button" class="btn btn-sm btn--secondary" data-id="${rec.id}" data-do="skipped">Skipped</button>`
-        : rec.status;
-      tr.innerHTML = `<td>${rec.asset_id}</td><td class="num">${rec.buy_in_price}</td><td class="num">${rec.stop_loss}</td><td class="num">${rec.take_profit}</td><td>${rec.risk_tier}</td><td>${rec.status}</td><td>${actions}</td>`;
-      tr.querySelectorAll('button[data-id]').forEach(b => {
-        b.addEventListener('click', async () => {
-          const id = b.getAttribute('data-id');
-          const do_ = b.getAttribute('data-do');
-          await fetch(`/api/recommendations/${id}/${do_ === 'took-it' ? 'took-it' : 'skipped'}`, { method: 'POST' });
+        ? '<button class="btn btn-sm btn--primary" data-do="took-it">' + icon('check', 13) + ' Took it</button>' +
+          '<button class="btn btn-sm btn--secondary" data-do="skipped">' + icon('x', 13) + ' Skip</button>' +
+          '<button class="btn btn-sm btn--secondary" data-do="research">' + icon('search', 13) + ' Research</button>'
+        : '<button class="btn btn-sm btn--secondary" data-do="research">' + icon('search', 13) + ' Research</button>';
+      const sizePct = rec.suggested_risk_pct != null ? rec.suggested_risk_pct.toFixed(2) + '%' : '—';
+
+      // Parse volatility notes for indicator badges
+      const parsed = parseVolatilityNotes(rec.volatility_notes);
+      let indicators = '';
+      if (parsed.trendAligned === true) {
+        indicators += '<span class="indicator-badge indicator-badge--green" title="Multi-TF Aligned">↑</span>';
+      } else if (parsed.trendAligned === false) {
+        indicators += '<span class="indicator-badge indicator-badge--red" title="Multi-TF Conflicting">↓</span>';
+      }
+      if (parsed.volRegime === 'expanding') {
+        indicators += '<span class="indicator-badge indicator-badge--yellow" title="Vol Expanding">⚡</span>';
+      } else if (parsed.volRegime === 'contracting') {
+        indicators += '<span class="indicator-badge indicator-badge--blue" title="Vol Contracting">◆</span>';
+      }
+
+      const notesHtml = escapeAttr(rec.volatility_notes || '—');
+      const dropdownId = 'drop-' + rec.id;
+
+      tr.innerHTML =
+        '<td class="col-asset font-semibold">' +
+          '<div class="asset-dropdown-wrap">' +
+            '<button class="asset-btn" data-dropdown="' + dropdownId + '">' +
+              rec.asset_id + (indicators ? '<span class="indicator-badges">' + indicators + '</span>' : '') +
+            '</button>' +
+            '<div class="asset-dropdown" id="' + dropdownId + '">' +
+              '<div class="asset-dropdown-row"><span class="asset-dropdown-label">Status</span>' + statusBadge(rec.status) + '</div>' +
+              '<div class="asset-dropdown-row asset-dropdown-notes"><span class="asset-dropdown-label">Notes</span><span>' + notesHtml + '</span></div>' +
+            '</div>' +
+          '</div>' +
+        '</td>' +
+        '<td class="col-dir">' + dirBadge(rec.direction) + '</td>' +
+        '<td class="col-num-sm num">' + fmtNum(rec.buy_in_price) + '</td>' +
+        '<td class="col-num-sm num">' + fmtNum(rec.current_price) + '</td>' +
+        '<td class="col-num-sm num">' + fmtNum(rec.stop_loss) + '</td>' +
+        '<td class="col-num-sm num">' + fmtNum(rec.take_profit) + '</td>' +
+        '<td class="col-rr num">' + fmtRR(rec.risk_reward) + '</td>' +
+        '<td class="col-conf">' + confCell(rec) + '</td>' +
+        '<td class="col-shadow text-center">' + shadowCell(rec) + '</td>' +
+        '<td class="col-risk"><span class="badge badge--gray">' + (rec.risk_tier || '—') + '</span></td>' +
+        '<td class="col-size num text-sm">' + sizePct + '</td>' +
+        '<td class="col-expiry text-sm">' + fmtExpiry(rec.expiry_date) + '</td>' +
+        '<td class="col-actions"><div class="btn-group-rec">' + actions + '</div></td>';
+      const assetBtn = tr.querySelector('.asset-btn');
+      if (assetBtn) {
+        assetBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const dd = document.getElementById(assetBtn.dataset.dropdown);
+          const isOpen = dd.classList.contains('open');
+          document.querySelectorAll('.asset-dropdown.open').forEach(d => d.classList.remove('open'));
+          if (!isOpen) dd.classList.add('open');
+        });
+      }
+
+      tr.querySelectorAll('button[data-do]').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const act = btn.dataset.do;
+          if (act === 'research') { showResearch(rec.asset_id, rec.asset_category, rec.rationale_text || '', rec); return; }
+          btn.disabled = true; btn.innerHTML = '<span class="spinner spinner--white"></span>';
+          await fetch('/api/recommendations/' + rec.id + '/' + act, { method: 'POST' });
           load();
         });
       });
       return tr;
     }
-    function render(tbodyId, items) {
-      const tbody = document.getElementById(tbodyId);
-      tbody.innerHTML = '';
+
+    function render(headId, bodyId, sectionId, items) {
+      const head    = document.getElementById(headId);
+      const body    = document.getElementById(bodyId);
+      head.innerHTML = THEAD;
+      body.innerHTML = '';
       if (!items || items.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="7" class="table-empty">None</td></tr>';
+        body.innerHTML = '<tr><td colspan="12" class="table-empty">No recommendations in this category</td></tr>';
         return;
       }
-      items.forEach(rec => tbody.appendChild(row(rec)));
+      items.forEach(rec => body.appendChild(buildRow(rec)));
     }
+
+    function renderMacroBanner(macro) {
+      const el = document.getElementById('macro-banner');
+      if (!el || !macro || !macro.active) {
+        if (el) el.style.display = 'none';
+        return;
+      }
+      el.textContent = macro.message || 'Macro calendar overlay is active today.';
+      el.style.display = 'flex';
+    }
+
+    function renderCalibrationStrip(cal) {
+      const el = document.getElementById('calibration-strip');
+      if (!el || !cal) return;
+      const n = cal.n_total != null ? cal.n_total : 0;
+      const brier = cal.brier_score != null ? cal.brier_score : '—';
+      const ece = cal.ece != null ? cal.ece : '—';
+      const platt = cal.platt_calibration || {};
+      const plattOk = !!platt.fitted;
+      const parts = [
+        '<span class="recommendations-calibration__label">Calibration</span>',
+        '<span>Brier <strong>' + brier + '</strong> <span class="text-muted">(↓ better)</span></span>',
+        '<span>ECE <strong>' + ece + '</strong> <span class="text-muted">(↓ better)</span></span>',
+        '<span>' + (plattOk ? 'Platt: <strong>fitted</strong>' : 'Platt: <strong>not fitted</strong>') + '</span>',
+        '<span class="text-muted">n=' + n + ' resolved outcomes for Brier/ECE</span>',
+        '<a href="/dashboard">Open Dashboard</a> <span class="text-muted">for bucket table &amp; “Fit Platt”</span>'
+      ];
+      if (n < 10) {
+        parts.push('<span class="text-muted">· Need ≥10 closed trades to fit Platt.</span>');
+      }
+      el.innerHTML = '<div class="recommendations-calibration__inner">' + parts.join(' · ') + '</div>';
+      el.style.display = 'block';
+    }
+
     async function load() {
-      const r = await fetch('/api/recommendations?group_by=category');
-      const data = await r.json();
-      const by = data.by_category || {};
-      render('stocks-body', by.stocks);
-      render('commodities-body', by.commodities);
-      render('other-body', by.other);
+      const macroEl = document.getElementById('macro-banner');
+      const calEl = document.getElementById('calibration-strip');
+      try {
+        const [r, calR] = await Promise.all([
+          fetch('/api/recommendations?group_by=category'),
+          fetch('/api/calibration').catch(() => null),
+        ]);
+        const data = await r.json();
+        const by   = data.by_category || {};
+        renderMacroBanner(data.macro_overlay);
+        if (calR && calR.ok) {
+          try {
+            const calData = await calR.json();
+            renderCalibrationStrip(calData);
+          } catch (_) {
+            if (calEl) calEl.style.display = 'none';
+          }
+        } else if (calEl) {
+          calEl.style.display = 'none';
+        }
+        render('stocks-head',      'stocks-body',      'stocks-section',      by.stocks);
+        render('commodities-head', 'commodities-body', 'commodities-section', by.commodities);
+        render('indices-head',     'indices-body',     'indices-section',     by.indices);
+        render('other-head',       'other-body',       'other-section',       by.other);
+      } catch (e) {
+        if (macroEl) macroEl.style.display = 'none';
+        if (calEl) calEl.style.display = 'none';
+        document.getElementById('content').innerHTML = '<div class="alert alert--error">Failed to load: ' + e.message + '</div>';
+      }
+      document.getElementById('loading').style.display = 'none';
+      document.getElementById('content').style.display = 'block';
     }
     load();
+
+    // Close asset dropdowns when clicking outside
+    document.addEventListener('click', () => {
+      document.querySelectorAll('.asset-dropdown.open').forEach(d => d.classList.remove('open'));
+    });
   </script>
 </body>
 </html>

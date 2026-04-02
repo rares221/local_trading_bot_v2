@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Macro Calendar — Trading Bot</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/common.css">
+  <script src="/static/js/icons.js"></script>
+  <style>
+    .metric-box {
+      padding: var(--space-2); border: 1px solid var(--border);
+      border-radius: var(--radius); background: var(--secondary);
+      display: flex; flex-direction: column; gap: 4px; min-width: 140px;
+    }
+    .metric-label {
+      font-size: 11px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: .05em; color: var(--muted-foreground);
+    }
+    .metric-value {
+      font-size: 1.5rem; font-weight: 700; color: var(--foreground);
+      font-variant-numeric: tabular-nums;
+    }
+    .metric-hint {
+      font-size: 10px; color: var(--muted-foreground);
+    }
+    .event-list {
+      display: flex; flex-direction: column; gap: var(--space-2);
+    }
+    .event-item {
+      display: flex; align-items: center; gap: var(--space-2);
+      padding: var(--space-2); border-radius: var(--radius);
+      background: var(--secondary); border: 1px solid var(--border);
+    }
+    .event-item--today {
+      border-color: var(--yellow);
+      background: color-mix(in srgb, var(--yellow) 10%, var(--secondary));
+    }
+    .event-item--soon {
+      border-color: var(--blue);
+    }
+    .event-date {
+      font-weight: 600; min-width: 100px; font-variant-numeric: tabular-nums;
+    }
+    .event-days {
+      font-size: 13px; color: #000; min-width: 80px; font-weight: 500;
+    }
+    .event-type {
+      font-size: 11px; font-weight: 700; text-transform: uppercase;
+      padding: 4px 10px; border-radius: 4px; background: #6b7280; color: #fff;
+    }
+    .event-type--fomc { background: #2563eb; color: #fff; }
+    .event-type--cpi { background: #16a34a; color: #fff; }
+    .event-type--nfp { background: #9333ea; color: #fff; }
+    .source-info {
+      font-size: 12px; color: var(--muted-foreground);
+      margin-top: var(--space-2); padding: var(--space-2);
+      background: var(--secondary); border-radius: var(--radius);
+    }
+    .source-info a { color: var(--blue); }
+  </style>
+</head>
+<body>
+  <nav class="nav">
+    <a href="/dashboard"><span data-icon="layout-dashboard"></span> Dashboard</a>
+    <a href="/recommendations"><span data-icon="list-checks"></span> Recommendations</a>
+    <a href="/research"><span data-icon="search"></span> Research</a>
+    <a href="/analysis"><span data-icon="bar-chart-2"></span> Analysis</a>
+    <a href="/active-trades"><span data-icon="activity"></span> Active trades</a>
+    <a href="/journal"><span data-icon="book-open"></span> Journal</a>
+    <a href="/briefing"><span data-icon="newspaper"></span> Briefing</a>
+    <a href="/calendar" class="active"><span data-icon="calendar"></span> Calendar</a>
+  </nav>
+
+  <main class="app app--wide">
+    <h1 class="page-title">Macro Calendar</h1>
+    <p class="page-desc">High-impact economic events (FOMC, CPI, NFP) that affect recommendation confidence. The engine applies a penalty on and around these dates.</p>
+
+    <div id="toast" class="alert" role="alert" style="display:none;"></div>
+    <div id="loading" class="loading-overlay"><span class="spinner spinner--lg"></span> Loading calendar&hellip;</div>
+
+    <div class="dashboard-grid" id="content" style="display:none;">
+
+      <section class="card" style="grid-column: 1 / -1;">
+        <h2 class="section-title"><span data-icon="alert-triangle"></span> Next High-Impact Event</h2>
+        <div id="next-event-box" class="flex gap-3 items-center" style="flex-wrap:wrap;">
+          <div class="metric-box" style="min-width:200px;">
+            <span class="metric-label">Next Event</span>
+            <span class="metric-value" id="next-event-date">—</span>
+            <span class="metric-hint" id="next-event-type">Loading...</span>
+          </div>
+          <div class="metric-box">
+            <span class="metric-label">Days Away</span>
+            <span class="metric-value" id="next-event-days">—</span>
+            <span class="metric-hint" id="next-event-hint">—</span>
+          </div>
+          <div id="next-event-desc" class="text-sm text-muted" style="flex:1;min-width:200px;"></div>
+        </div>
+        <div id="active-warning" class="alert alert--warning mt-2" style="display:none;">
+          <strong>Macro event window active!</strong> Recommendation confidence is reduced by <span id="penalty-inline">10</span> points today.
+        </div>
+        <div id="no-warning" class="alert alert--success mt-2" style="display:none;">
+          <strong>No nearby events.</strong> Recommendations are not penalized today.
+        </div>
+      </section>
+
+      <section class="card">
+        <h2 class="section-title"><span data-icon="gauge"></span> Current Status</h2>
+        <div class="flex gap-3 mb-2" style="flex-wrap:wrap;">
+          <div class="metric-box">
+            <span class="metric-label">Today's Status</span>
+            <span class="metric-value" id="status-active">—</span>
+            <span class="metric-hint" id="status-hint">Checking...</span>
+          </div>
+          <div class="metric-box">
+            <span class="metric-label">Penalty When Active</span>
+            <span class="metric-value" id="penalty-val">—</span>
+            <span class="metric-hint">Points subtracted</span>
+          </div>
+          <div class="metric-box">
+            <span class="metric-label">Total Dates Loaded</span>
+            <span class="metric-value" id="total-dates">—</span>
+            <span class="metric-hint">FOMC + CPI + NFP</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2 class="section-title"><span data-icon="refresh-cw"></span> Data Source</h2>
+        <p class="meta mb-2">Dates are fetched from public sources (no API key required) and cached locally.</p>
+        <button type="button" class="btn btn--secondary" id="refresh-btn">
+          <span data-icon="refresh-cw"></span>
+          <span class="btn-label">Refresh from sources</span>
+        </button>
+        <div class="source-info">
+          <strong>Sources:</strong><br>
+          <strong>FOMC:</strong> <a href="https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm" target="_blank" rel="noopener">Fed Calendar</a> (HTML) + Press Releases (JSON)<br>
+          <strong>CPI:</strong> Pattern-based (~2nd week of month; BLS blocks automated access)<br>
+          <strong>NFP:</strong> First Friday of each month (Employment Situation)
+        </div>
+      </section>
+
+      <section class="card" style="grid-column: 1 / -1;">
+        <h2 class="section-title"><span data-icon="calendar"></span> Upcoming Events (Next 30 Days)</h2>
+        <div id="upcoming-list" class="event-list">
+          <p class="meta">Loading...</p>
+        </div>
+      </section>
+
+      <section class="card" style="grid-column: 1 / -1;">
+        <h2 class="section-title"><span data-icon="info"></span> How the Confidence Penalty Works</h2>
+        <div style="background:var(--secondary);padding:var(--space-3);border-radius:var(--radius);margin-bottom:var(--space-3);border-left:4px solid var(--yellow);">
+          <h3 style="font-size:15px;font-weight:600;margin-bottom:12px;color:var(--foreground);">What is the Macro Penalty?</h3>
+          <p class="text-sm" style="color:var(--foreground);margin-bottom:12px;">
+            High-impact economic events (FOMC, CPI, NFP) cause significant market volatility and unpredictable price movements. 
+            Trading around these events carries extra risk because technical and sentiment signals become less reliable.
+          </p>
+          <p class="text-sm" style="color:var(--foreground);margin-bottom:12px;">
+            <strong>How it works:</strong> When today is within <strong>±1 day</strong> of a scheduled event, the recommendation engine 
+            automatically <strong>subtracts 10 points</strong> from every candidate's confidence score. This makes recommendations 
+            harder to qualify (they need higher base scores to pass the confidence threshold).
+          </p>
+          <p class="text-sm" style="color:var(--foreground);margin-bottom:0;">
+            <strong>Why:</strong> This conservative approach helps you avoid taking positions right before major announcements 
+            that could move markets sharply in either direction, regardless of what technicals or sentiment suggest.
+          </p>
+        </div>
+        
+        <h3 style="font-size:14px;font-weight:600;margin-bottom:12px;color:var(--foreground);">Event Types</h3>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:var(--space-3);">
+          <div>
+            <h4 style="font-size:13px;font-weight:600;margin-bottom:8px;color:var(--blue);">FOMC Meetings</h4>
+            <p class="text-sm" style="color:var(--foreground);">
+              Federal Open Market Committee meetings where interest rate decisions are made. High volatility expected around statement release (2:00 PM ET on the second day of two-day meetings).
+            </p>
+          </div>
+          <div>
+            <h4 style="font-size:13px;font-weight:600;margin-bottom:8px;color:var(--green);">CPI Release</h4>
+            <p class="text-sm" style="color:var(--foreground);">
+              Consumer Price Index data from the Bureau of Labor Statistics. Released monthly, typically in the second week. Major market mover for inflation expectations.
+            </p>
+          </div>
+          <div>
+            <h4 style="font-size:13px;font-weight:600;margin-bottom:8px;color:var(--purple);">NFP (Non-Farm Payrolls)</h4>
+            <p class="text-sm" style="color:var(--foreground);">
+              Employment Situation report from BLS. Released on the first Friday of each month at 8:30 AM ET. Key indicator for economic health and Fed policy.
+            </p>
+          </div>
+        </div>
+      </section>
+
+    </div>
+
+    <p class="disclaimer">Educational and research purposes only. Not financial advice.</p>
+  </main>
+
+  <script>
+    const toast = document.getElementById('toast');
+    function showToast(text, ok) {
+      toast.textContent = text;
+      toast.className = 'alert ' + (ok ? 'alert--success' : 'alert--error');
+      toast.style.display = 'block';
+      clearTimeout(toast._t);
+      toast._t = setTimeout(() => { toast.style.display = 'none'; }, 6000);
+    }
+
+    const loadingEl = document.getElementById('loading');
+    const contentEl = document.getElementById('content');
+
+    function formatDate(isoDate) {
+      const d = new Date(isoDate + 'T12:00:00');
+      return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+    }
+
+    function guessEventType(isoDate) {
+      const d = new Date(isoDate + 'T12:00:00');
+      const day = d.getDay();
+      const dayOfMonth = d.getDate();
+      if (day === 5 && dayOfMonth <= 7) return 'nfp';
+      if (dayOfMonth >= 8 && dayOfMonth <= 18 && (day === 2 || day === 3)) return 'cpi';
+      return 'fomc';
+    }
+
+    const EVENT_DESCRIPTIONS = {
+      fomc: 'Federal Reserve interest rate decision. High volatility expected around the announcement.',
+      cpi: 'Consumer Price Index release. Major market mover for inflation expectations.',
+      nfp: 'Non-Farm Payrolls (Employment Situation). Key indicator for economic health.'
+    };
+
+    async function loadCalendar() {
+      try {
+        const r = await fetch('/api/macro-calendar');
+        if (!r.ok) throw new Error('Failed to load');
+        const data = await r.json();
+
+        // Status section - improved wording
+        const statusEl = document.getElementById('status-active');
+        if (data.active) {
+          statusEl.textContent = 'Penalized';
+          statusEl.style.color = 'var(--yellow)';
+          document.getElementById('status-hint').textContent = 'Within ±' + data.window_days + ' day(s) of event';
+          document.getElementById('active-warning').style.display = 'block';
+          document.getElementById('no-warning').style.display = 'none';
+          document.getElementById('penalty-inline').textContent = data.confidence_penalty_points;
+        } else {
+          statusEl.textContent = 'Normal';
+          statusEl.style.color = 'var(--green)';
+          document.getElementById('status-hint').textContent = 'No penalty applied today';
+          document.getElementById('active-warning').style.display = 'none';
+          document.getElementById('no-warning').style.display = 'block';
+        }
+        document.getElementById('penalty-val').textContent = '-' + data.confidence_penalty_points;
+        document.getElementById('total-dates').textContent = data.total_dates_loaded || '—';
+
+        // Next event section
+        const upcoming = data.upcoming_events || [];
+        const allDates = await fetchAllUpcoming();
+        const nextEvent = allDates.length > 0 ? allDates[0] : (upcoming.length > 0 ? upcoming[0] : null);
+        
+        if (nextEvent) {
+          const type = nextEvent.type || guessEventType(nextEvent.date);
+          document.getElementById('next-event-date').textContent = formatDate(nextEvent.date);
+          document.getElementById('next-event-type').textContent = type.toUpperCase();
+          document.getElementById('next-event-days').textContent = nextEvent.days_away;
+          
+          let hint = '';
+          if (nextEvent.days_away === 0) hint = 'Today!';
+          else if (nextEvent.days_away === 1) hint = 'Tomorrow';
+          else if (nextEvent.days_away <= 3) hint = 'This week';
+          else hint = 'Coming up';
+          document.getElementById('next-event-hint').textContent = hint;
+          
+          document.getElementById('next-event-desc').textContent = EVENT_DESCRIPTIONS[type] || '';
+        } else {
+          document.getElementById('next-event-date').textContent = 'None found';
+          document.getElementById('next-event-type').textContent = 'No upcoming events';
+          document.getElementById('next-event-days').textContent = '—';
+          document.getElementById('next-event-hint').textContent = '';
+          document.getElementById('next-event-desc').textContent = '';
+        }
+
+        // Upcoming list
+        const listEl = document.getElementById('upcoming-list');
+        renderUpcoming(listEl, allDates.length > 0 ? allDates : upcoming);
+
+      } catch (e) {
+        showToast('Failed to load calendar: ' + e.message, false);
+      }
+      loadingEl.style.display = 'none';
+      contentEl.style.display = 'grid';
+    }
+
+    async function fetchAllUpcoming() {
+      // API now returns 30 days of events, so just use that directly
+      try {
+        const r = await fetch('/api/macro-calendar');
+        const data = await r.json();
+        return data.upcoming_events || [];
+      } catch (e) {
+        return [];
+      }
+    }
+
+    function renderUpcoming(container, events) {
+      if (events.length === 0) {
+        container.innerHTML = '<p class="meta">No upcoming events found.</p>';
+        return;
+      }
+
+      container.innerHTML = events.slice(0, 15).map(ev => {
+        const type = ev.type || guessEventType(ev.date);
+        const isToday = ev.days_away === 0;
+        const isSoon = ev.days_away <= 3 && !isToday;
+        const itemClass = isToday ? 'event-item event-item--today' : (isSoon ? 'event-item event-item--soon' : 'event-item');
+        const daysText = isToday ? 'Today' : (ev.days_away === 1 ? 'Tomorrow' : ev.days_away + ' days');
+        
+        return `
+          <div class="${itemClass}">
+            <span class="event-date">${formatDate(ev.date)}</span>
+            <span class="event-days">${daysText}</span>
+            <span class="event-type event-type--${type}">${type.toUpperCase()}</span>
+          </div>
+        `;
+      }).join('');
+    }
+
+    document.getElementById('refresh-btn').addEventListener('click', async function() {
+      const btn = this;
+      const label = btn.querySelector('.btn-label');
+      btn.disabled = true;
+      label.innerHTML = '<span class="spinner"></span> Refreshing...';
+      try {
+        const r = await fetch('/api/macro-calendar/refresh', { method: 'POST' });
+        const data = await r.json();
+        if (r.ok) {
+          showToast('Refreshed ' + data.dates_loaded + ' dates from sources.', true);
+          loadCalendar();
+        } else {
+          showToast('Refresh failed.', false);
+        }
+      } catch (e) {
+        showToast('Refresh failed: ' + e.message, false);
+      }
+      btn.disabled = false;
+      label.textContent = 'Refresh from sources';
+    });
+
+    loadCalendar();
+  </script>
+</body>
+</html>

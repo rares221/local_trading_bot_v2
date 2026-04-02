@@ -8,103 +8,824 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/css/common.css">
+  <script src="/static/js/icons.js"></script>
+  <style>
+    .metric-box {
+      padding: var(--space-2); border: 1px solid var(--border);
+      border-radius: var(--radius); background: var(--secondary);
+      display: flex; flex-direction: column; gap: 4px; min-width: 140px;
+    }
+    .metric-label {
+      font-size: 11px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: .05em; color: var(--muted-foreground);
+    }
+    .metric-value {
+      font-size: 1.5rem; font-weight: 700; color: var(--foreground);
+      font-variant-numeric: tabular-nums;
+    }
+    .metric-hint {
+      font-size: 10px; color: var(--muted-foreground);
+    }
+  </style>
 </head>
 <body>
   <nav class="nav">
-    <a href="/dashboard" class="active">Dashboard</a>
-    <a href="/recommendations">Recommendations</a>
-    <a href="/analysis">Market analysis</a>
-    <a href="/active-trades">Active trades</a>
-    <a href="/docs" target="_blank" rel="noopener">API docs</a>
+    <a href="/dashboard" class="active"><span data-icon="layout-dashboard"></span> Dashboard</a>
+    <a href="/recommendations"><span data-icon="list-checks"></span> Recommendations</a>
+    <a href="/research"><span data-icon="search"></span> Research</a>
+    <a href="/analysis"><span data-icon="bar-chart-2"></span> Analysis</a>
+    <a href="/active-trades"><span data-icon="activity"></span> Active trades</a>
+    <a href="/journal"><span data-icon="book-open"></span> Journal</a>
+    <a href="/briefing"><span data-icon="newspaper"></span> Briefing</a>
+    <a href="/calendar"><span data-icon="calendar"></span> Calendar</a>
   </nav>
 
   <main class="app app--wide">
     <h1 class="page-title">Dashboard</h1>
-    <p class="page-desc">Run the pipeline, then open Market analysis and Recommendations. Trades you take appear on Active trades.</p>
+    <p class="page-desc">Control center for your trading pipeline. Run the pipeline to ingest news, analyse sentiment, and generate today's recommendations.</p>
+
+    <div id="toast" class="alert" role="alert" style="display:none;"></div>
 
     <div class="dashboard-grid">
-      <section class="dashboard-panel">
-        <h2 class="section-title">Preferences</h2>
+
+      <!-- ═══════════════════════════════════════════════════════════════════════
+           SETTINGS SECTION (Cards with input fields)
+           ═══════════════════════════════════════════════════════════════════════ -->
+
+      <!-- Risk preference -->
+      <section class="card">
+        <h2 class="section-title"><span data-icon="shield"></span> Risk preference</h2>
+        <p class="meta">Only assets at or below this risk level will be recommended. Takes effect on the next batch.</p>
         <div class="form-group">
           <label for="preferred-risk">Risk stance</label>
-          <select id="preferred-risk" class="input" aria-label="Preferred risk for recommendations">
+          <select id="preferred-risk" class="input" style="max-width:200px;">
             <option value="conservative">Conservative</option>
             <option value="moderate">Moderate</option>
             <option value="aggressive">Aggressive</option>
           </select>
-          <p class="meta">Only assets at or below this level are recommended. Affects next batch.</p>
+        </div>
+        <div class="form-group mt-2">
+          <label for="risk-budget">Risk budget per batch (sum of Size %)</label>
+          <input type="number" id="risk-budget" class="input" style="max-width:200px;" min="0" max="50" step="0.5" placeholder="25">
+          <p class="meta mt-1">Each recommendation has a <strong>Size</strong> (% of capital). The <em>sum</em> across <strong>all</strong> rows must stay under this cap. The daily batch targets <strong>up to 5 per category</strong> (~20 ideas); use <strong>25</strong> (default) or higher so the budget does not cut the list short. Low values (e.g. <strong>1.0</strong>) only allow a couple of small positions total.</p>
+        </div>
+        <div class="form-group mt-2">
+          <label for="sentiment-decay">Sentiment decay half-life (hours)</label>
+          <input type="number" id="sentiment-decay" class="input" style="max-width:200px;" min="1" max="168" step="1" placeholder="24">
+          <p class="meta mt-1">How quickly old news loses influence. <strong>24h</strong> (default) = news from 24h ago has half the weight. Lower = more reactive to recent news. Higher = longer memory.</p>
+        </div>
+        <div class="form-group mt-2">
+          <label>Minimum confidence thresholds per regime</label>
+          <p class="meta mb-1">Candidates below these thresholds are excluded. Lower = more permissive, higher = stricter.</p>
+          <div class="flex gap-2" style="flex-wrap:wrap;">
+            <div>
+              <label for="conf-risk-on" class="meta" style="font-size:11px;">Risk-On</label>
+              <input type="number" id="conf-risk-on" class="input" style="width:80px;" min="0" max="80" step="5" placeholder="30">
+            </div>
+            <div>
+              <label for="conf-cautious" class="meta" style="font-size:11px;">Cautious</label>
+              <input type="number" id="conf-cautious" class="input" style="width:80px;" min="0" max="80" step="5" placeholder="35">
+            </div>
+            <div>
+              <label for="conf-risk-off" class="meta" style="font-size:11px;">Risk-Off</label>
+              <input type="number" id="conf-risk-off" class="input" style="width:80px;" min="0" max="80" step="5" placeholder="40">
+            </div>
+          </div>
+        </div>
+        <div class="form-group mt-2">
+          <label class="checkbox-label" style="display:flex;align-items:center;gap:8px;">
+            <input type="checkbox" id="shadow-mode-enabled">
+            <span><strong>A/B shadow mode</strong> (profile B)</span>
+          </label>
+          <p class="meta mt-1">When enabled, each new batch still uses your normal confidence gate. We also record whether each saved row would pass a <strong>second</strong> gate: live minimum + delta (clamped 0–100). Positive delta = stricter B; negative = looser. Compare on the Recommendations page under column <strong>B</strong>.</p>
+          <div class="flex gap-2 mt-1" style="flex-wrap:wrap;align-items:center;">
+            <label for="shadow-delta" class="meta">B vs live (delta points)</label>
+            <input type="number" id="shadow-delta" class="input" style="width:88px;" min="-20" max="30" step="1" value="5" title="Added to regime min confidence for profile B">
+            <button type="button" class="btn btn--secondary btn-sm" id="shadow-save">Save shadow settings</button>
+          </div>
         </div>
       </section>
-      <section class="dashboard-panel">
-        <h2 class="section-title">Actions</h2>
-        <div class="btn-group">
-          <button type="button" class="btn btn--primary" data-action="run-pipeline-once">Run pipeline once</button>
-          <button type="button" class="btn btn--secondary" data-action="refresh-todays-batch">Refresh today's batch</button>
-          <button type="button" class="btn btn--secondary" data-action="clear-todays-batch">Clear today's batch</button>
+
+      <!-- LLM provider -->
+      <section class="card">
+        <h2 class="section-title"><span data-icon="cpu"></span> LLM provider</h2>
+        <p class="meta mb-2">The LLM generates research rationales for each recommendation. Choose a provider and model below.</p>
+        <div class="flex gap-2 mb-2" style="flex-wrap:wrap;" id="llm-provider-btns">
+          <button type="button" class="btn btn--secondary llm-provider-btn" data-provider="ollama"><span data-icon="server"></span> Ollama (local)</button>
+          <button type="button" class="btn btn--secondary llm-provider-btn" data-provider="openai"><span data-icon="bot"></span> OpenAI</button>
+          <button type="button" class="btn btn--secondary llm-provider-btn" data-provider="anthropic"><span data-icon="bot"></span> Anthropic</button>
+          <button type="button" class="btn btn--secondary llm-provider-btn" data-provider="openrouter"><span data-icon="bot"></span> OpenRouter</button>
+        </div>
+        <div class="flex gap-3" style="flex-wrap:wrap;">
+          <div class="form-group" id="llm-ollama-fields">
+            <label for="ollama-url">Ollama URL</label>
+            <input type="text" id="ollama-url" class="input" placeholder="http://localhost:11434">
+            <label for="ollama-model" class="mt-1">Model</label>
+            <input type="text" id="ollama-model" class="input" placeholder="e.g. llama3.1, gemma3:1b">
+          </div>
+          <div class="form-group" id="llm-model-group">
+            <label for="llm-model">Model</label>
+            <input type="text" id="llm-model" class="input" placeholder="Leave empty for provider default">
+          </div>
+        </div>
+        <button type="button" class="btn btn--secondary" id="llm-save">
+          <span data-icon="save"></span>
+          <span class="btn-label">Save LLM settings</span>
+        </button>
+      </section>
+
+      <!-- Webhook Notifications -->
+      <section class="card" style="grid-column: 1 / -1;" id="notifications-section">
+        <h2 class="section-title"><span data-icon="bell"></span> Webhook Notifications</h2>
+        <p class="meta mb-2">Receive alerts via Discord, Slack, or any webhook-compatible service when batches are ready or market regime changes.</p>
+        <div class="flex gap-3 mb-2" style="flex-wrap:wrap;align-items:flex-end;">
+          <div class="form-group" style="flex:1;min-width:300px;">
+            <label for="webhook-url">Webhook URL</label>
+            <input type="text" id="webhook-url" class="input" placeholder="https://discord.com/api/webhooks/... or Slack webhook URL">
+          </div>
+          <div class="form-group" style="min-width:120px;">
+            <label>&nbsp;</label>
+            <label class="checkbox-label" style="display:flex;align-items:center;gap:8px;">
+              <input type="checkbox" id="webhook-enabled">
+              <span>Enabled</span>
+            </label>
+          </div>
+        </div>
+        <div class="flex gap-3 mb-2" style="flex-wrap:wrap;">
+          <label class="checkbox-label" style="display:flex;align-items:center;gap:8px;">
+            <input type="checkbox" id="notify-batch-ready" checked>
+            <span>Batch ready</span>
+          </label>
+          <label class="checkbox-label" style="display:flex;align-items:center;gap:8px;">
+            <input type="checkbox" id="notify-regime-change" checked>
+            <span>Regime change</span>
+          </label>
+          <label class="checkbox-label" style="display:flex;align-items:center;gap:8px;">
+            <input type="checkbox" id="notify-macro-alert">
+            <span>Macro alerts</span>
+          </label>
+          <label class="checkbox-label" style="display:flex;align-items:center;gap:8px;">
+            <input type="checkbox" id="notify-trade-outcome">
+            <span>Trade outcomes</span>
+          </label>
+        </div>
+        <div class="flex gap-2">
+          <button type="button" class="btn btn--secondary" id="webhook-save">
+            <span data-icon="save"></span>
+            <span class="btn-label">Save</span>
+          </button>
+          <button type="button" class="btn btn--secondary" id="webhook-test">
+            <span data-icon="send"></span>
+            <span class="btn-label">Test</span>
+          </button>
         </div>
       </section>
-      <section class="dashboard-panel">
-        <h2 class="section-title">Pages</h2>
-        <div class="btn-group">
-          <a href="/recommendations" class="btn btn--secondary">Recommendations</a>
-          <a href="/analysis" class="btn btn--secondary">Market analysis</a>
-          <a href="/active-trades" class="btn btn--secondary">Active trades</a>
-          <a href="/docs" target="_blank" rel="noopener" class="btn btn--secondary">API docs</a>
+
+      <!-- ═══════════════════════════════════════════════════════════════════════
+           ACTIONS SECTION (Pipeline buttons)
+           ═══════════════════════════════════════════════════════════════════════ -->
+
+      <!-- Pipeline actions -->
+      <section class="card">
+        <h2 class="section-title"><span data-icon="zap"></span> Pipeline actions</h2>
+        <div class="flex-col gap-2">
+          <div>
+            <button type="button" class="btn btn--primary" data-action="run-pipeline-once" style="width:100%;">
+              <span data-icon="zap"></span>
+              <span class="btn-label">Run full pipeline</span>
+            </button>
+            <p class="meta mt-1">Ingests RSS feeds, runs sentiment analysis, generates today's recommendations.</p>
+          </div>
+          <div>
+            <button type="button" class="btn btn--secondary" data-action="refresh-todays-batch" style="width:100%;">
+              <span data-icon="refresh-cw"></span>
+              <span class="btn-label">Refresh today's batch</span>
+            </button>
+            <p class="meta mt-1">Re-generate recommendations for today (clears pending, keeps taken).</p>
+          </div>
+          <div>
+            <button type="button" class="btn btn--secondary" data-action="clear-todays-batch" style="width:100%;">
+              <span data-icon="eraser"></span>
+              <span class="btn-label">Clear today's batch</span>
+            </button>
+            <p class="meta mt-1">Remove pending and skipped recommendations. Taken trades are preserved.</p>
+          </div>
+          <div>
+            <button type="button" class="btn btn--danger" data-action="purge-all" style="width:100%;">
+              <span data-icon="trash-2"></span>
+              <span class="btn-label">Purge all data</span>
+            </button>
+            <p class="meta mt-1">Delete every recommendation and active trade. For testing only.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ═══════════════════════════════════════════════════════════════════════
+           INFO SECTION (Read-only market data)
+           ═══════════════════════════════════════════════════════════════════════ -->
+
+      <!-- Regime status -->
+      <section class="card" id="regime-section">
+        <h2 class="section-title"><span data-icon="gauge"></span> Market Regime Status</h2>
+        <p class="meta mb-2">
+          <strong>What is a market regime?</strong> The bot analyzes SPX trend and VIX level to classify market conditions into three regimes:
+          <span style="display:inline-block;margin-left:8px;"><strong style="color:var(--green)">Risk-On</strong> (bullish, low volatility) — more aggressive recommendations;</span>
+          <span style="display:inline-block;margin-left:8px;"><strong style="color:var(--yellow)">Cautious</strong> (mixed signals) — balanced approach;</span>
+          <span style="display:inline-block;margin-left:8px;"><strong style="color:var(--red)">Risk-Off</strong> (bearish or high volatility) — defensive, may flip to shorts.</span>
+          Regime transitions trigger alerts for active trades that may need review.
+        </p>
+        <div id="regime-content">
+          <div class="flex gap-3 mb-2" style="flex-wrap:wrap;">
+            <div class="metric-box">
+              <span class="metric-label">Current Regime</span>
+              <span class="metric-value" id="regime-current">—</span>
+              <span class="metric-hint" id="regime-since">—</span>
+            </div>
+            <div class="metric-box">
+              <span class="metric-label">Flagged Trades</span>
+              <span class="metric-value" id="regime-flagged">—</span>
+              <span class="metric-hint">Trades needing review</span>
+            </div>
+          </div>
+          <div id="regime-alerts" style="display:none;" class="alert alert--warning mb-2">
+            <strong>Regime transition detected</strong>
+            <div id="regime-alert-list" class="mt-1 text-sm"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Sector Regimes -->
+      <section class="card" id="sector-section">
+        <h2 class="section-title"><span data-icon="bar-chart-2"></span> Sector Regimes</h2>
+        <p class="meta mb-2">Each sector has its own trend based on sector ETF performance. Outperforming sectors (positive relative strength) are highlighted.</p>
+        <div id="sector-grid" class="flex gap-2" style="flex-wrap:wrap;">
+          <span class="meta">Loading...</span>
+        </div>
+      </section>
+
+      <!-- Correlation Matrix -->
+      <section class="card" id="correlation-section">
+        <h2 class="section-title"><span data-icon="activity"></span> Cross-Asset Correlations</h2>
+        <p class="meta mb-2">20-day rolling correlations between key assets. Divergences from expected relationships may signal regime shifts.</p>
+        <div id="correlation-signals" class="mb-2"></div>
+        <div id="correlation-matrix" style="overflow-x:auto;"></div>
+      </section>
+
+      <!-- Calibration stats -->
+      <section class="card" style="grid-column: 1 / -1;" id="calibration-section">
+        <h2 class="section-title"><span data-icon="sliders-horizontal"></span> Calibration &amp; Performance</h2>
+        <p class="meta mb-2">Empirical hit rates per confidence bucket, Brier score, and Expected Calibration Error from closed trades. Fitted Platt <strong>A/B</strong> is saved to <code>data/platt_calibration.json</code> and reloaded when the app starts.</p>
+        <div id="calibration-content" style="display:none;">
+          <div class="flex gap-3 mb-2" style="flex-wrap:wrap;">
+            <div class="metric-box">
+              <span class="metric-label">Brier Score</span>
+              <span class="metric-value" id="brier-val">—</span>
+              <span class="metric-hint">Lower is better (0 = perfect)</span>
+            </div>
+            <div class="metric-box">
+              <span class="metric-label">ECE</span>
+              <span class="metric-value" id="ece-val">—</span>
+              <span class="metric-hint">Lower is better (0 = perfect calibration)</span>
+            </div>
+            <div class="metric-box">
+              <span class="metric-label">Closed Trades</span>
+              <span class="metric-value" id="n-total-val">—</span>
+            </div>
+            <div class="metric-box">
+              <span class="metric-label">Platt Calibration</span>
+              <span class="metric-value" id="platt-status">—</span>
+              <span class="metric-hint" id="platt-hint">Not fitted</span>
+            </div>
+            <div class="metric-box">
+              <span class="metric-label">Adaptive Thresholds</span>
+              <span class="metric-value" id="adaptive-status">—</span>
+              <span class="metric-hint" id="adaptive-hint">Not enabled</span>
+            </div>
+          </div>
+          <div class="mb-2 flex gap-2" style="flex-wrap:wrap;">
+            <button type="button" class="btn btn--secondary" id="fit-calibration-btn">
+              <span data-icon="sliders-horizontal"></span>
+              <span class="btn-label">Fit Platt Calibration</span>
+            </button>
+            <button type="button" class="btn btn--secondary" id="clear-calibration-btn">
+              <span data-icon="eraser"></span>
+              <span class="btn-label">Clear Platt</span>
+            </button>
+          </div>
+          <div class="meta text-sm">
+            <strong>Adaptive thresholds:</strong> Automatically adjusts min confidence based on empirical hit rates to target 55% win rate. Updates when calibration data changes (≥10 closed trades).
+          </div>
+          <table class="table" style="max-width:600px;">
+            <thead>
+              <tr>
+                <th>Bucket</th>
+                <th class="num">Count</th>
+                <th class="num">Hit TP</th>
+                <th class="num">Hit SL</th>
+                <th class="num">Expired</th>
+                <th class="num">Hit Rate</th>
+              </tr>
+            </thead>
+            <tbody id="bucket-tbody"></tbody>
+          </table>
+        </div>
+        <p class="meta" id="calibration-empty" style="display:none;">No closed trades yet. Calibration stats will appear once trades reach TP, SL, or expiry.</p>
+      </section>
+
+      <!-- Help & Glossary -->
+      <section class="card" style="grid-column: 1 / -1;">
+        <h2 class="section-title"><span data-icon="info"></span> Key Concepts</h2>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:var(--space-3);">
+          <div>
+            <h3 style="font-size:14px;font-weight:600;margin-bottom:8px;color:var(--foreground);">Market Regime</h3>
+            <p class="text-sm text-muted">
+              Classification of market conditions based on SPX trend and VIX level:
+            </p>
+            <ul class="text-sm text-muted" style="margin-top:8px;padding-left:20px;">
+              <li><strong style="color:var(--green);">Risk-On:</strong> Bullish trend + low volatility → more aggressive recommendations, higher confidence thresholds relaxed</li>
+              <li><strong style="color:var(--yellow);">Cautious:</strong> Mixed signals or moderate volatility → balanced approach, standard thresholds</li>
+              <li><strong style="color:var(--red);">Risk-Off:</strong> Bearish trend or high volatility → defensive stance, may flip longs to shorts, stricter confidence filters</li>
+            </ul>
+          </div>
+          <div>
+            <h3 style="font-size:14px;font-weight:600;margin-bottom:8px;color:var(--foreground);">Confidence Score &amp; Buckets</h3>
+            <p class="text-sm text-muted">
+              Each recommendation gets a 0-100 confidence score based on sentiment + technical alignment. Scores are grouped into buckets:
+            </p>
+            <ul class="text-sm text-muted" style="margin-top:8px;padding-left:20px;">
+              <li><strong>Low (0-40):</strong> Weak signals, lower probability</li>
+              <li><strong>Medium (40-60):</strong> Moderate conviction</li>
+              <li><strong>High (60-80):</strong> Strong alignment</li>
+              <li><strong>Very High (80-100):</strong> Exceptional setup</li>
+            </ul>
+            <p class="text-sm text-muted" style="margin-top:8px;">
+              Calibration uses historical outcomes to ensure scores reflect actual win rates.
+            </p>
+          </div>
+          <div>
+            <h3 style="font-size:14px;font-weight:600;margin-bottom:8px;color:var(--foreground);">Position Sizing &amp; Risk Budget</h3>
+            <p class="text-sm text-muted">
+              <strong>Suggested Risk %:</strong> Calculated using half-Kelly formula from confidence and risk-reward ratio. Higher confidence + better R:R = larger suggested position.
+            </p>
+            <p class="text-sm text-muted" style="margin-top:8px;">
+              <strong>Risk Budget:</strong> Caps the <em>sum</em> of every trade’s Size % in the batch. Default <strong>25</strong> fits up to ~20 recommendations (5 per category); raise it if the engine logs risk-budget skips.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Quick navigation -->
+      <section class="card" style="grid-column: 1 / -1;">
+        <h2 class="section-title"><span data-icon="map"></span> Quick navigation</h2>
+        <div class="btn-group" style="flex-wrap:wrap;">
+          <a href="/recommendations" class="btn btn--secondary"><span data-icon="list-checks"></span> Recommendations</a>
+          <a href="/research" class="btn btn--secondary"><span data-icon="search"></span> Research an asset</a>
+          <a href="/analysis" class="btn btn--secondary"><span data-icon="bar-chart-2"></span> Market analysis</a>
+          <a href="/active-trades" class="btn btn--secondary"><span data-icon="activity"></span> Active trades</a>
+          <a href="/briefing" class="btn btn--secondary"><span data-icon="newspaper"></span> Daily briefing</a>
+          <a href="/calendar" class="btn btn--secondary"><span data-icon="calendar"></span> Macro calendar</a>
+          <a href="/docs" target="_blank" rel="noopener" class="btn btn--secondary"><span data-icon="file-text"></span> API docs</a>
         </div>
       </section>
     </div>
 
-    <details class="card" style="margin-top: var(--space-4);">
-      <summary style="cursor: pointer; font-weight: 600;">Workflow &amp; batch notes</summary>
-      <ol class="ordered-list" style="margin-top: var(--space-2);">
-        <li>Run pipeline (or wait for schedule) → feeds, analysis, today’s recommendations.</li>
-        <li>Open Market analysis, then Recommendations; mark each row Took it or Skipped.</li>
-        <li>Active trades shows what you took; refresh that page to see SL/TP updates (every 2h).</li>
-      </ol>
-      <p class="meta">Refresh = new set of recs; Clear = remove pending/skipped only. Taken trades persist.</p>
-    </details>
-
-    <div id="message" class="alert" role="alert" style="display: none;"></div>
-    <p class="disclaimer">Educational use only. Not financial advice.</p>
+    <p class="disclaimer">Educational and research purposes only. Not financial advice.</p>
   </main>
 
   <script>
-    const messageEl = document.getElementById('message');
-    function showMessage(text, ok) {
-      messageEl.textContent = text;
-      messageEl.className = 'alert ' + (ok ? 'alert--success' : 'alert--error');
-      messageEl.style.display = 'block';
+    const toast = document.getElementById('toast');
+    function showToast(text, ok) {
+      toast.textContent = text;
+      toast.className = 'alert ' + (ok ? 'alert--success' : 'alert--error');
+      toast.style.display = 'block';
+      clearTimeout(toast._t);
+      toast._t = setTimeout(() => { toast.style.display = 'none'; }, 6000);
     }
-    // Load and save preferred risk
-    (function() {
-      const sel = document.getElementById('preferred-risk');
-      if (!sel) return;
-      fetch('/api/preferences').then(r => r.json()).then(data => {
-        if (data.preferred_risk) sel.value = data.preferred_risk;
-      }).catch(() => {});
-      sel.addEventListener('change', function() {
-        fetch('/api/preferences', {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ preferred_risk: sel.value })
-        }).then(r => r.json()).then(data => {
-          showMessage(data.message || 'Preferences saved.', true);
-        }).catch(e => showMessage('Failed to save: ' + e.message, false));
+
+    /* Risk preference */
+    const riskSel = document.getElementById('preferred-risk');
+    const riskBudgetInput = document.getElementById('risk-budget');
+    const sentimentDecayInput = document.getElementById('sentiment-decay');
+    const confRiskOnInput = document.getElementById('conf-risk-on');
+    const confCautiousInput = document.getElementById('conf-cautious');
+    const confRiskOffInput = document.getElementById('conf-risk-off');
+    fetch('/api/preferences').then(r=>r.json()).then(d => {
+      if (d.preferred_risk) riskSel.value = d.preferred_risk;
+      if (d.risk_budget_1r != null) riskBudgetInput.value = d.risk_budget_1r;
+      if (d.sentiment_half_life_hours != null) sentimentDecayInput.value = d.sentiment_half_life_hours;
+      if (d.confidence_thresholds) {
+        confRiskOnInput.value = d.confidence_thresholds.risk_on ?? 30;
+        confCautiousInput.value = d.confidence_thresholds.cautious ?? 35;
+        confRiskOffInput.value = d.confidence_thresholds.risk_off ?? 40;
+      }
+    }).catch(()=>{});
+    // Suggested confidence thresholds per risk stance
+    const suggestedThresholds = {
+      conservative: { risk_on: 40, cautious: 45, risk_off: 50 },
+      moderate:     { risk_on: 30, cautious: 35, risk_off: 40 },
+      aggressive:   { risk_on: 20, cautious: 25, risk_off: 30 },
+    };
+    
+    riskSel.addEventListener('change', () => {
+      const stance = riskSel.value;
+      const suggested = suggestedThresholds[stance] || suggestedThresholds.moderate;
+      
+      // Auto-update confidence thresholds
+      confRiskOnInput.value = suggested.risk_on;
+      confCautiousInput.value = suggested.cautious;
+      confRiskOffInput.value = suggested.risk_off;
+      
+      // Save all together
+      fetch('/api/preferences', {
+        method:'PATCH', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({
+          preferred_risk: stance,
+          confidence_threshold_risk_on: suggested.risk_on,
+          confidence_threshold_cautious: suggested.cautious,
+          confidence_threshold_risk_off: suggested.risk_off,
+        })
+      }).then(r=>r.json()).then(d => showToast('Risk stance updated with suggested thresholds.', true))
+        .catch(e => showToast('Failed: ' + e.message, false));
+    });
+    riskBudgetInput.addEventListener('change', () => {
+      const val = parseFloat(riskBudgetInput.value);
+      if (isNaN(val) || val < 0) {
+        showToast('Risk budget must be >= 0', false);
+        return;
+      }
+      fetch('/api/preferences', {
+        method:'PATCH', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({risk_budget_1r: val})
+      }).then(r=>r.json()).then(d => showToast(d.message || 'Saved.', true))
+        .catch(e => showToast('Failed: ' + e.message, false));
+    });
+    sentimentDecayInput.addEventListener('change', () => {
+      const val = parseFloat(sentimentDecayInput.value);
+      if (isNaN(val) || val < 1 || val > 168) {
+        showToast('Sentiment decay must be 1-168 hours', false);
+        return;
+      }
+      fetch('/api/preferences', {
+        method:'PATCH', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({sentiment_half_life_hours: val})
+      }).then(r=>r.json()).then(d => showToast(d.message || 'Saved.', true))
+        .catch(e => showToast('Failed: ' + e.message, false));
+    });
+
+    function saveConfidenceThreshold(regime, inputEl) {
+      const val = parseInt(inputEl.value);
+      if (isNaN(val) || val < 0 || val > 80) {
+        showToast('Confidence threshold must be 0-80', false);
+        return;
+      }
+      const body = {};
+      body['confidence_threshold_' + regime] = val;
+      fetch('/api/preferences', {
+        method:'PATCH', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(body)
+      }).then(r=>r.json()).then(d => showToast(d.message || 'Saved.', true))
+        .catch(e => showToast('Failed: ' + e.message, false));
+    }
+    confRiskOnInput.addEventListener('change', () => saveConfidenceThreshold('risk_on', confRiskOnInput));
+    confCautiousInput.addEventListener('change', () => saveConfidenceThreshold('cautious', confCautiousInput));
+    confRiskOffInput.addEventListener('change', () => saveConfidenceThreshold('risk_off', confRiskOffInput));
+
+    /* A/B shadow mode */
+    const shadowEnabled = document.getElementById('shadow-mode-enabled');
+    const shadowDeltaInput = document.getElementById('shadow-delta');
+    fetch('/api/preferences').then(r=>r.json()).then(d => {
+      if (d.shadow_mode_enabled != null) shadowEnabled.checked = !!d.shadow_mode_enabled;
+      if (d.shadow_confidence_delta != null) shadowDeltaInput.value = d.shadow_confidence_delta;
+    }).catch(()=>{});
+    document.getElementById('shadow-save').addEventListener('click', () => {
+      const delta = parseInt(shadowDeltaInput.value, 10);
+      if (isNaN(delta) || delta < -20 || delta > 30) {
+        showToast('Shadow delta must be -20 to +30', false);
+        return;
+      }
+      fetch('/api/preferences', {
+        method:'PATCH', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({
+          shadow_mode_enabled: shadowEnabled.checked,
+          shadow_confidence_delta: delta,
+        })
+      }).then(r=>r.json()).then(d => showToast(d.message || 'Shadow settings saved.', true))
+        .catch(e => showToast('Failed: ' + e.message, false));
+    });
+
+    /* Sector Regimes */
+    async function loadSectorRegimes() {
+      try {
+        const r = await fetch('/api/market/sectors');
+        if (!r.ok) throw new Error('Failed');
+        const data = await r.json();
+        const grid = document.getElementById('sector-grid');
+        const sectors = data.sectors || {};
+        if (Object.keys(sectors).length === 0) {
+          grid.innerHTML = '<span class="meta">No sector data available</span>';
+          return;
+        }
+        grid.innerHTML = Object.entries(sectors).map(([name, s]) => {
+          const regimeColor = s.regime === 'risk_on' ? 'var(--green)' : s.regime === 'risk_off' ? 'var(--red)' : 'var(--yellow)';
+          const rsSign = s.relative_strength_vs_spx > 0 ? '+' : '';
+          const rsColor = s.relative_strength_vs_spx > 0.01 ? 'var(--green)' : s.relative_strength_vs_spx < -0.01 ? 'var(--red)' : 'var(--muted-foreground)';
+          return `<div class="metric-box" style="min-width:120px;">
+            <span class="metric-label">${name.charAt(0).toUpperCase() + name.slice(1)}</span>
+            <span class="metric-value" style="font-size:1rem;color:${regimeColor}">${s.regime.replace('_', ' ')}</span>
+            <span class="metric-hint" style="color:${rsColor}">${s.relative_strength_vs_spx != null ? rsSign + (s.relative_strength_vs_spx * 100).toFixed(1) + '% vs SPX' : ''}</span>
+          </div>`;
+        }).join('');
+      } catch (e) {
+        document.getElementById('sector-grid').innerHTML = '<span class="meta">Failed to load sectors</span>';
+      }
+    }
+    loadSectorRegimes();
+
+    /* Correlation Matrix */
+    async function loadCorrelations() {
+      try {
+        const r = await fetch('/api/market/correlations');
+        if (!r.ok) throw new Error('Failed');
+        const data = await r.json();
+        
+        // Signals
+        const signalsDiv = document.getElementById('correlation-signals');
+        const signals = data.signals || [];
+        const diverging = signals.filter(s => s.diverging);
+        if (diverging.length > 0) {
+          signalsDiv.innerHTML = '<div class="alert alert--warning mb-2"><strong>Divergence Warning:</strong> ' +
+            diverging.map(s => `${s.asset_a} (${s.a_direction}) vs ${s.asset_b} (${s.b_direction})`).join('; ') +
+            '</div>';
+        } else {
+          signalsDiv.innerHTML = '<div class="alert alert--success mb-2">All cross-asset relationships normal</div>';
+        }
+        
+        // Matrix
+        const matrix = data.correlation_matrix;
+        if (!matrix) {
+          document.getElementById('correlation-matrix').innerHTML = '<span class="meta">Correlation data unavailable</span>';
+          return;
+        }
+        const assets = Object.keys(matrix);
+        let html = '<table class="table" style="font-size:12px;"><thead><tr><th></th>';
+        assets.forEach(a => { html += `<th class="num">${a}</th>`; });
+        html += '</tr></thead><tbody>';
+        assets.forEach(row => {
+          html += `<tr><td><strong>${row}</strong></td>`;
+          assets.forEach(col => {
+            const val = matrix[row][col];
+            const color = val > 0.5 ? 'var(--green)' : val < -0.5 ? 'var(--red)' : 'var(--foreground)';
+            const bg = row === col ? 'var(--secondary)' : 'transparent';
+            html += `<td class="num" style="color:${color};background:${bg}">${val.toFixed(2)}</td>`;
+          });
+          html += '</tr>';
+        });
+        html += '</tbody></table>';
+        document.getElementById('correlation-matrix').innerHTML = html;
+      } catch (e) {
+        document.getElementById('correlation-matrix').innerHTML = '<span class="meta">Failed to load correlations</span>';
+      }
+    }
+    loadCorrelations();
+
+    /* LLM provider */
+    const provBtns = document.querySelectorAll('.llm-provider-btn');
+    const ollamaFields = document.getElementById('llm-ollama-fields');
+    const modelGroup = document.getElementById('llm-model-group');
+    let curProvider = 'openai';
+    function setProvider(p) {
+      curProvider = p;
+      provBtns.forEach(b => {
+        const match = b.dataset.provider === p;
+        b.classList.toggle('btn--primary', match);
+        b.classList.toggle('btn--secondary', !match);
       });
-    })();
+      ollamaFields.style.display = p === 'ollama' ? 'block' : 'none';
+      modelGroup.style.display = p === 'ollama' ? 'none' : 'block';
+    }
+    fetch('/api/preferences').then(r=>r.json()).then(d => {
+      const p = (d.research_llm_provider||'openai').toLowerCase();
+      setProvider(p);
+      document.getElementById('ollama-url').value = d.ollama_base_url || 'http://localhost:11434';
+      document.getElementById('ollama-model').value = p==='ollama' ? (d.research_llm_model||'') : '';
+      document.getElementById('llm-model').value = p!=='ollama' ? (d.research_llm_model||'') : '';
+    }).catch(()=>{});
+    provBtns.forEach(b => b.addEventListener('click', () => setProvider(b.dataset.provider)));
+
+    document.getElementById('llm-save').addEventListener('click', function() {
+      const btn = this;
+      const body = { research_llm_provider: curProvider };
+      if (curProvider === 'ollama') {
+        body.ollama_base_url = document.getElementById('ollama-url').value.trim() || 'http://localhost:11434';
+        body.research_llm_model = document.getElementById('ollama-model').value.trim();
+      } else {
+        body.research_llm_model = document.getElementById('llm-model').value.trim();
+      }
+      btn.disabled = true;
+      btn.querySelector('.btn-label').textContent = 'Saving...';
+      fetch('/api/preferences', {method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})
+        .then(r=>r.json()).then(d => showToast(d.message || 'LLM settings saved.', true))
+        .catch(e => showToast('Failed: ' + e.message, false))
+        .finally(() => { btn.disabled = false; btn.querySelector('.btn-label').textContent = 'Save LLM settings'; });
+    });
+
+    /* Pipeline action buttons with spinner */
     document.querySelectorAll('button[data-action]').forEach(btn => {
       btn.addEventListener('click', async () => {
-        const action = btn.getAttribute('data-action');
+        const action = btn.dataset.action;
+        if (action === 'purge-all' && !confirm('Delete ALL recommendations and active trades? This cannot be undone.')) return;
+        const label = btn.querySelector('.btn-label');
+        const origText = label.textContent;
         btn.disabled = true;
+        label.innerHTML = '<span class="spinner spinner--white"></span> Working...';
+        if (!btn.classList.contains('btn--primary')) {
+          label.innerHTML = '<span class="spinner"></span> Working...';
+        }
         try {
           const r = await fetch('/api/actions/' + action, { method: 'POST' });
-          const data = await r.json();
-          showMessage(data.message || (typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail)) || (r.ok ? 'Done.' : 'Error'), r.ok);
-        } catch (e) {
-          showMessage('Request failed: ' + e.message, false);
-        }
+          const d = await r.json();
+          showToast(d.message || (r.ok ? 'Done.' : 'Error'), r.ok);
+        } catch (e) { showToast('Request failed: ' + e.message, false); }
+        label.textContent = origText;
         btn.disabled = false;
       });
+    });
+
+    /* Calibration stats */
+    async function loadCalibration() {
+      try {
+        const r = await fetch('/api/calibration');
+        if (!r.ok) throw new Error('Failed');
+        const data = await r.json();
+        const n = data.n_total || 0;
+        if (n === 0) {
+          document.getElementById('calibration-empty').style.display = 'block';
+          document.getElementById('calibration-content').style.display = 'none';
+          return;
+        }
+        document.getElementById('calibration-empty').style.display = 'none';
+        document.getElementById('calibration-content').style.display = 'block';
+        document.getElementById('brier-val').textContent = data.brier_score != null ? data.brier_score.toFixed(4) : '—';
+        document.getElementById('ece-val').textContent = data.ece != null ? data.ece.toFixed(4) : '—';
+        document.getElementById('n-total-val').textContent = n;
+        const platt = data.platt_calibration || {};
+        if (platt.fitted) {
+          document.getElementById('platt-status').textContent = 'Fitted';
+          document.getElementById('platt-hint').textContent = 'A=' + (platt.a != null ? platt.a.toFixed(4) : '?') + ', B=' + (platt.b != null ? platt.b.toFixed(4) : '?');
+        } else {
+          document.getElementById('platt-status').textContent = 'Not fitted';
+          document.getElementById('platt-hint').textContent = 'Click "Fit" to calibrate';
+        }
+        const adaptive = data.adaptive_thresholds || {};
+        if (adaptive.enabled) {
+          document.getElementById('adaptive-status').textContent = 'Enabled';
+          const hint = 'risk_on=' + (adaptive.risk_on || '?') + ', cautious=' + (adaptive.cautious || '?') + ', risk_off=' + (adaptive.risk_off || '?');
+          document.getElementById('adaptive-hint').textContent = hint;
+        } else {
+          document.getElementById('adaptive-status').textContent = 'Disabled';
+          document.getElementById('adaptive-hint').textContent = 'Need ≥10 closed trades';
+        }
+        const tbody = document.getElementById('bucket-tbody');
+        tbody.innerHTML = '';
+        const buckets = data.by_bucket || {};
+        ['low', 'medium', 'high', 'very_high'].forEach(b => {
+          const info = buckets[b] || {n:0, hit_tp:0, hit_sl:0, expired:0, hit_rate:null};
+          const tr = document.createElement('tr');
+          tr.innerHTML = '<td>' + b.replace('_', ' ') + '</td>'
+            + '<td class="num">' + info.n + '</td>'
+            + '<td class="num">' + info.hit_tp + '</td>'
+            + '<td class="num">' + info.hit_sl + '</td>'
+            + '<td class="num">' + info.expired + '</td>'
+            + '<td class="num">' + (info.hit_rate != null ? (info.hit_rate * 100).toFixed(1) + '%' : '—') + '</td>';
+          tbody.appendChild(tr);
+        });
+      } catch (e) {
+        document.getElementById('calibration-empty').textContent = 'Failed to load calibration.';
+        document.getElementById('calibration-empty').style.display = 'block';
+      }
+    }
+    loadCalibration();
+
+    /* Regime status */
+    async function loadRegimeStatus() {
+      try {
+        const r = await fetch('/api/regime/status');
+        if (!r.ok) throw new Error('Failed');
+        const data = await r.json();
+        const state = data.regime_state || {};
+        const flagged = data.flagged_trades || [];
+        const regimeName = state.current_regime || 'unknown';
+        const regimeDisplay = regimeName.replace('_', ' ');
+        const regimeEl = document.getElementById('regime-current');
+        regimeEl.textContent = regimeDisplay;
+        regimeEl.style.color = regimeName === 'risk_on' ? 'var(--green)' : regimeName === 'risk_off' ? 'var(--red)' : 'var(--yellow)';
+        if (state.regime_since) {
+          const since = new Date(state.regime_since);
+          const hours = ((new Date() - since) / 3600000).toFixed(1);
+          document.getElementById('regime-since').textContent = 'For ' + hours + ' hours';
+        } else {
+          document.getElementById('regime-since').textContent = 'Initializing...';
+        }
+        document.getElementById('regime-flagged').textContent = flagged.length;
+        if (flagged.length > 0) {
+          document.getElementById('regime-alerts').style.display = 'block';
+          const list = document.getElementById('regime-alert-list');
+          list.innerHTML = flagged.map(f =>
+            '<div><strong>' + (f.asset_id || 'Trade') + ':</strong> ' + (f.reason || 'Review needed') + '</div>'
+          ).join('');
+        } else {
+          document.getElementById('regime-alerts').style.display = 'none';
+        }
+      } catch (e) {
+        document.getElementById('regime-current').textContent = 'Error';
+        document.getElementById('regime-since').textContent = 'Failed to load';
+      }
+    }
+    loadRegimeStatus();
+    setInterval(loadRegimeStatus, 60000);
+
+    document.getElementById('fit-calibration-btn').addEventListener('click', async function() {
+      const btn = this;
+      const label = btn.querySelector('.btn-label');
+      const origText = label.textContent;
+      btn.disabled = true;
+      label.innerHTML = '<span class="spinner"></span> Fitting...';
+      try {
+        const r = await fetch('/api/calibration/fit', { method: 'POST' });
+        const d = await r.json();
+        showToast(d.message || (r.ok ? 'Calibration fitted.' : 'Failed'), r.ok);
+        if (r.ok) loadCalibration();
+      } catch (e) {
+        showToast('Request failed: ' + e.message, false);
+      }
+      label.textContent = origText;
+      btn.disabled = false;
+    });
+
+    document.getElementById('clear-calibration-btn').addEventListener('click', async function() {
+      if (!confirm('Clear Platt calibration from memory and disk? Calibrated scores on recommendations will disappear until you fit again.')) return;
+      try {
+        const r = await fetch('/api/calibration/clear', { method: 'POST' });
+        const d = await r.json();
+        showToast(d.message || 'Cleared.', r.ok);
+        loadCalibration();
+      } catch (e) {
+        showToast('Request failed: ' + e.message, false);
+      }
+    });
+
+    /* Webhook Notifications */
+    async function loadWebhookConfig() {
+      try {
+        const r = await fetch('/api/notifications/config');
+        if (!r.ok) return;
+        const d = await r.json();
+        document.getElementById('webhook-url').value = d.webhook_url || '';
+        document.getElementById('webhook-enabled').checked = d.webhook_enabled || false;
+        document.getElementById('notify-batch-ready').checked = d.notify_batch_ready !== false;
+        document.getElementById('notify-regime-change').checked = d.notify_regime_change !== false;
+        document.getElementById('notify-macro-alert').checked = d.notify_macro_alert || false;
+        document.getElementById('notify-trade-outcome').checked = d.notify_trade_outcome || false;
+      } catch (e) { console.error('Failed to load webhook config', e); }
+    }
+    loadWebhookConfig();
+
+    document.getElementById('webhook-save').addEventListener('click', async function() {
+      const btn = this;
+      const label = btn.querySelector('.btn-label');
+      btn.disabled = true;
+      label.textContent = 'Saving...';
+      try {
+        const body = {
+          webhook_url: document.getElementById('webhook-url').value.trim(),
+          webhook_enabled: document.getElementById('webhook-enabled').checked,
+          notify_batch_ready: document.getElementById('notify-batch-ready').checked,
+          notify_regime_change: document.getElementById('notify-regime-change').checked,
+          notify_macro_alert: document.getElementById('notify-macro-alert').checked,
+          notify_trade_outcome: document.getElementById('notify-trade-outcome').checked,
+        };
+        const r = await fetch('/api/notifications/config', {
+          method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+        });
+        const d = await r.json();
+        showToast(d.message || (r.ok ? 'Saved.' : 'Failed'), r.ok);
+      } catch (e) { showToast('Failed: ' + e.message, false); }
+      label.textContent = 'Save';
+      btn.disabled = false;
+    });
+
+    document.getElementById('webhook-test').addEventListener('click', async function() {
+      const btn = this;
+      const label = btn.querySelector('.btn-label');
+      btn.disabled = true;
+      label.textContent = 'Sending...';
+      try {
+        const r = await fetch('/api/notifications/test', { method: 'POST' });
+        const d = await r.json();
+        showToast(d.message || (r.ok ? 'Test sent!' : d.detail || 'Failed'), r.ok);
+      } catch (e) { showToast('Failed: ' + e.message, false); }
+      label.textContent = 'Test';
+      btn.disabled = false;
     });
   </script>
 </body>

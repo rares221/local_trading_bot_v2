@@ -3,61 +3,205 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Market analysis — Trading Bot</title>
+  <title>Market Analysis — Trading Bot</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/css/common.css">
+  <script src="/static/js/icons.js"></script>
 </head>
 <body>
   <nav class="nav">
-    <a href="/dashboard">Dashboard</a>
-    <a href="/recommendations">Recommendations</a>
-    <a href="/analysis" class="active">Market analysis</a>
-    <a href="/active-trades">Active trades</a>
-    <a href="/docs" target="_blank" rel="noopener">API docs</a>
+    <a href="/dashboard"><span data-icon="layout-dashboard"></span> Dashboard</a>
+    <a href="/recommendations"><span data-icon="list-checks"></span> Recommendations</a>
+    <a href="/research"><span data-icon="search"></span> Research</a>
+    <a href="/analysis" class="active"><span data-icon="bar-chart-2"></span> Analysis</a>
+    <a href="/active-trades"><span data-icon="activity"></span> Active trades</a>
+    <a href="/journal"><span data-icon="book-open"></span> Journal</a>
+    <a href="/briefing"><span data-icon="newspaper"></span> Briefing</a>
+    <a href="/calendar"><span data-icon="calendar"></span> Calendar</a>
   </nav>
 
   <main class="app app--wide">
-    <h1 class="page-title">Market analysis</h1>
-    <p class="page-desc">Review the latest report before deciding on recommendations.</p>
-    <p class="meta" id="meta">Loading…</p>
-    <div id="content"></div>
-    <p class="disclaimer">Educational use only. Not financial advice.</p>
+    <h1 class="page-title">Market Analysis</h1>
+    <p class="page-desc">Latest sentiment and price overview. Run the pipeline from the <a href="/dashboard">Dashboard</a> to refresh.</p>
+    
+    <div class="alert alert--info mb-3" style="font-size:13px;">
+      <strong><span data-icon="gauge" data-icon-size="14"></span> About Market Regime:</strong> The bot classifies market conditions into <strong style="color:#10b981;">Risk-On</strong> (bullish + low volatility), 
+      <strong style="color:#f59e0b;">Cautious</strong> (mixed signals), or <strong style="color:#ef4444;">Risk-Off</strong> (bearish or high volatility) based on SPX trend and VIX level. 
+      This affects recommendation filters, confidence thresholds, and directional bias.
+    </div>
+
+    <div id="loading" class="loading-overlay"><span class="spinner spinner--lg"></span> Loading analysis&hellip;</div>
+    <div id="content" style="display:none;"></div>
+    <div id="regime-card" style="display:none;"></div>
+    <p class="disclaimer">Educational and research purposes only. Not financial advice.</p>
   </main>
 
   <script>
-    (async function() {
-      const meta = document.getElementById('meta');
+    function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+    function sentimentColor(avg) {
+      if (avg >= 0.15) return 'var(--success-text)';
+      if (avg <= -0.15) return 'var(--error-text)';
+      return 'var(--warning-text)';
+    }
+    function sentimentLabel(avg) {
+      if (avg >= 0.15) return 'Bullish';
+      if (avg >= 0.05) return 'Slightly bullish';
+      if (avg <= -0.15) return 'Bearish';
+      if (avg <= -0.05) return 'Slightly bearish';
+      return 'Neutral';
+    }
+    function sentimentBarPct(avg) { return Math.round(Math.min(100, Math.max(0, (avg + 1) / 2 * 100))); }
+    function sentimentBarColor(avg) {
+      if (avg >= 0.15) return '#10b981';
+      if (avg <= -0.15) return '#ef4444';
+      return '#f59e0b';
+    }
+
+    async function loadAnalysis() {
       const content = document.getElementById('content');
+      const loading = document.getElementById('loading');
       try {
         const r = await fetch('/api/analysis/latest');
         if (!r.ok) {
           const d = await r.json().catch(() => ({}));
-          meta.textContent = '';
-          content.innerHTML = '<div class="alert alert--error" role="alert">' + (d.detail || r.statusText || 'No market analysis yet. Run pipeline from the Dashboard.') + '</div>';
+          content.innerHTML = '<div class="alert alert--warning">' + esc(d.detail || 'No analysis yet. Run the pipeline from the Dashboard.') + '</div>';
+          content.style.display = 'block'; loading.style.display = 'none';
           return;
         }
         const data = await r.json();
-        meta.textContent = 'As of ' + (data.as_of || '') + (data.sources_used ? ' · Sources: ' + (Array.isArray(data.sources_used) ? data.sources_used.join(', ') : data.sources_used) : '');
+        const payload = data.payload || {};
         let html = '';
+
+        /* Summary header */
+        const srcCount = data.sources_used ? (data.sources_used.feed_items || 0) : 0;
+        const assetCount = Object.keys(payload.by_asset_sentiment || {}).length;
+        const catCount = Object.keys(payload.by_category || {}).length;
+        html += '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:var(--space-2);margin-bottom:var(--space-3);">';
+        html += '<div class="card stat" style="margin:0;"><div class="stat-value">' + srcCount + '</div><div class="stat-label">Feed items</div></div>';
+        html += '<div class="card stat" style="margin:0;"><div class="stat-value">' + assetCount + '</div><div class="stat-label">Assets tracked</div></div>';
+        html += '<div class="card stat" style="margin:0;"><div class="stat-value">' + catCount + '</div><div class="stat-label">Categories</div></div>';
+        html += '</div>';
+        html += '<p class="meta mb-3">Analysis as of ' + esc(data.as_of || '') + '</p>';
+
+        /* News by Category — right after the stats */
+        const cats = payload.by_category || {};
+        const catKeys = Object.keys(cats);
+        if (catKeys.length > 0) {
+          html += '<section class="card"><h2 class="section-title">News by Category</h2>';
+          catKeys.forEach(cat => {
+            const items = cats[cat] || [];
+            html += '<details style="margin-bottom:var(--space-2);">';
+            html += '<summary style="cursor:pointer;font-weight:600;padding:6px 0;">' + esc(cat) + ' <span class="badge badge--gray">' + items.length + '</span></summary>';
+            html += '<div class="table-wrap" style="margin-top:var(--space-1);"><table><thead><tr><th>Headline</th><th class="num">Sentiment</th><th>Assets</th><th>Published</th></tr></thead><tbody>';
+            items.slice(0, 30).forEach(it => {
+              const score = it.sentiment_score;
+              const scoreStr = score != null ? score.toFixed(3) : '—';
+              const scoreColor = score != null ? sentimentColor(score) : '';
+              const tags = (it.asset_tags || []).join(', ');
+              const pub = it.published ? new Date(it.published).toLocaleDateString() : '';
+              const link = it.link ? '<a href="' + esc(it.link) + '" target="_blank" rel="noopener" style="color:inherit;text-decoration:none;">' + esc(it.title || '') + '</a>' : esc(it.title || '');
+              html += '<tr><td style="max-width:400px;" class="truncate">' + link + '</td><td class="num" style="color:' + scoreColor + ';">' + scoreStr + '</td><td class="text-sm">' + esc(tags) + '</td><td class="text-sm text-muted">' + pub + '</td></tr>';
+            });
+            if (items.length > 30) {
+              html += '<tr><td colspan="4" class="text-sm text-muted" style="text-align:center;">+ ' + (items.length - 30) + ' more items</td></tr>';
+            }
+            html += '</tbody></table></div></details>';
+          });
+          html += '</section>';
+        }
+
+        /* Assets Overview — price + sentiment combined, split into tracked vs mentions */
+        const prices = payload.price_snapshot || {};
+        const sentiment = payload.by_asset_sentiment || {};
+        const allAssets = [...new Set([...Object.keys(sentiment), ...Object.keys(prices)])];
+        const tracked = allAssets.filter(t => prices[t] != null).sort((a, b) => ((sentiment[b]||{}).avg||0) - ((sentiment[a]||{}).avg||0));
+        const mentionsOnly = allAssets.filter(t => prices[t] == null && sentiment[t]).sort((a, b) => (sentiment[b].avg||0) - (sentiment[a].avg||0));
+
+        function assetRow(tag) {
+          const price = prices[tag];
+          const info = sentiment[tag];
+          const avg = info ? info.avg : null;
+          const count = info ? info.count : 0;
+          const pct = avg != null ? sentimentBarPct(avg) : 50;
+          const color = avg != null ? sentimentBarColor(avg) : 'var(--border)';
+          let r = '<tr>';
+          r += '<td class="font-semibold">' + esc(tag) + '</td>';
+          r += '<td class="num">' + (price != null ? Number(price).toFixed(2) : '') + '</td>';
+          r += '<td class="num" style="color:' + (avg != null ? sentimentColor(avg) : '') + ';">' + (avg != null ? avg.toFixed(3) : '—') + '</td>';
+          r += '<td>' + (avg != null ? '<span class="badge ' + (avg>=0.15?'badge--green':avg<=-0.15?'badge--red':'badge--yellow') + '">' + sentimentLabel(avg) + '</span>' : '<span class="badge badge--gray">—</span>') + '</td>';
+          r += '<td class="num">' + count + '</td>';
+          r += '<td><div class="sentiment-bar"><div class="sentiment-bar-fill" style="width:' + pct + '%;background:' + color + ';"></div></div></td>';
+          r += '</tr>';
+          return r;
+        }
+        const theadRow = '<tr><th>Asset</th><th class="num">Price</th><th class="num">Sentiment</th><th>Signal</th><th>Mentions</th><th style="min-width:100px;"></th></tr>';
+
+        if (tracked.length > 0) {
+          html += '<section class="card"><h2 class="section-title">Tracked Assets</h2>';
+          html += '<p class="meta mb-2">Assets with live price data and sentiment. Scale: -1 (bearish) to +1 (bullish).</p>';
+          html += '<div class="table-wrap"><table><thead>' + theadRow + '</thead><tbody>';
+          tracked.forEach(tag => { html += assetRow(tag); });
+          html += '</tbody></table></div></section>';
+        }
+
+        if (mentionsOnly.length > 0) {
+          html += '<section class="card"><h2 class="section-title">Mentioned in News</h2>';
+          html += '<p class="meta mb-2">Sentiment tags from headlines — no direct price feed. These may be sectors, themes, or assets not in the tracked universe.</p>';
+          html += '<div class="table-wrap"><table><thead>' + theadRow + '</thead><tbody>';
+          mentionsOnly.forEach(tag => { html += assetRow(tag); });
+          html += '</tbody></table></div></section>';
+        }
+
+        /* Summary text */
         if (data.summary) {
-          html += '<section class="card"><h2 class="section-title">Summary</h2><div class="block-summary">' + escapeHtml(data.summary) + '</div></section>';
+          html += '<details class="card"><summary style="cursor:pointer;font-weight:600;">Raw summary text</summary>';
+          html += '<div class="block-summary mt-2">' + esc(data.summary) + '</div></details>';
         }
-        if (data.payload) {
-          html += '<section class="card"><h2 class="section-title">Payload</h2><div class="block-payload"><pre>' + escapeHtml(JSON.stringify(data.payload, null, 2)) + '</pre></div></section>';
-        }
-        content.innerHTML = html || '<p class="page-desc">No summary or payload.</p>';
+
+        content.innerHTML = html;
       } catch (e) {
-        meta.textContent = '';
-        content.innerHTML = '<div class="alert alert--error" role="alert">Request failed: ' + escapeHtml(e.message) + '</div>';
+        content.innerHTML = '<div class="alert alert--error">Failed to load analysis: ' + esc(e.message) + '</div>';
       }
-    })();
-    function escapeHtml(s) {
-      const div = document.createElement('div');
-      div.textContent = s;
-      return div.innerHTML;
+      content.style.display = 'block';
+      loading.style.display = 'none';
     }
+
+    async function loadRegime() {
+      const el = document.getElementById('regime-card');
+      try {
+        const r = await fetch('/api/market/context');
+        if (!r.ok) return;
+        const d = await r.json();
+        let cls = 'badge--green', icon = 'Risk On';
+        if (d.regime === 'risk_off') { cls = 'badge--red'; icon = 'Risk Off'; }
+        else if (d.regime === 'cautious') { cls = 'badge--yellow'; icon = 'Cautious'; }
+        let html = '<section class="card card--accent mb-3"><h2 class="section-title">Market Regime</h2>';
+        html += '<div class="flex items-center gap-2 mb-2"><span class="badge ' + cls + '" style="font-size:14px;padding:4px 12px;">' + icon + '</span>';
+        html += '<span class="text-sm">' + esc(d.regime_description || '') + '</span></div>';
+        html += '<div class="flex gap-3" style="flex-wrap:wrap;">';
+        html += '<div class="text-sm"><strong>SPX trend:</strong> ' + esc(d.spx_trend || '—') + '</div>';
+        html += '<div class="text-sm"><strong>VIX:</strong> ' + (d.vix_level != null ? Number(d.vix_level).toFixed(1) : '—') + ' (' + esc(d.vix_regime || '') + ')</div>';
+        html += '<div class="text-sm"><strong>Bias:</strong> ' + esc(d.direction_bias || '—') + '</div>';
+        html += '<div class="text-sm"><strong>Min confidence:</strong> ' + (d.min_confidence_threshold || '—') + '%</div>';
+        html += '</div>';
+        if (d.correlation_signals && d.correlation_signals.length > 0) {
+          html += '<div class="mt-2"><strong class="text-sm">Cross-asset signals:</strong><ul style="margin:4px 0 0 16px;padding:0;font-size:13px;">';
+          d.correlation_signals.forEach(s => {
+            const warn = s.diverging ? ' <span class="badge badge--yellow" style="font-size:11px;">Divergence</span>' : '';
+            html += '<li>' + esc(s.pair) + ': ' + esc(s.signal || '') + warn + '</li>';
+          });
+          html += '</ul></div>';
+        }
+        html += '</section>';
+        el.innerHTML = html; el.style.display = 'block';
+      } catch (e) { /* regime endpoint may not be available */ }
+    }
+
+    loadRegime();
+    loadAnalysis();
   </script>
 </body>
 </html>

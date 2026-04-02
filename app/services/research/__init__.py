@@ -14,6 +14,7 @@ from app.services.analysis import get_latest_analysis
 from app.services.recommendations.engine import (
     get_asset_price_and_risk,
     get_sentiment_score_and_count,
+    get_yf_symbol,
 )
 
 
@@ -24,8 +25,10 @@ async def build_research_context(
 ) -> dict[str, Any]:
     """
     Build context dict for (asset_id, category): sentiment from latest analysis,
-    buy_in_price (current or from existing rec), risk_tier, and 1–2 headline snippets.
+    buy_in_price (current or from existing rec), risk_tier, direction, and 1–2 headline snippets.
     """
+    from app.models.recommendation import Recommendation
+
     ctx: dict[str, Any] = {
         "asset_id": asset_id,
         "category": category,
@@ -33,6 +36,7 @@ async def build_research_context(
         "sentiment_count": 0,
         "buy_in_price": None,
         "risk_tier": None,
+        "direction": None,
         "headlines": [],
     }
     analysis = await get_latest_analysis(session)
@@ -44,6 +48,30 @@ async def build_research_context(
     price_risk = get_asset_price_and_risk(category, asset_id)
     if price_risk:
         ctx["buy_in_price"], ctx["risk_tier"] = price_risk
+
+    # Look up direction from the most recent recommendation for this asset
+    rec_q = (
+        select(Recommendation)
+        .where(Recommendation.asset_id == asset_id, Recommendation.asset_category == category)
+        .order_by(Recommendation.created_at.desc())
+        .limit(1)
+    )
+    rec_result = await session.execute(rec_q)
+    rec = rec_result.scalars().first()
+    if rec:
+        ctx["direction"] = getattr(rec, "direction", None) or "long"
+        if ctx["buy_in_price"] is None and rec.buy_in_price:
+            ctx["buy_in_price"] = rec.buy_in_price
+        if ctx["risk_tier"] is None and rec.risk_tier:
+            ctx["risk_tier"] = rec.risk_tier
+        ctx["volatility_notes"] = getattr(rec, "volatility_notes", None)
+        ctx["confidence_score"] = getattr(rec, "confidence_score", None)
+
+    # Derive direction from sentiment if no recommendation exists
+    if not ctx["direction"]:
+        sent = ctx.get("sentiment_avg")
+        ctx["direction"] = "short" if (sent is not None and sent < -0.05) else "long"
+
     # Up to 2 recent feed headlines that mention this asset (asset_id in asset_tags)
     q = select(FeedItem).order_by(FeedItem.fetched_at.desc()).limit(200)
     result = await session.execute(q)
@@ -52,6 +80,33 @@ async def build_research_context(
             ctx["headlines"].append(it.title or "(no title)")
             if len(ctx["headlines"]) >= 2:
                 break
+    # Optional: yfinance .info for sector, industry, market cap (stocks/ETFs; skip on failure)
+    symbol = get_yf_symbol(category, asset_id)
+    if symbol:
+        try:
+            import yfinance as yf
+            import logging
+            log = logging.getLogger("yfinance")
+            old_level = log.level
+            log.setLevel(logging.WARNING)
+            try:
+                info = yf.Ticker(symbol).info
+                if isinstance(info, dict):
+                    fund: dict[str, Any] = {}
+                    if info.get("sector"):
+                        fund["sector"] = str(info["sector"])
+                    if info.get("industry"):
+                        fund["industry"] = str(info["industry"])
+                    if info.get("marketCap") is not None:
+                        fund["market_cap"] = int(info["marketCap"])
+                    if info.get("shortName"):
+                        fund["short_name"] = str(info["shortName"])
+                    if fund:
+                        ctx["fundamentals"] = fund
+            finally:
+                log.setLevel(old_level)
+        except Exception:
+            pass
     return ctx
 
 

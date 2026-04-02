@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Research — Trading Bot</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/common.css">
+  <script src="/static/js/icons.js"></script>
+</head>
+<body>
+  <nav class="nav">
+    <a href="/dashboard"><span data-icon="layout-dashboard"></span> Dashboard</a>
+    <a href="/recommendations"><span data-icon="list-checks"></span> Recommendations</a>
+    <a href="/research" class="active"><span data-icon="search"></span> Research</a>
+    <a href="/analysis"><span data-icon="bar-chart-2"></span> Analysis</a>
+    <a href="/active-trades"><span data-icon="activity"></span> Active trades</a>
+    <a href="/journal"><span data-icon="book-open"></span> Journal</a>
+    <a href="/briefing"><span data-icon="newspaper"></span> Briefing</a>
+    <a href="/calendar"><span data-icon="calendar"></span> Calendar</a>
+  </nav>
+
+  <main class="app app--wide">
+    <h1 class="page-title">Research an Asset</h1>
+    <p class="page-desc">Get a short LLM-generated research summary for any asset — independent of today's batch. Uses sentiment, price data, and recent headlines.</p>
+
+    <section class="card">
+      <h2 class="section-title">Look up</h2>
+      <div class="flex gap-3" style="flex-wrap:wrap;">
+        <div class="form-group" style="flex:1;min-width:200px;">
+          <label for="asset-id">Asset (ticker or name)</label>
+          <div class="flex gap-1 items-center">
+            <input type="text" id="asset-id" class="input" placeholder="e.g. AAPL, Gold, Siemens" style="max-width:240px;">
+            <button type="button" class="btn btn--secondary btn-sm" id="resolve-btn"><span data-icon="search" data-icon-size="13"></span> Resolve</button>
+          </div>
+          <p id="resolve-hint" class="meta mt-1" style="display:none;"></p>
+        </div>
+        <div class="form-group" style="min-width:140px;">
+          <label for="category">Category</label>
+          <select id="category" class="input" style="max-width:180px;">
+            <option value="stocks">Stocks</option>
+            <option value="commodities">Commodities</option>
+            <option value="indices">Indices</option>
+            <option value="other">Other</option>
+          </select>
+        </div>
+      </div>
+      <button type="button" class="btn btn--primary mt-2" id="get-btn">
+        <span data-icon="sparkles"></span>
+        <span class="btn-label">Get research</span>
+      </button>
+    </section>
+
+    <section class="card" id="result-card" style="display:none;">
+      <h2 class="section-title" id="result-title">Research result</h2>
+      <div id="result-loading" class="loading-overlay" style="display:none;"><span class="spinner spinner--lg"></span> Generating research&hellip;</div>
+      <div id="result-summary" style="display:none;">
+        <p class="meta" style="font-weight:600;margin-bottom:4px;">Summary</p>
+        <div id="result-text" class="block-summary"></div>
+      </div>
+      <div id="result-empty" class="alert alert--warning" style="display:none;">No summary returned. Check that an LLM provider is configured on the <a href="/dashboard">Dashboard</a>.</div>
+      <details id="result-context" style="margin-top:var(--space-2);display:none;">
+        <summary style="cursor:pointer;font-weight:600;font-size:14px;">Context (sentiment, price, headlines)</summary>
+        <pre id="result-json" class="block-payload mt-1"></pre>
+      </details>
+    </section>
+
+    <p class="disclaimer">Educational and research purposes only. Not financial advice.</p>
+  </main>
+
+  <script>
+    function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+    const assetInput = document.getElementById('asset-id');
+    const catSelect = document.getElementById('category');
+    const resolveBtn = document.getElementById('resolve-btn');
+    const resolveHint = document.getElementById('resolve-hint');
+    const getBtn = document.getElementById('get-btn');
+    const resultCard = document.getElementById('result-card');
+    const resultTitle = document.getElementById('result-title');
+    const resultLoading = document.getElementById('result-loading');
+    const resultSummary = document.getElementById('result-summary');
+    const resultText = document.getElementById('result-text');
+    const resultEmpty = document.getElementById('result-empty');
+    const resultContext = document.getElementById('result-context');
+    const resultJson = document.getElementById('result-json');
+
+    resolveBtn.addEventListener('click', async () => {
+      const raw = assetInput.value.trim();
+      if (!raw) { assetInput.focus(); return; }
+      resolveBtn.disabled = true; resolveBtn.innerHTML = '<span class="spinner"></span>';
+      resolveHint.style.display = 'block';
+      try {
+        const r = await fetch('/api/research/resolve?q=' + encodeURIComponent(raw));
+        const d = await r.json();
+        const m = d.matches || [];
+        if (m.length === 0) {
+          resolveHint.textContent = 'No match for "' + raw + '". Try a ticker symbol instead.';
+          resolveHint.style.color = 'var(--warning-text)';
+        } else if (m.length === 1) {
+          assetInput.value = m[0].ticker;
+          resolveHint.textContent = m[0].name + ' \u2192 ' + m[0].ticker;
+          resolveHint.style.color = '';
+        } else {
+          assetInput.value = m[0].ticker;
+          resolveHint.textContent = 'Matches: ' + m.map(x => x.name + ' (' + x.ticker + ')').join(', ') + '. Using: ' + m[0].ticker;
+          resolveHint.style.color = '';
+        }
+      } catch (e) {
+        resolveHint.textContent = 'Resolve failed: ' + e.message;
+        resolveHint.style.color = 'var(--error-text)';
+      }
+      resolveBtn.disabled = false; resolveBtn.innerHTML = icon('search', 13) + ' Resolve';
+    });
+
+    getBtn.addEventListener('click', async () => {
+      const assetId = assetInput.value.trim();
+      if (!assetId) { assetInput.focus(); return; }
+      const category = catSelect.value;
+
+      resultCard.style.display = 'block';
+      resultTitle.textContent = assetId + ' (' + category + ')';
+      resultLoading.style.display = 'flex';
+      resultSummary.style.display = 'none';
+      resultEmpty.style.display = 'none';
+      resultContext.style.display = 'none';
+
+      const label = getBtn.querySelector('.btn-label');
+      getBtn.disabled = true; label.innerHTML = '<span class="spinner spinner--white"></span> Working&hellip;';
+
+      try {
+        const r = await fetch('/api/research/summary?asset_id=' + encodeURIComponent(assetId) + '&category=' + encodeURIComponent(category) + '&generate=true');
+        const d = await r.json();
+        resultLoading.style.display = 'none';
+        if (d.context) {
+          resultContext.style.display = 'block';
+          resultJson.textContent = JSON.stringify(d.context, null, 2);
+        }
+        if (d.summary && d.summary.trim()) {
+          resultSummary.style.display = 'block';
+          resultText.textContent = d.summary.trim();
+        } else {
+          resultEmpty.style.display = 'block';
+        }
+      } catch (e) {
+        resultLoading.style.display = 'none';
+        resultEmpty.style.display = 'block';
+        resultEmpty.textContent = 'Request failed: ' + e.message;
+      }
+      getBtn.disabled = false; label.textContent = 'Get research';
+    });
+
+    assetInput.addEventListener('keydown', e => { if (e.key === 'Enter') getBtn.click(); });
+  </script>
+</body>
+</html>

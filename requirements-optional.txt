@@ -1,0 +1,6 @@
+# Optional: FinBERT for domain-specific financial sentiment (blended with VADER).
+# Install after base deps: pip install -r requirements-optional.txt
+# CPU-only (recommended if you don't need GPU):
+transformers>=4.30.0
+torch>=2.0.0
+# For GPU support, install torch from https://pytorch.org/get-started/locally/ instead of the line above.

@@ -2,7 +2,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.core.config import settings
@@ -16,6 +16,17 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    try:
+        from app.services.calibration import load_platt_from_disk
+        load_platt_from_disk()
+    except Exception:
+        pass
+    # Refresh macro calendar cache if stale (runs in background, non-blocking)
+    try:
+        from app.services.macro_calendar import refresh_dates
+        refresh_dates(force=False)  # Only fetches if cache is stale
+    except Exception:
+        pass  # Fallback to static dates if fetch fails
     scheduler = start_scheduler()
     yield
     scheduler.shutdown(wait=False)
@@ -30,16 +41,8 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
 @app.get("/")
-async def root() -> dict[str, str]:
-    return {
-        "app": settings.app_name,
-        "dashboard": "/dashboard",
-        "recommendations": "/recommendations",
-        "analysis": "/analysis",
-        "active_trades": "/active-trades",
-        "docs": "/docs",
-        "health": "/api/health",
-    }
+async def root() -> RedirectResponse:
+    return RedirectResponse(url="/dashboard")
 
 
 def _read_static(name: str) -> str:
@@ -71,3 +74,27 @@ async def analysis_page() -> HTMLResponse:
 async def active_trades_page() -> HTMLResponse:
     """Active trades page: list of trades user marked as taken."""
     return HTMLResponse(content=_read_static("active-trades.html"))
+
+
+@app.get("/research", response_class=HTMLResponse)
+async def research_page() -> HTMLResponse:
+    """Research an asset: form to look up any asset and get LLM research summary."""
+    return HTMLResponse(content=_read_static("research.html"))
+
+
+@app.get("/briefing", response_class=HTMLResponse)
+async def briefing_page() -> HTMLResponse:
+    """Daily briefing: heartbeat-style checklist (SPX/VIX/oil, recs today)."""
+    return HTMLResponse(content=_read_static("briefing.html"))
+
+
+@app.get("/journal", response_class=HTMLResponse)
+async def journal_page() -> HTMLResponse:
+    """Trade journal: review closed trades with outcomes, filter by confidence/regime/asset."""
+    return HTMLResponse(content=_read_static("journal.html"))
+
+
+@app.get("/calendar", response_class=HTMLResponse)
+async def calendar_page() -> HTMLResponse:
+    """Macro calendar: FOMC, CPI, NFP dates that affect recommendation confidence."""
+    return HTMLResponse(content=_read_static("calendar.html"))

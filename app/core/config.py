@@ -35,5 +35,11 @@ class Settings(BaseSettings):
     openrouter_api_key: str | None = None
     ollama_base_url: str = "http://localhost:11434"
 
+    # Ticker resolution: exchange preference and cache TTL.
+    # Comma-separated Yahoo Finance exchange codes, ordered by preference.
+    # US exchanges first, then Europe, Asia, etc.
+    preferred_exchanges: str = "NMS,NYQ,NGM,PCX,BTS,ASE,LSE,GER,PAR,AMS,MIL,TYO,HKG,SHH,SHZ,KSC,TSE,SAO,JSE,NSI,BSE"
+    ticker_cache_max_age_days: int = 90
+
 
 settings = Settings()

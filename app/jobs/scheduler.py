@@ -1,31 +1,46 @@
 """
-APScheduler jobs: ingestion + sentiment, analysis run, daily recommendation batch, active-trade updates.
-Aligned with PLAN_MODE: one daily batch (≤5); update job only refreshes active trades.
+APScheduler jobs: ingestion + sentiment, analysis run, daily recommendation batch,
+active-trade updates (ATR-based trailing), daily briefing, feed cleanup.
 """
-from datetime import datetime, timezone, date
+import asyncio
+from functools import partial
+from datetime import datetime, timezone, date, timedelta
+from typing import Optional
 from uuid import uuid4
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
 from app.core.database import async_session_factory
 from app.models.feed_item import FeedItem
-from app.models.recommendation import Recommendation, ActiveTrade
+from app.models.recommendation import Recommendation, ActiveTrade, ActiveTradeLevel
 from app.models.market_analysis import MarketAnalysis
 from app.services.ingestion import fetch_all_feeds, save_feed_items
 from app.services.sentiment import score_sentiment, tag_assets, detect_tickers
 from app.services.analysis import run_analysis, get_latest_analysis
-from app.services.recommendations import build_daily_candidates
+from app.services.recommendations import build_daily_candidates, get_asset_price_and_risk
+from app.services.recommendations.engine import get_yf_symbol, compute_sl_tp_for_price, get_sentiment_score_and_count
+from app.services.market_context import build_market_context
+from app.services.technicals import build_snapshot, compute_atr_levels, clear_cache, determine_direction
+from app.services.briefing import run_briefing
+from app.services.regime_monitor import (
+    RegimeTransition,
+    detect_regime_transition,
+    get_trades_needing_review,
+    should_skip_recommendations_on_transition,
+)
 
 
 async def job_ingest_and_sentiment() -> None:
     """Fetch RSS feeds, save items, run sentiment and asset tagging."""
+    from app.services.ticker_resolver import reset_run_counter
+    reset_run_counter()
     async with async_session_factory() as session:
         items = fetch_all_feeds()
         saved = await save_feed_items(session, items)
-        # Enrich existing items with sentiment (simple: recent unprocessed)
         q = select(FeedItem).where(FeedItem.is_processed == False).limit(500)
         result = await session.execute(q)
         for it in result.scalars().all():
@@ -47,93 +62,316 @@ async def job_run_analysis() -> None:
 
 async def job_daily_batch() -> None:
     """
-    Produce up to 5 recommendations for today (PLAN_MODE).
-    Stub: creates placeholder recs if we have analysis; real engine later.
+    Produce today's batch: up to 5 recommendations per category (stocks, commodities, other, indices),
+    i.e. up to ~20 total, with ATR SL/TP, direction, expiry, global correlation and risk-budget filters.
     """
     batch_id = date.today().isoformat()
-    async with async_session_factory() as session:
-        # Guard: do not add more pending if today already has pending recommendations (PLAN_MODE C3). Taken ones can coexist with a new set.
-        q = select(Recommendation).where(Recommendation.batch_id == batch_id, Recommendation.status == "pending").limit(1)
-        result = await session.execute(q)
-        if result.scalars().first():
-            return
-        analysis = await get_latest_analysis(session)
-        if not analysis:
-            return
-        # Do not create new pending recs for assets that already have a taken recommendation (§5.4)
-        q_taken = select(Recommendation.asset_category, Recommendation.asset_id).where(Recommendation.status == "taken").distinct()
-        result_taken = await session.execute(q_taken)
-        exclude_taken = {(row[0], row[1]) for row in result_taken.all()}
-        from app.core.preferences import get_preferred_risk
-        by_asset_sentiment = (analysis.payload or {}).get("by_asset_sentiment") or None
-        candidates = build_daily_candidates(
-            max_count=5,
-            by_asset_sentiment=by_asset_sentiment,
-            preferred_risk=get_preferred_risk(),
-            tie_seed=batch_id,
-            exclude_taken=exclude_taken,
-        )
-        if not candidates:
-            return
-        now = datetime.now(timezone.utc)
-        from app.services.research import build_research_context, generate_rationale
-        for c in candidates:
-            rationale_text = None
-            try:
-                ctx = await build_research_context(session, c.asset_id, c.asset_category)
-                ctx["buy_in_price"] = c.buy_in_price
-                rationale_text = await generate_rationale(ctx)
-            except Exception:
-                pass
-            rec = Recommendation(
-                id=str(uuid4()),
-                created_at=now,
-                batch_id=batch_id,
-                asset_category=c.asset_category,
-                asset_id=c.asset_id,
-                buy_in_price=c.buy_in_price,
-                stop_loss=c.stop_loss,
-                take_profit=c.take_profit,
-                expiry_date=None,
-                rationale_ref=analysis.id,
-                rationale_text=rationale_text,
-                risk_tier=c.risk_tier,
-                status="pending",
+    print(f"[BATCH] Starting daily batch for {batch_id}")
+    try:
+        async with async_session_factory() as session:
+            q = select(Recommendation).where(
+                Recommendation.batch_id == batch_id, Recommendation.status == "pending"
+            ).limit(1)
+            result = await session.execute(q)
+            if result.scalars().first():
+                print("[BATCH] Pending recs already exist for today — skipping")
+                return
+            analysis = await get_latest_analysis(session)
+            if not analysis:
+                print("[BATCH] No analysis found — run the full pipeline first")
+                return
+            print(f"[BATCH] Analysis found (id={analysis.id})")
+            q_taken = select(Recommendation.asset_category, Recommendation.asset_id).where(
+                Recommendation.status == "taken"
+            ).distinct()
+            result_taken = await session.execute(q_taken)
+            exclude_taken = {(row[0], row[1]) for row in result_taken.all()}
+            from app.core.preferences import get_preferred_risk, get_risk_budget_1r
+            payload = analysis.payload or {}
+            by_asset_sentiment = payload.get("by_asset_sentiment") or None
+            active_events = payload.get("active_events") or None
+            print(f"[BATCH] Sentiment tags: {len(by_asset_sentiment) if by_asset_sentiment else 0}, excluded taken: {len(exclude_taken)}")
+            # Run heavy sync work off the asyncio loop so HTTP (e.g. /api/recommendations) stays responsive.
+            _build = partial(
+                build_daily_candidates,
+                by_asset_sentiment=by_asset_sentiment,
+                preferred_risk=get_preferred_risk(),
+                tie_seed=batch_id,
+                exclude_taken=exclude_taken,
+                active_events=active_events,
+                risk_budget_1r=get_risk_budget_1r(),
             )
-            session.add(rec)
-        await session.commit()
+            candidates = await asyncio.to_thread(_build)
+            print(f"[BATCH] Candidates built: {len(candidates)}")
+            for c in candidates:
+                print(f"  [{c.asset_category}] {c.asset_id} dir={c.direction} conf={c.confidence_score} rr={c.risk_reward}")
+            if not candidates:
+                print("[BATCH] No candidates passed filters — nothing to save")
+                return
+            now = datetime.now(timezone.utc)
+            from app.services.research import build_research_context, generate_rationale
+            for c in candidates:
+                rationale_text = None
+                try:
+                    ctx = await build_research_context(session, c.asset_id, c.asset_category)
+                    ctx["buy_in_price"] = c.buy_in_price
+                    ctx["direction"] = c.direction
+                    rationale_text = await generate_rationale(ctx)
+                except Exception as exc:
+                    print(f"  [BATCH] LLM rationale failed for {c.asset_id}: {exc}")
+                # Persist regime / divergence / event hints with technical notes (Candidate.market_regime_note is not a DB column)
+                _reg_note = getattr(c, "market_regime_note", None)
+                _vol = c.volatility_notes
+                if _reg_note and _vol:
+                    _combined_notes = f"{_reg_note}; {_vol}"
+                elif _reg_note:
+                    _combined_notes = _reg_note
+                else:
+                    _combined_notes = _vol
+                rec = Recommendation(
+                    id=str(uuid4()),
+                    created_at=now,
+                    batch_id=batch_id,
+                    asset_category=c.asset_category,
+                    asset_id=c.asset_id,
+                    buy_in_price=c.buy_in_price,
+                    stop_loss=c.stop_loss,
+                    take_profit=c.take_profit,
+                    expiry_date=c.expiry_date,
+                    rationale_ref=analysis.id,
+                    rationale_text=rationale_text,
+                    risk_tier=c.risk_tier,
+                    direction=c.direction,
+                    confidence_score=c.confidence_score,
+                    risk_reward=c.risk_reward,
+                    volatility_notes=_combined_notes,
+                    status="pending",
+                    suggested_risk_pct=getattr(c, "suggested_risk_pct", None),
+                    min_confidence_gate=getattr(c, "min_confidence_gate", None),
+                    shadow_b_threshold=getattr(c, "shadow_b_threshold", None),
+                    shadow_b_pass=getattr(c, "shadow_b_pass", None),
+                )
+                session.add(rec)
+            await session.commit()
+            print(f"[BATCH] Saved {len(candidates)} recommendations")
+            
+            # Send notification
+            try:
+                from app.services.notifications import send_notification, EVENT_BATCH_READY
+                cats = {}
+                for c in candidates:
+                    cat = c.asset_category or "other"
+                    cats[cat] = cats.get(cat, 0) + 1
+                await send_notification(EVENT_BATCH_READY, {
+                    "count": len(candidates),
+                    "categories": cats,
+                    "batch_id": batch_id,
+                })
+            except Exception as notify_exc:
+                print(f"[BATCH] Notification failed (non-critical): {notify_exc}")
+    except Exception as exc:
+        print(f"[BATCH] ERROR: {exc}")
+        import traceback
+        traceback.print_exc()
 
 
 async def job_update_active_trades() -> None:
-    """Refresh SL/TP/expiry for active trades only (PLAN_MODE C4). No new recommendations."""
+    """
+    Professional trade management lifecycle for active trades:
+    1. OPEN phase: Track price movement, compute ATR trailing SL/TP
+    2. At 1R profit (risk = |entry - SL|): suggest moving SL to breakeven -> PARTIAL_TP phase
+    3. TRAILING phase: SL only moves favorably, trail behind structure
+    4. If price hits TP or SL -> mark CLOSED
+    Regime-aware: detects regime transitions and flags trades needing review.
+    """
+    def _regime_prep() -> tuple[Optional[RegimeTransition], Optional[str]]:
+        clear_cache()
+        market_ctx = build_market_context()
+        rid = market_ctx.regime.regime if market_ctx else None
+        trans = detect_regime_transition(rid) if rid else None
+        return trans, rid
+
+    transition, regime_id = await asyncio.to_thread(_regime_prep)
+    if transition:
+        print(f"[UPDATE_TRADES] {transition.description()}")
+        # Send regime change notification
+        try:
+            from app.services.notifications import send_notification, EVENT_REGIME_CHANGE
+            flagged = get_trades_needing_review(transition)
+            await send_notification(EVENT_REGIME_CHANGE, {
+                "old_regime": transition.old_regime,
+                "new_regime": transition.new_regime,
+                "flagged_count": len(flagged) if flagged else 0,
+            })
+        except Exception as notify_exc:
+            print(f"[UPDATE_TRADES] Notification failed (non-critical): {notify_exc}")
+
     async with async_session_factory() as session:
-        q = select(ActiveTrade)
+        # Load latest analysis for sentiment lookup
+        analysis = await get_latest_analysis(session)
+        by_asset_sentiment = (analysis.payload or {}).get("by_asset_sentiment", {}) if analysis and analysis.payload else {}
+
+        q = select(ActiveTrade).options(selectinload(ActiveTrade.recommendation))
         result = await session.execute(q)
         now = datetime.now(timezone.utc)
         for trade in result.scalars().all():
-            # Stub: leave values as-is; real logic will pull from latest analysis/prices
+            rec = trade.recommendation
+            if not rec:
+                continue
+            symbol = get_yf_symbol(rec.asset_category, rec.asset_id)
+            if not symbol:
+                trade.last_updated = now
+                continue
+            snap = build_snapshot(symbol)
+            if not snap or snap.price <= 0:
+                trade.last_updated = now
+                continue
+
+            direction = getattr(rec, "direction", "long") or "long"
+            current_price = snap.price
+            entry_price = rec.buy_in_price
+            original_sl = trade.current_sl
+            risk = abs(entry_price - original_sl)
+            phase = getattr(trade, "trade_phase", "open") or "open"
+
+            # Expired: if still open and past expiry_date, close and log outcome
+            today = date.today()
+            if phase == "open" and getattr(rec, "expiry_date", None) and rec.expiry_date < today:
+                trade.trade_phase = "closed_expired"
+                if getattr(trade, "outcome", None) is None:
+                    trade.outcome = "expired"
+                    trade.outcome_at = now
+                    trade.closing_price = current_price
+                phase = "closed_expired"
+
+            # Track extreme prices for trailing
+            if direction == "long":
+                if trade.highest_price is None or current_price > trade.highest_price:
+                    trade.highest_price = current_price
+            else:
+                if trade.lowest_price is None or current_price < trade.lowest_price:
+                    trade.lowest_price = current_price
+
+            # Phase transitions
+            if phase == "open" and risk > 0:
+                # Check if we've reached 1R profit (reward = risk distance)
+                if direction == "long" and current_price >= entry_price + risk:
+                    trade.trade_phase = "partial_tp"
+                    phase = "partial_tp"
+                elif direction == "short" and current_price <= entry_price - risk:
+                    trade.trade_phase = "partial_tp"
+                    phase = "partial_tp"
+
+            if phase == "partial_tp" and not trade.breakeven_hit:
+                # Move SL to breakeven (entry price + small buffer)
+                buffer = risk * 0.05  # 5% of risk as buffer above breakeven
+                if direction == "long":
+                    trade.breakeven_hit = True
+                    # SL moves to entry + buffer
+                    sl_breakeven = round(entry_price + buffer, 2)
+                    if trade.suggested_sl is None or sl_breakeven > trade.suggested_sl:
+                        trade.suggested_sl = sl_breakeven
+                else:
+                    trade.breakeven_hit = True
+                    sl_breakeven = round(entry_price - buffer, 2)
+                    if trade.suggested_sl is None or sl_breakeven < trade.suggested_sl:
+                        trade.suggested_sl = sl_breakeven
+                trade.trade_phase = "trailing"
+                phase = "trailing"
+
+            # ATR-based trailing (all phases)
+            sl, tp = compute_atr_levels(current_price, rec.risk_tier, snapshot=snap, direction=direction)
+
+            # SL only moves in favorable direction
+            if trade.suggested_sl is not None:
+                if direction == "long":
+                    sl = max(sl, trade.suggested_sl)
+                else:
+                    sl = min(sl, trade.suggested_sl)
+
+            # Phase check: if current price has hit TP or SL, mark closed and log outcome
+            if direction == "long":
+                if current_price <= (trade.suggested_sl or original_sl):
+                    trade.trade_phase = "closed_sl"
+                    if getattr(trade, "outcome", None) is None:
+                        trade.outcome = "hit_sl"
+                        trade.outcome_at = now
+                        trade.closing_price = current_price
+                elif current_price >= rec.take_profit:
+                    trade.trade_phase = "closed_tp"
+                    if getattr(trade, "outcome", None) is None:
+                        trade.outcome = "hit_tp"
+                        trade.outcome_at = now
+                        trade.closing_price = current_price
+            else:
+                if current_price >= (trade.suggested_sl or original_sl):
+                    trade.trade_phase = "closed_sl"
+                    if getattr(trade, "outcome", None) is None:
+                        trade.outcome = "hit_sl"
+                        trade.outcome_at = now
+                        trade.closing_price = current_price
+                elif current_price <= rec.take_profit:
+                    trade.trade_phase = "closed_tp"
+                    if getattr(trade, "outcome", None) is None:
+                        trade.outcome = "hit_tp"
+                        trade.outcome_at = now
+                        trade.closing_price = current_price
+
+            # Signal flip detection: re-evaluate direction from current data (regime-aware)
+            pair = get_sentiment_score_and_count(rec.asset_category, rec.asset_id, by_asset_sentiment)
+            current_sentiment = pair[0] if pair else None
+            current_signal = determine_direction(current_sentiment, snap, regime=regime_id)
+            flip_count = getattr(trade, "signal_flip_count", 0) or 0
+            if current_signal != direction:
+                trade.signal_flip_count = min(flip_count + 1, 10)
+            else:
+                trade.signal_flip_count = max(flip_count - 1, 0)
+
+            trade.suggested_sl = sl
+            trade.suggested_tp = tp
+            trade.suggested_at = now
             trade.last_updated = now
+            level = ActiveTradeLevel(
+                active_trade_id=trade.id,
+                sl=sl,
+                tp=tp,
+                created_at=now,
+                source=f"scheduled_update_{phase}",
+            )
+            session.add(level)
+        await session.commit()
+
+
+async def job_daily_briefing() -> None:
+    """Run daily briefing checklist and store result."""
+    async with async_session_factory() as session:
+        await run_briefing(session)
+        await session.commit()
+
+
+async def job_cleanup_feed_items() -> None:
+    """Delete feed_items older than feed_max_age_days."""
+    async with async_session_factory() as session:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=settings.feed_max_age_days)
+        await session.execute(delete(FeedItem).where(FeedItem.fetched_at < cutoff))
         await session.commit()
 
 
 def start_scheduler() -> AsyncIOScheduler:
-    """Schedule jobs. Call from main after uvicorn or run in worker."""
+    """Schedule jobs."""
     scheduler = AsyncIOScheduler()
-    # Ingestion + sentiment: every 2h (align with plan)
     scheduler.add_job(
         job_ingest_and_sentiment,
         "interval",
         hours=settings.analysis_run_interval_hours,
         id="ingest_sentiment",
     )
-    # Analysis: every 2h
     scheduler.add_job(
         job_run_analysis,
         "interval",
         hours=settings.analysis_run_interval_hours,
         id="run_analysis",
     )
-    # Daily batch: once per day at configured hour
     scheduler.add_job(
         job_daily_batch,
         "cron",
@@ -141,12 +379,26 @@ def start_scheduler() -> AsyncIOScheduler:
         minute=0,
         id="daily_batch",
     )
-    # Active trades update: every 2h
+    briefing_hour = min(23, (settings.daily_batch_hour + 1) % 24)
+    scheduler.add_job(
+        job_daily_briefing,
+        "cron",
+        hour=briefing_hour,
+        minute=5,
+        id="daily_briefing",
+    )
     scheduler.add_job(
         job_update_active_trades,
         "interval",
         hours=settings.update_active_trades_interval_hours,
         id="update_active_trades",
+    )
+    scheduler.add_job(
+        job_cleanup_feed_items,
+        "cron",
+        hour=4,
+        minute=0,
+        id="cleanup_feed_items",
     )
     scheduler.start()
     return scheduler
