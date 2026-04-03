@@ -4,6 +4,156 @@ All notable changes to this project will be documented here.
 
 ---
 
+## [Unreleased] — 2026-04-03
+
+### Branch: `ui/recommendations-table-improvements`
+
+---
+
+### Added
+
+#### `app/static/active-trades.html` — SL/TP Level History Chart (TradingView Lightweight Charts)
+
+- Added TradingView Lightweight Charts v4.2.0 (CDN, pinned to avoid v5 breaking API changes) to the Active Trades page
+- Each trade's level history panel now shows an interactive dark-mode chart with:
+  - Green line — Take Profit over time
+  - Red line — Stop Loss over time
+  - Dashed white line — Entry price (constant reference)
+- Chart initializes lazily on first panel open (avoids zero-width issue when panel is hidden)
+- `ResizeObserver` per chart instance handles container width changes
+- All chart instances are destroyed and re-created on data reload to prevent stale state
+- `.history-layout` CSS splits the panel into left (table) and right (chart) at 55%/45%
+
+---
+
+#### `app/static/dashboard.html` — Renamed to Configuration + Tabbed Layout
+
+- Page title and nav link renamed from "Dashboard" to "Configuration" across all 8 HTML pages
+- Nav icon changed from `layout-dashboard` to `sliders-horizontal`
+- All sections reorganized into 5 tabs with segmented control UI:
+  - **Settings** — Risk preference, LLM provider, Webhook notifications
+  - **Pipeline** — Pipeline actions, Market regime status
+  - **Market** — Sector regimes, Correlations
+  - **Calibration** — Confidence calibration stats
+  - **Docs** — Metric explanations, Quick navigation
+- Tab state persisted to URL hash (`#settings`, `#pipeline`, etc.) and restored on page load
+
+---
+
+#### `app/static/dashboard.html` — Market Regime Status Card Redesign
+
+- Full visual redesign of the Market Regime card to a trading-style layout:
+  - Gradient progress bar (red → yellow → green) spanning Risk-Off to Risk-On
+  - Animated spring-easing marker (`cubic-bezier(.34,1.4,.64,1)`) that moves to current regime position
+  - Large uppercase regime badge with color-coded background
+  - Description line below badge summarizing what the regime means
+- `REGIME_META` object maps regime names to marker position, color, and description text
+- Replaced static "LIVE" badge with a 60-second countdown timer:
+  - Starts green, transitions to yellow at 30s, red + blink at 10s
+  - Resets and re-fetches regime data at 0
+- Verbose regime description text moved to a CSS-only tooltip on an info (ⓘ) icon
+- Tooltip positioned below-right of icon with upward-pointing arrow; does not overflow viewport
+- Duration and Flagged trade count displayed as stat chips below the badge
+
+---
+
+#### `app/services/regime_monitor.py` — Persist Regime State Across Restarts
+
+- Added `_STATE_FILE = Path("./data/regime_state.json")` (same Docker volume as SQLite DB)
+- `_load_state()` — reads JSON once per process on first call (guarded by `_state_loaded` flag)
+- `_save_state()` — writes `{regime, since}` JSON after every state change
+- `detect_regime_transition()` now calls `_load_state()` on entry and `_save_state()` after updates
+- `reset_regime_tracking()` now also deletes the JSON file and resets `_state_loaded`
+- Regime duration (`since` timestamp) now survives container restarts
+
+---
+
+#### `app/api/routes.py` — Fixed Duration Reset on `/api/regime/status`
+
+- Root cause: endpoint was calling `build_market_context()` + `detect_regime_transition()` on every 60-second UI poll; yfinance data oscillating near VIX thresholds caused regime to flip each call, resetting `_last_regime_at` to `now()`
+- Fix: endpoint now only reads persisted state via `get_current_regime_state()` — no live market fetch
+- One-time bootstrap added: if `current_regime` is `None` (fresh install, no state file), the endpoint fetches live market context once to initialize state
+
+---
+
+#### `app/static/dashboard.html` — Risk Preference Card Redesign
+
+- Replaced verbose inline `<p class="meta">` explanations with a clean row-based layout
+- Each setting is a horizontal row: label (left) + input (right), separated by a bottom border
+- All explanatory text moved into CSS-only tooltips on ⓘ info icon buttons (reuses `.help-btn` / `.help-tooltip` pattern)
+- **Risk stance** — select dropdown, right-aligned
+- **Risk budget per batch** — number input + "%" unit label
+- **Sentiment decay half-life** — number input + "hours" unit label
+- **Min. confidence thresholds** — colored regime tags (green/yellow/red pill) above each input in a flex row
+- **A/B shadow mode** — replaced bare checkbox with an animated toggle switch (CSS-only, no JS)
+- **B delta sub-row** — indented with left accent border, only visible when shadow mode is enabled; collapses when toggled off
+- New CSS classes: `.pref-row`, `.pref-label-wrap`, `.pref-label`, `.pref-input-wrap`, `.pref-unit`, `.pref-regime-grid`, `.pref-regime-cell`, `.regime-tag`, `.toggle-switch`, `.toggle-track`, `.toggle-thumb`, `.badge-b`, `.pref-sub-row`
+
+---
+
+#### `app/services/pipeline_progress.py` — New: In-Memory Pipeline Progress Tracking
+
+- New singleton module providing shared pipeline state readable by the API
+- `start()` — resets all state, records `started_at`
+- `update(pct, stage, message)` — updates progress mid-run (clamped 0–99)
+- `log_stage(name, status, detail, warnings)` — records a completed stage result with status `ok | warn | error | skipped`
+- `finish(error=None)` — marks run complete; sets `pct=100` on success or records error string
+- `get()` — returns JSON-serialisable dict including `running`, `pct`, `stage`, `message`, `error`, `elapsed_seconds`, and `stages[]` list
+
+---
+
+#### `app/jobs/scheduler.py` — Pipeline Progress Instrumentation
+
+- `job_ingest_and_sentiment()`:
+  - `fetch_all_feeds()` wrapped in `asyncio.to_thread()` (was blocking the event loop during RSS network I/O)
+  - VADER scoring loop wrapped in `asyncio.to_thread()` (CPU-bound sync work)
+  - 6 progress checkpoints: 2% → 8% → 12% → 12–25% (per-item) → 25%
+  - Logs stage result: feed count, scored item count
+- `job_run_analysis()`:
+  - 3 progress checkpoints: 27% → 32% → 50%
+  - Logs stage result on completion
+- `job_daily_batch()`:
+  - 8 progress checkpoints: 52% → 55% → 60% → 60–96% (per LLM call, shows asset name) → 97% → 100%
+  - Tracks `llm_failures[]` list — assets where rationale generation failed
+  - Logs stage result: candidate count, category breakdown (e.g. "3 stocks, 2 commodities"), rationale success rate, warnings list for each LLM failure
+
+---
+
+#### `app/api/routes.py` — Pipeline Progress API + Background Execution
+
+- `GET /api/pipeline/progress` — returns current `pipeline_progress.get()` state for polling
+- `POST /api/actions/run-pipeline-once` — refactored to:
+  - Return `202` immediately (fire-and-forget via `asyncio.create_task()`)
+  - Guard against double-run: returns `{"ok": false}` if already running
+  - Pipeline runs as background task; HTTP server remains responsive for progress polls
+
+---
+
+#### `app/static/dashboard.html` — Pipeline Progress Bar
+
+- **Run full pipeline** button replaced by animated progress bar during execution:
+  - White background, blue fill sweeping left → right (`transition: width .6s cubic-bezier`)
+  - Amber text (`#d97706`) centered over bar: stage message + percentage
+  - Flashes green briefly on completion, then fades back to normal button
+- Polls `GET /api/pipeline/progress` every 1.5 seconds while running
+- On error: toast shown, bar dismissed, button restored
+- Guard: result panel hidden and bar reset on each new run start
+
+---
+
+#### `app/static/dashboard.html` — Pipeline Result Status Panel
+
+- After each pipeline run a result panel appears below the button showing per-stage outcomes:
+  - ✅ Green check — stage completed successfully
+  - ⚠️ Yellow warning — stage completed with non-fatal issues (e.g. some LLM rationales failed)
+  - ❌ Red X — stage errored out
+  - Inline warning list for each LLM failure: `{asset_id}: {error}`
+- Run elapsed time shown in panel header (e.g. `1m 43s`)
+- Panel hidden when a new run starts
+- Inline SVG icons (no external dependency)
+
+---
+
 ## [Unreleased] — 2026-03-27
 
 ### Branch: `ui_improvements_1`

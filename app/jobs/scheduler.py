@@ -65,6 +65,11 @@ async def job_ingest_and_sentiment() -> None:
         await asyncio.to_thread(_score_all, unprocessed)
         await session.commit()
         progress.update(25, "ingest", "Ingestion complete")
+        progress.log_stage(
+            "Ingest & Sentiment",
+            "ok",
+            f"Fetched {len(items)} feed items, scored {total} new items",
+        )
 
 
 async def job_run_analysis() -> None:
@@ -76,6 +81,7 @@ async def job_run_analysis() -> None:
         await run_analysis(session)
         await session.commit()
     progress.update(50, "analysis", "Analysis complete")
+    progress.log_stage("Market Analysis", "ok", "Sentiment aggregated, price snapshots fetched, divergence detected")
 
 
 async def job_daily_batch() -> None:
@@ -129,9 +135,11 @@ async def job_daily_batch() -> None:
                 print(f"  [{c.asset_category}] {c.asset_id} dir={c.direction} conf={c.confidence_score} rr={c.risk_reward}")
             if not candidates:
                 print("[BATCH] No candidates passed filters — nothing to save")
+                progress.log_stage("Recommendations", "warn", "No candidates passed filters — batch skipped")
                 return
             now = datetime.now(timezone.utc)
             total_candidates = len(candidates)
+            llm_failures = []
             progress.update(60, "batch", f"Generating rationales for {total_candidates} candidates…")
             from app.services.research import build_research_context, generate_rationale
             for i, c in enumerate(candidates):
@@ -145,6 +153,7 @@ async def job_daily_batch() -> None:
                     rationale_text = await generate_rationale(ctx)
                 except Exception as exc:
                     print(f"  [BATCH] LLM rationale failed for {c.asset_id}: {exc}")
+                    llm_failures.append(f"{c.asset_id}: {exc}")
                 # Persist regime / divergence / event hints with technical notes (Candidate.market_regime_note is not a DB column)
                 _reg_note = getattr(c, "market_regime_note", None)
                 _vol = c.volatility_notes
@@ -182,13 +191,24 @@ async def job_daily_batch() -> None:
             await session.commit()
             print(f"[BATCH] Saved {len(candidates)} recommendations")
 
+            # Build category breakdown for log
+            cats = {}
+            for c in candidates:
+                cat = c.asset_category or "other"
+                cats[cat] = cats.get(cat, 0) + 1
+            cat_str = ", ".join(f"{v} {k}" for k, v in sorted(cats.items()))
+            batch_status = "warn" if llm_failures else "ok"
+            progress.log_stage(
+                "Recommendations",
+                batch_status,
+                f"Saved {len(candidates)} recommendations ({cat_str}); "
+                f"{total_candidates - len(llm_failures)}/{total_candidates} rationales generated",
+                warnings=llm_failures,
+            )
+
             # Send notification
             try:
                 from app.services.notifications import send_notification, EVENT_BATCH_READY
-                cats = {}
-                for c in candidates:
-                    cat = c.asset_category or "other"
-                    cats[cat] = cats.get(cat, 0) + 1
                 await send_notification(EVENT_BATCH_READY, {
                     "count": len(candidates),
                     "categories": cats,
