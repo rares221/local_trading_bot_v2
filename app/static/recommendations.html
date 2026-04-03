@@ -8,7 +8,9 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/css/common.css">
+  <link rel="stylesheet" href="https://unpkg.com/tabulator-tables@6.3.1/dist/css/tabulator.min.css">
   <script src="/static/js/icons.js"></script>
+  <script src="https://unpkg.com/tabulator-tables@6.3.1/dist/js/tabulator.min.js"></script>
   <style>
     /* ── Research modal overrides ── */
     .research-modal {
@@ -154,12 +156,56 @@
     }
 
     /* Confidence arc */
-    .conf-arc-wrap {
-      display: flex; align-items: center; gap: 6px;
+    .conf-arc-wrap { display: flex; align-items: center; gap: 6px; }
+    .conf-arc { width: 32px; height: 16px; overflow: visible; }
+
+    /* ── Tabulator theme overrides (match design system) ── */
+    .tabulator {
+      border: none !important;
+      background: transparent !important;
+      font-family: var(--font-sans) !important;
+      font-size: 13px !important;
     }
-    .conf-arc {
-      width: 32px; height: 16px; overflow: visible;
+    .tabulator .tabulator-header {
+      background: var(--secondary) !important;
+      border-bottom: 1px solid var(--border) !important;
+      border-top: none !important;
     }
+    .tabulator .tabulator-col {
+      background: var(--secondary) !important;
+      border-right: none !important;
+      color: var(--muted-foreground) !important;
+      font-size: 11px !important; font-weight: 700 !important;
+      text-transform: uppercase !important; letter-spacing: .05em !important;
+    }
+    .tabulator .tabulator-col:hover { background: var(--border) !important; }
+    .tabulator-col-content { padding: 6px 10px !important; }
+    .tabulator .tabulator-row {
+      background: var(--card) !important;
+      border-bottom: 1px solid var(--border) !important;
+      color: var(--foreground) !important;
+      min-height: 44px !important;
+    }
+    .tabulator .tabulator-row .tabulator-cell { vertical-align: middle !important; }
+    .tabulator .tabulator-row:hover { background: var(--secondary) !important; }
+    .tabulator .tabulator-row .tabulator-cell {
+      border-right: none !important;
+      padding: 7px 10px !important;
+      overflow: visible !important;
+    }
+    .tabulator .tabulator-footer { display: none !important; }
+    .tabulator-col-sorter-element { color: var(--muted-foreground) !important; }
+    .tabulator .tabulator-col.tabulator-sortable .tabulator-col-title { padding-right: 20px !important; }
+    .tabulator-col-sorter { color: var(--muted-foreground) !important; }
+    .tabulator-sortable[aria-sort="ascending"] .tabulator-col-sorter,
+    .tabulator-sortable[aria-sort="descending"] .tabulator-col-sorter { color: var(--primary) !important; }
+    .tabulator-placeholder { color: var(--muted-foreground) !important; padding: 16px !important; }
+    /* Confidence mini-bar */
+    .conf-bar-wrap { width: 64px; height: 3px; border-radius: 2px; background: var(--border); overflow: hidden; margin-top: 3px; }
+    .conf-bar-fill { height: 100%; border-radius: 2px; transition: width .3s; }
+    /* Section title row */
+    .tab-section-header { display:flex; align-items:center; justify-content:space-between; margin-bottom: 10px; }
+    .tab-section-count { font-size:12px; color:var(--muted-foreground); background:var(--secondary); border:1px solid var(--border); border-radius:99px; padding:2px 9px; }
   </style>
 </head>
 <body>
@@ -202,20 +248,32 @@
     <div id="loading" class="loading-overlay"><span class="spinner spinner--lg"></span> Loading recommendations&hellip;</div>
     <div id="content" style="display:none;">
       <section class="card" id="stocks-section">
-        <h2 class="section-title">Stocks</h2>
-        <div class="table-wrap table-wrap--recommendations"><table class="table--recommendations"><thead id="stocks-head"></thead><tbody id="stocks-body"></tbody></table></div>
+        <div class="tab-section-header">
+          <h2 class="section-title" style="margin:0;">Stocks</h2>
+          <span class="tab-section-count" id="stocks-count">0</span>
+        </div>
+        <div id="stocks-table"></div>
       </section>
       <section class="card" id="commodities-section">
-        <h2 class="section-title">Commodities</h2>
-        <div class="table-wrap table-wrap--recommendations"><table class="table--recommendations"><thead id="commodities-head"></thead><tbody id="commodities-body"></tbody></table></div>
+        <div class="tab-section-header">
+          <h2 class="section-title" style="margin:0;">Commodities</h2>
+          <span class="tab-section-count" id="commodities-count">0</span>
+        </div>
+        <div id="commodities-table"></div>
       </section>
       <section class="card" id="indices-section">
-        <h2 class="section-title">Indices</h2>
-        <div class="table-wrap table-wrap--recommendations"><table class="table--recommendations"><thead id="indices-head"></thead><tbody id="indices-body"></tbody></table></div>
+        <div class="tab-section-header">
+          <h2 class="section-title" style="margin:0;">Indices</h2>
+          <span class="tab-section-count" id="indices-count">0</span>
+        </div>
+        <div id="indices-table"></div>
       </section>
       <section class="card" id="other-section">
-        <h2 class="section-title">Other</h2>
-        <div class="table-wrap table-wrap--recommendations"><table class="table--recommendations"><thead id="other-head"></thead><tbody id="other-body"></tbody></table></div>
+        <div class="tab-section-header">
+          <h2 class="section-title" style="margin:0;">Other</h2>
+          <span class="tab-section-count" id="other-count">0</span>
+        </div>
+        <div id="other-table"></div>
       </section>
     </div>
 
@@ -374,7 +432,7 @@
       if (s === 'skipped') return '<span class="badge badge--gray">Skipped</span>';
       return '<span class="badge badge--blue">Pending</span>';
     }
-    function fmtNum(v)  { return v != null ? Number(v).toFixed(2) : '—'; }
+    function fmtNum(v)  { return v != null ? Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—'; }
     function fmtExpiry(iso) {
       if (!iso) return '—';
       const exp = new Date(iso + 'T00:00:00');
@@ -754,92 +812,154 @@
       }
     }
 
-    /* ── Table helpers ── */
-    const THEAD = '<tr><th>Asset</th><th>Dir</th><th class="num">Entry</th><th class="num">Current</th><th class="num">SL</th><th class="num">TP</th><th class="num">R:R</th><th>Conf</th><th>Risk</th><th class="num">Size</th><th>Expiry</th><th>Actions</th></tr>';
+    /* ── Tabulator setup ── */
+    const _tabInstances = {};
+    const _recsById = {};
 
-    function buildRow(rec) {
-      const tr = document.createElement('tr');
-      const actions = rec.status === 'pending'
-        ? '<button class="btn btn-sm btn--primary" data-do="took-it">' + icon('check', 13) + ' Took it</button>' +
-          '<button class="btn btn-sm btn--secondary" data-do="skipped">' + icon('x', 13) + ' Skip</button>' +
-          '<button class="btn btn-sm btn--secondary" data-do="research">' + icon('search', 13) + ' Research</button>'
-        : '<button class="btn btn-sm btn--secondary" data-do="research">' + icon('search', 13) + ' Research</button>';
-      const sizePct = rec.suggested_risk_pct != null ? rec.suggested_risk_pct.toFixed(2) + '%' : '—';
+    const TAB_COLUMNS = [
+      {
+        title: 'Asset', field: 'asset_id', frozen: true, width: 130, headerSort: false,
+        headerTooltip: 'Asset symbol. Badges show trend alignment (↑/↓) and volatility regime (⚡ expanding, ◆ contracting).',
+        formatter(cell) {
+          const rec = cell.getRow().getData();
+          const p = parseVolatilityNotes(rec.volatility_notes);
+          let badges = '';
+          if (p.trendAligned === true)  badges += '<span class="indicator-badge indicator-badge--green" title="Multi-TF Aligned">↑</span>';
+          else if (p.trendAligned === false) badges += '<span class="indicator-badge indicator-badge--red" title="Multi-TF Conflicting">↓</span>';
+          if (p.volRegime === 'expanding')   badges += '<span class="indicator-badge indicator-badge--yellow" title="Vol Expanding">⚡</span>';
+          else if (p.volRegime === 'contracting') badges += '<span class="indicator-badge indicator-badge--blue" title="Vol Contracting">◆</span>';
+          const tip = escapeAttr((rec.volatility_notes || '') + (rec.status !== 'pending' ? ' [' + rec.status + ']' : ''));
+          return `<span class="font-semibold" title="${tip}">${escHtml(rec.asset_id)}${badges ? '<span class="indicator-badges">' + badges + '</span>' : ''}</span>`;
+        },
+      },
+      {
+        title: 'Dir', field: 'direction', minWidth: 70, hozAlign: 'center',
+        headerTooltip: 'Trade direction — Long (bullish, expect price to rise) or Short (bearish, expect price to fall).',
+        formatter: cell => dirBadge(cell.getValue()),
+        sorter: 'string',
+      },
+      {
+        title: 'Entry', field: 'buy_in_price', minWidth: 80, hozAlign: 'right', sorter: 'number',
+        headerTooltip: 'Suggested entry price — the price level at which to open the trade.',
+        formatter: cell => `<span class="num">${fmtNum(cell.getValue())}</span>`,
+      },
+      {
+        title: 'Current', field: 'current_price', minWidth: 100, hozAlign: 'right', sorter: 'number',
+        headerTooltip: 'Live market price with % change from entry price shown below.',
+        formatter(cell) {
+          const rec = cell.getRow().getData();
+          const cur = cell.getValue(), entry = rec.buy_in_price;
+          const priceStr = `<span class="num">${fmtNum(cur)}</span>`;
+          if (cur == null || !entry) return priceStr;
+          const pct = ((cur - entry) / entry) * 100;
+          const sign = pct >= 0 ? '+' : '';
+          const col = pct >= 0 ? '#10b981' : '#ef4444';
+          return priceStr + `<span style="font-size:10px;color:${col};margin-left:4px;font-variant-numeric:tabular-nums;">${sign}${pct.toFixed(1)}%</span>`;
+        },
+      },
+      {
+        title: 'SL', field: 'stop_loss', minWidth: 75, hozAlign: 'right', sorter: 'number',
+        headerTooltip: 'Stop Loss — price level to exit the trade if it moves against you, limiting your loss.',
+        formatter: cell => `<span class="num" style="color:#ef4444;">${fmtNum(cell.getValue())}</span>`,
+      },
+      {
+        title: 'TP', field: 'take_profit', minWidth: 75, hozAlign: 'right', sorter: 'number',
+        headerTooltip: 'Take Profit — target price to close the trade and lock in your gain.',
+        formatter: cell => `<span class="num" style="color:#10b981;">${fmtNum(cell.getValue())}</span>`,
+      },
+      {
+        title: 'R:R', field: 'risk_reward', minWidth: 55, hozAlign: 'right', sorter: 'number',
+        headerTooltip: 'Risk-to-Reward ratio. Higher is better — e.g. 2:1 means you risk 1 unit to potentially gain 2.',
+        formatter: cell => `<span class="num">${fmtRR(cell.getValue())}</span>`,
+      },
+      {
+        title: 'Conf', field: 'confidence_score', minWidth: 100, sorter: 'number',
+        headerTooltip: 'Confidence score (0–100%) from the engine. The smaller "cal" number below is the calibrated probability after statistical adjustment.',
+        formatter(cell) {
+          const rec = cell.getRow().getData();
+          const score = cell.getValue();
+          if (score == null) return '—';
+          const col = score >= 70 ? '#10b981' : score >= 40 ? '#f59e0b' : '#ef4444';
+          const cal = rec.confidence_calibrated;
+          const calHtml = cal != null
+            ? `<div style="font-size:10px;color:var(--muted-foreground);margin-top:1px;">cal ${Number(cal)}%</div>`
+            : '';
+          return `<span style="font-size:13px;font-weight:700;color:${col};font-variant-numeric:tabular-nums;">${score}%</span>` +
+                 `<div class="conf-bar-wrap"><div class="conf-bar-fill" style="width:${score}%;background:${col};"></div></div>` +
+                 calHtml;
+        },
+      },
+      {
+        title: 'B', field: 'shadow_b_pass', minWidth: 44, hozAlign: 'center', headerSort: false,
+        headerTooltip: 'Shadow-B filter — a secondary signal check. Green tick means it passed, dash means not evaluated.',
+        formatter: cell => shadowCell(cell.getRow().getData()),
+      },
+      {
+        title: 'Risk', field: 'risk_tier', minWidth: 80, hozAlign: 'center',
+        headerTooltip: 'Risk tier assigned to this trade — conservative, moderate, or aggressive — based on volatility and signal strength.',
+        formatter: cell => `<span class="badge badge--gray">${cell.getValue() || '—'}</span>`,
+      },
+      {
+        title: 'Size', field: 'suggested_risk_pct', minWidth: 58, hozAlign: 'right', sorter: 'number',
+        headerTooltip: 'Suggested position size — % of your total portfolio to risk on this trade, based on your risk stance.',
+        formatter: cell => cell.getValue() != null ? `<span class="num">${Number(cell.getValue()).toFixed(2)}%</span>` : '—',
+      },
+      {
+        title: 'Expiry', field: 'expiry_date', minWidth: 120, sorter: 'string',
+        headerTooltip: 'Expiry date — when this recommendation becomes stale. Days remaining shown in parentheses.',
+        formatter: cell => fmtExpiry(cell.getValue()),
+      },
+      {
+        title: 'Actions', field: 'id', minWidth: 190, headerSort: false,
+        headerTooltip: 'Took it — mark trade as entered. Skip — dismiss this recommendation. Research — view LLM analysis.',
+        formatter(cell) {
+          const rec = cell.getRow().getData();
+          const researchBtn = `<button class="btn btn-sm btn--secondary" data-do="research" data-id="${rec.id}" title="Research">${icon('search', 13)}</button>`;
+          if (rec.status !== 'pending') return `<div class="btn-group-rec">${researchBtn}</div>`;
+          return `<div class="btn-group-rec">
+            <button class="btn btn-sm btn--primary" data-do="took-it" data-id="${rec.id}">${icon('check', 13)} Took it</button>
+            <button class="btn btn-sm btn--secondary" data-do="skipped" data-id="${rec.id}">${icon('x', 13)} Skip</button>
+            ${researchBtn}
+          </div>`;
+        },
+      },
+    ];
 
-      // Parse volatility notes for indicator badges
-      const parsed = parseVolatilityNotes(rec.volatility_notes);
-      let indicators = '';
-      if (parsed.trendAligned === true) {
-        indicators += '<span class="indicator-badge indicator-badge--green" title="Multi-TF Aligned">↑</span>';
-      } else if (parsed.trendAligned === false) {
-        indicators += '<span class="indicator-badge indicator-badge--red" title="Multi-TF Conflicting">↓</span>';
-      }
-      if (parsed.volRegime === 'expanding') {
-        indicators += '<span class="indicator-badge indicator-badge--yellow" title="Vol Expanding">⚡</span>';
-      } else if (parsed.volRegime === 'contracting') {
-        indicators += '<span class="indicator-badge indicator-badge--blue" title="Vol Contracting">◆</span>';
-      }
-
-      const notesHtml = escapeAttr(rec.volatility_notes || '—');
-      const dropdownId = 'drop-' + rec.id;
-
-      tr.innerHTML =
-        '<td class="col-asset font-semibold">' +
-          '<div class="asset-dropdown-wrap">' +
-            '<button class="asset-btn" data-dropdown="' + dropdownId + '">' +
-              rec.asset_id + (indicators ? '<span class="indicator-badges">' + indicators + '</span>' : '') +
-            '</button>' +
-            '<div class="asset-dropdown" id="' + dropdownId + '">' +
-              '<div class="asset-dropdown-row"><span class="asset-dropdown-label">Status</span>' + statusBadge(rec.status) + '</div>' +
-              '<div class="asset-dropdown-row asset-dropdown-notes"><span class="asset-dropdown-label">Notes</span><span>' + notesHtml + '</span></div>' +
-            '</div>' +
-          '</div>' +
-        '</td>' +
-        '<td class="col-dir">' + dirBadge(rec.direction) + '</td>' +
-        '<td class="col-num-sm num">' + fmtNum(rec.buy_in_price) + '</td>' +
-        '<td class="col-num-sm num">' + fmtNum(rec.current_price) + '</td>' +
-        '<td class="col-num-sm num">' + fmtNum(rec.stop_loss) + '</td>' +
-        '<td class="col-num-sm num">' + fmtNum(rec.take_profit) + '</td>' +
-        '<td class="col-rr num">' + fmtRR(rec.risk_reward) + '</td>' +
-        '<td class="col-conf">' + confCell(rec) + '</td>' +
-        '<td class="col-shadow text-center">' + shadowCell(rec) + '</td>' +
-        '<td class="col-risk"><span class="badge badge--gray">' + (rec.risk_tier || '—') + '</span></td>' +
-        '<td class="col-size num text-sm">' + sizePct + '</td>' +
-        '<td class="col-expiry text-sm">' + fmtExpiry(rec.expiry_date) + '</td>' +
-        '<td class="col-actions"><div class="btn-group-rec">' + actions + '</div></td>';
-      const assetBtn = tr.querySelector('.asset-btn');
-      if (assetBtn) {
-        assetBtn.addEventListener('click', (e) => {
-          e.stopPropagation();
-          const dd = document.getElementById(assetBtn.dataset.dropdown);
-          const isOpen = dd.classList.contains('open');
-          document.querySelectorAll('.asset-dropdown.open').forEach(d => d.classList.remove('open'));
-          if (!isOpen) dd.classList.add('open');
-        });
-      }
-
-      tr.querySelectorAll('button[data-do]').forEach(btn => {
-        btn.addEventListener('click', async () => {
-          const act = btn.dataset.do;
-          if (act === 'research') { showResearch(rec.asset_id, rec.asset_category, rec.rationale_text || '', rec); return; }
-          btn.disabled = true; btn.innerHTML = '<span class="spinner spinner--white"></span>';
-          await fetch('/api/recommendations/' + rec.id + '/' + act, { method: 'POST' });
-          load();
-        });
-      });
-      return tr;
-    }
-
-    function render(headId, bodyId, sectionId, items) {
-      const head    = document.getElementById(headId);
-      const body    = document.getElementById(bodyId);
-      head.innerHTML = THEAD;
-      body.innerHTML = '';
-      if (!items || items.length === 0) {
-        body.innerHTML = '<tr><td colspan="12" class="table-empty">No recommendations in this category</td></tr>';
+    function createTable(tableId, countId, data) {
+      if (_tabInstances[tableId]) { _tabInstances[tableId].destroy(); }
+      const countEl = document.getElementById(countId);
+      if (countEl) countEl.textContent = (data || []).length;
+      if (!data || data.length === 0) {
+        document.getElementById(tableId).innerHTML =
+          '<div style="padding:14px 12px;color:var(--muted-foreground);font-size:13px;">No recommendations in this category</div>';
         return;
       }
-      items.forEach(rec => body.appendChild(buildRow(rec)));
+      data.forEach(r => { _recsById[r.id] = r; });
+      _tabInstances[tableId] = new Tabulator('#' + tableId, {
+        data,
+        layout: 'fitColumns',
+        columns: TAB_COLUMNS,
+        initialSort: [{ column: 'confidence_score', dir: 'desc' }],
+        vertAlign: 'middle',
+        rowFormatter(row) {
+          const s = row.getData().status;
+          if (s === 'taken' || s === 'skipped') row.getElement().style.opacity = '.55';
+        },
+        placeholder: 'No recommendations',
+      });
+      // Event delegation for action buttons
+      document.getElementById(tableId).addEventListener('click', async e => {
+        const btn = e.target.closest('[data-do]');
+        if (!btn) return;
+        const act = btn.dataset.do;
+        const rec = _recsById[btn.dataset.id];
+        if (!rec) return;
+        if (act === 'research') { showResearch(rec.asset_id, rec.asset_category, rec.rationale_text || '', rec); return; }
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner spinner--white"></span>';
+        await fetch('/api/recommendations/' + rec.id + '/' + act, { method: 'POST' });
+        load();
+      });
     }
 
     function renderMacroBanner(macro) {
@@ -896,10 +1016,10 @@
         } else if (calEl) {
           calEl.style.display = 'none';
         }
-        render('stocks-head',      'stocks-body',      'stocks-section',      by.stocks);
-        render('commodities-head', 'commodities-body', 'commodities-section', by.commodities);
-        render('indices-head',     'indices-body',     'indices-section',     by.indices);
-        render('other-head',       'other-body',       'other-section',       by.other);
+        createTable('stocks-table',      'stocks-count',      by.stocks      || []);
+        createTable('commodities-table', 'commodities-count', by.commodities || []);
+        createTable('indices-table',     'indices-count',     by.indices     || []);
+        createTable('other-table',       'other-count',       by.other       || []);
       } catch (e) {
         if (macroEl) macroEl.style.display = 'none';
         if (calEl) calEl.style.display = 'none';
@@ -910,10 +1030,6 @@
     }
     load();
 
-    // Close asset dropdowns when clicking outside
-    document.addEventListener('click', () => {
-      document.querySelectorAll('.asset-dropdown.open').forEach(d => d.classList.remove('open'));
-    });
   </script>
 </body>
 </html>
