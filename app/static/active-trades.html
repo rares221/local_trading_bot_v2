@@ -9,6 +9,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/css/common.css">
   <script src="/static/js/icons.js"></script>
+  <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
   <style>
     .trade-cards { display: flex; flex-direction: column; gap: var(--space-3); }
 
@@ -112,9 +113,56 @@
       border-top: 1px solid var(--border); background: var(--secondary);
     }
     .history-panel table {
-      font-size: 13px; max-width: 520px;
+      font-size: 13px;
       background: var(--card); border-radius: var(--radius); overflow: hidden;
     }
+
+    /* ── History layout: table + chart side by side ── */
+    .history-layout {
+      display: flex;
+      gap: var(--space-3);
+      align-items: flex-start;
+      flex-wrap: wrap;
+    }
+    .history-table-wrap { flex-shrink: 0; }
+    .history-chart-wrap {
+      flex: 1;
+      min-width: 260px;
+      background: #0f172a;
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: var(--radius);
+      padding: 12px 14px 10px;
+      overflow: hidden;
+    }
+    .history-chart-title { color: #64748b !important; }
+    .history-chart-legend { color: #64748b !important; }
+    .history-chart-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+    .history-chart-title {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      color: var(--muted-foreground);
+    }
+    .history-chart-legend {
+      display: flex;
+      gap: 10px;
+      font-size: 11px;
+      color: var(--muted-foreground);
+      align-items: center;
+    }
+    .history-chart-legend span {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    /* Dot stroke adapts to card background */
+    .history-chart-wrap svg circle { stroke: var(--card); }
 
     @media (max-width: 640px) {
       .trade-levels { grid-template-columns: 1fr; }
@@ -125,7 +173,7 @@
 </head>
 <body>
   <nav class="nav">
-    <a href="/dashboard"><span data-icon="layout-dashboard"></span> Dashboard</a>
+    <a href="/dashboard"><span data-icon="sliders-horizontal"></span> Configuration</a>
     <a href="/recommendations"><span data-icon="list-checks"></span> Recommendations</a>
     <a href="/research"><span data-icon="search"></span> Research</a>
     <a href="/analysis"><span data-icon="bar-chart-2"></span> Analysis</a>
@@ -186,6 +234,125 @@
       if (score == null) return '<span class="badge badge--gray">—</span>';
       const cls = score >= 70 ? 'badge--green' : score >= 40 ? 'badge--yellow' : 'badge--red';
       return `<span class="badge ${cls}">${score}%</span>`;
+    }
+
+    // ── Lightweight Charts: state ──────────────────────────────────────────────
+    let tradesData = [];
+    const chartInstances = {};
+
+    // Returns the HTML shell only — chart is initialised lazily on first open
+    function buildLevelChart(levels, idx) {
+      if (!levels || levels.length === 0) return '';
+      return `<div class="history-chart-wrap">
+        <div class="history-chart-header">
+          <span class="history-chart-title">SL / TP over time</span>
+          <div class="history-chart-legend">
+            <span><span style="display:inline-block;width:12px;height:2px;background:#10b981;border-radius:1px;vertical-align:middle;"></span> TP</span>
+            <span><span style="display:inline-block;width:12px;height:2px;background:#ef4444;border-radius:1px;vertical-align:middle;"></span> SL</span>
+            <span style="opacity:.6"><span style="display:inline-block;width:12px;border-top:2px dashed #64748b;vertical-align:middle;"></span> Entry</span>
+          </div>
+        </div>
+        <div id="lw-chart-${idx}" style="height:160px;"></div>
+      </div>`;
+    }
+
+    function initLevelChart(idx) {
+      if (chartInstances[idx]) return;          // already drawn
+      const trade = tradesData[idx];
+      if (!trade) return;
+      const container = document.getElementById('lw-chart-' + idx);
+      if (!container) return;
+
+      const levels = trade.levels || [];
+      const entry  = trade.buy_in_price;
+      if (levels.length === 0) return;
+
+      const bg      = '#0f172a';
+      const txtClr  = '#94a3b8';
+      const grid    = 'rgba(255,255,255,0.05)';
+      const border  = 'rgba(255,255,255,0.08)';
+
+      const chart = LightweightCharts.createChart(container, {
+        width:  container.clientWidth,
+        height: 160,
+        layout: {
+          background: { color: bg },
+          textColor: txtClr,
+          fontSize: 10,
+          fontFamily: 'Inter, system-ui, sans-serif',
+        },
+        grid: {
+          vertLines: { color: grid },
+          horzLines: { color: grid },
+        },
+        crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+        rightPriceScale: {
+          borderColor: border,
+          scaleMargins: { top: 0.15, bottom: 0.15 },
+        },
+        timeScale: {
+          borderColor: border,
+          timeVisible: true,
+          secondsVisible: false,
+          tickMarkFormatter: t => {
+            const d = new Date(t * 1000);
+            return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+          },
+        },
+        handleScroll: false,
+        handleScale:  false,
+      });
+
+      // Convert levels → { time (unix secs), value } — sort + dedupe
+      function toPoints(field) {
+        return levels
+          .filter(l => l[field] != null)
+          .map(l => ({ time: Math.floor(new Date(l.created_at).getTime() / 1000), value: l[field] }))
+          .sort((a, b) => a.time - b.time)
+          .filter((p, i, arr) => i === 0 || p.time !== arr[i - 1].time); // remove same-second dupes
+      }
+
+      const slPts = toPoints('sl');
+      const tpPts = toPoints('tp');
+
+      // TP line (green)
+      const tpSeries = chart.addLineSeries({
+        color: '#10b981', lineWidth: 2,
+        title: 'TP',
+        priceLineVisible: false, lastValueVisible: true,
+      });
+      tpSeries.setData(tpPts);
+      tpSeries.setMarkers(tpPts.map(p => ({ time: p.time, position: 'inBar', color: '#10b981', shape: 'circle', size: 1 })));
+
+      // SL line (red)
+      const slSeries = chart.addLineSeries({
+        color: '#ef4444', lineWidth: 2,
+        title: 'SL',
+        priceLineVisible: false, lastValueVisible: true,
+      });
+      slSeries.setData(slPts);
+      slSeries.setMarkers(slPts.map(p => ({ time: p.time, position: 'inBar', color: '#ef4444', shape: 'circle', size: 1 })));
+
+      // Entry price — constant dashed line across all timestamps
+      if (entry != null && slPts.length > 0) {
+        const times = [...new Set([...slPts, ...tpPts].map(p => p.time))].sort((a, b) => a - b);
+        const entrySeries = chart.addLineSeries({
+          color: '#64748b', lineWidth: 1, lineStyle: 2, // 2 = Dashed
+          title: 'Entry',
+          priceLineVisible: false, lastValueVisible: false,
+        });
+        entrySeries.setData(times.map(t => ({ time: t, value: entry })));
+      }
+
+      chart.timeScale().fitContent();
+
+      // Resize when container width changes
+      const ro = new ResizeObserver(() => {
+        if (container.clientWidth > 0) chart.resize(container.clientWidth, 160);
+      });
+      ro.observe(container);
+
+      chartInstances[idx] = { chart, ro };
     }
 
     function buildCard(t, idx) {
@@ -349,7 +516,9 @@
       /* History panel */
       if (levels.length > 0) {
         h += `<div class="history-panel" id="hist-${idx}" style="display:none;">
-          <table><thead><tr><th>Time</th><th>Source</th><th class="num">SL</th><th class="num">TP</th></tr></thead><tbody>`;
+          <div class="history-layout">
+            <div class="history-table-wrap">
+              <table><thead><tr><th>Time</th><th>Source</th><th class="num">SL</th><th class="num">TP</th></tr></thead><tbody>`;
         levels.forEach(L => {
           h += `<tr>
             <td class="text-sm">${fmtTime(L.created_at)}</td>
@@ -358,7 +527,11 @@
             <td class="num">${fmtNum(L.tp)}</td>
           </tr>`;
         });
-        h += `</tbody></table></div>`;
+        h += `</tbody></table>
+            </div>
+            ${buildLevelChart(levels, idx)}
+          </div>
+        </div>`;
       }
 
       h += `</div>`;
@@ -408,6 +581,10 @@
         if (!r.ok) { content.innerHTML = '<div class="alert alert--error">Failed to load active trades.</div>'; return; }
         const data  = await r.json();
         const items = data.items || [];
+        // Reset chart state on each reload
+        Object.values(chartInstances).forEach(c => { try { c.ro.disconnect(); c.chart.remove(); } catch(_){} });
+        Object.keys(chartInstances).forEach(k => delete chartInstances[k]);
+        tradesData = items;
         await loadRegimeAlerts();
         if (items.length === 0) {
           content.innerHTML = '<div class="empty-state"><p>No active trades yet.</p><p class="text-sm text-muted">Mark recommendations as "Took it" on the <a href="/recommendations">Recommendations</a> page.</p></div>';
@@ -422,11 +599,13 @@
 
         content.querySelectorAll('button[data-idx]').forEach(b => {
           b.addEventListener('click', function() {
-            const panel = document.getElementById('hist-' + this.dataset.idx);
+            const i     = parseInt(this.dataset.idx);
+            const panel = document.getElementById('hist-' + i);
             if (!panel) return;
             const show = panel.style.display === 'none';
             panel.style.display = show ? 'block' : 'none';
-            const count = (items[this.dataset.idx].levels||[]).length;
+            if (show) requestAnimationFrame(() => initLevelChart(i));
+            const count = (items[i].levels||[]).length;
             this.innerHTML = show
               ? icon('history', 13) + ' Hide level history'
               : icon('history', 13) + ' Level history (' + count + ')';

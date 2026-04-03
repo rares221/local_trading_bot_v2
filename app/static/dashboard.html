@@ -3,13 +3,343 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Dashboard — Trading Bot</title>
+  <title>Configuration — Trading Bot</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/css/common.css">
   <script src="/static/js/icons.js"></script>
   <style>
+    /* ── Segmented tab control ── */
+    .config-tabs {
+      display: flex;
+      gap: 3px;
+      padding: 4px;
+      background: var(--secondary);
+      border: 1px solid var(--border);
+      border-radius: calc(var(--radius) + 2px);
+      margin-bottom: var(--space-3);
+      overflow-x: auto;
+      flex-shrink: 0;
+    }
+    .config-tab-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 14px;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--muted-foreground);
+      background: none;
+      border: none;
+      border-radius: var(--radius);
+      cursor: pointer;
+      white-space: nowrap;
+      transition: color .15s, background .15s, box-shadow .15s;
+      font-family: inherit;
+    }
+    .config-tab-btn:hover { color: var(--foreground); }
+    .config-tab-btn:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+    .config-tab-btn.active {
+      color: var(--foreground);
+      background: var(--card);
+      box-shadow: var(--shadow);
+      font-weight: 600;
+    }
+    .config-panel[hidden] { display: none !important; }
+
+    /* 2-col grid inside a tab panel */
+    .config-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: var(--space-3);
+      margin-bottom: var(--space-3);
+    }
+    @media (max-width: 700px) { .config-grid { grid-template-columns: 1fr; } }
+
+    /* ── Market Regime card ── */
+    .regime-card { padding: var(--space-2); display: flex; flex-direction: column; gap: 18px; }
+    .regime-title-row {
+      display: flex; align-items: center; justify-content: space-between; margin: 0;
+    }
+    .regime-refresh-badge {
+      font-size: 11px; font-weight: 700; letter-spacing: .05em;
+      font-family: var(--font-mono); font-variant-numeric: tabular-nums;
+      border-radius: 999px; padding: 3px 10px;
+      border: 1px solid rgba(16,185,129,.3);
+      color: #10b981; background: rgba(16,185,129,.1);
+      transition: color .6s, background .6s, border-color .6s;
+      display: inline-block; min-width: 46px; text-align: center;
+    }
+    .regime-refresh-badge.state-yellow {
+      color: #f59e0b; background: rgba(245,158,11,.1); border-color: rgba(245,158,11,.3);
+    }
+    .regime-refresh-badge.state-red {
+      color: #ef4444; background: rgba(239,68,68,.1); border-color: rgba(239,68,68,.3);
+      animation: countdown-blink .7s ease-in-out infinite;
+    }
+    @keyframes countdown-blink {
+      0%, 100% { opacity: 1; } 50% { opacity: .35; }
+    }
+    /* Main badge */
+    .regime-main { display: flex; flex-direction: column; gap: 6px; }
+    .regime-badge {
+      display: inline-block;
+      font-size: 1.5rem; font-weight: 800;
+      letter-spacing: -.03em; text-transform: uppercase;
+      padding: 4px 0; border-radius: 6px;
+      transition: color .4s;
+    }
+    .regime-desc {
+      font-size: 12px; color: var(--muted-foreground);
+      margin: 0; line-height: 1.5;
+    }
+    /* Gradient spectrum bar */
+    .regime-bar-wrap { display: flex; flex-direction: column; gap: 6px; }
+    .regime-bar {
+      position: relative; height: 5px; border-radius: 99px;
+      background: linear-gradient(to right, #ef4444 0%, #f59e0b 50%, #10b981 100%);
+    }
+    .regime-bar-marker {
+      position: absolute; top: 50%;
+      transform: translate(-50%, -50%);
+      width: 13px; height: 13px; border-radius: 50%;
+      background: var(--card);
+      border: 2.5px solid var(--foreground);
+      box-shadow: 0 0 0 3px rgba(0,0,0,.08), 0 1px 4px rgba(0,0,0,.15);
+      transition: left .6s cubic-bezier(.34,1.4,.64,1), border-color .4s;
+    }
+    .regime-bar-labels {
+      display: flex; justify-content: space-between;
+      font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em;
+    }
+    .regime-bar-labels span:nth-child(1) { color: #ef4444; }
+    .regime-bar-labels span:nth-child(2) { color: #f59e0b; text-align: center; }
+    .regime-bar-labels span:nth-child(3) { color: #10b981; }
+    /* Stats strip */
+    .regime-stats {
+      display: flex; align-items: center; gap: 16px;
+      padding: 10px 12px;
+      background: var(--secondary); border-radius: var(--radius);
+      border: 1px solid var(--border);
+    }
+    .regime-stat { display: flex; align-items: baseline; gap: 5px; }
+    .regime-stat-val {
+      font-size: 1.1rem; font-weight: 700;
+      font-variant-numeric: tabular-nums; font-family: var(--font-mono);
+      color: var(--foreground);
+    }
+    .regime-stat-lbl { font-size: 11px; color: var(--muted-foreground); text-transform: uppercase; letter-spacing: .04em; }
+    .regime-stat-sep { width: 1px; height: 20px; background: var(--border); }
+    /* ── Help tooltip ── */
+    .help-btn {
+      position: relative;
+      display: inline-flex; align-items: center;
+      background: none; border: none; cursor: pointer;
+      color: var(--muted-foreground); padding: 2px 3px;
+      border-radius: 4px; vertical-align: middle; margin-left: 4px;
+      transition: color .15s;
+    }
+    .help-btn:hover, .help-btn:focus-visible { color: var(--foreground); outline: none; }
+    .help-tooltip {
+      display: none;
+      position: absolute;
+      top: calc(100% + 8px);
+      left: 0; transform: none;
+      width: 290px;
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 12px 14px;
+      font-size: 12px; line-height: 1.65; color: var(--foreground);
+      box-shadow: var(--shadow-lg); z-index: 300;
+      font-weight: 400; text-align: left; pointer-events: none;
+      white-space: normal;
+    }
+    .help-btn:hover .help-tooltip,
+    .help-btn:focus .help-tooltip { display: block; }
+    /* Arrow pointing up */
+    .help-tooltip::before {
+      content: ''; position: absolute;
+      bottom: 100%; left: 12px;
+      border: 7px solid transparent; border-bottom-color: var(--border);
+    }
+    .help-tooltip::after {
+      content: ''; position: absolute;
+      bottom: calc(100% - 1px); left: 12px;
+      border: 6px solid transparent; border-bottom-color: var(--card);
+    }
+
+    /* ── Preference rows ── */
+    .pref-row {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 12px; padding: 11px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .pref-row:last-child { border-bottom: none; padding-bottom: 0; }
+    .pref-row:first-child { padding-top: 0; }
+    .pref-row--multi { align-items: flex-start; }
+    .pref-label-wrap {
+      display: flex; align-items: center; gap: 2px; flex: 1; min-width: 0;
+    }
+    .pref-label {
+      font-size: 13px; font-weight: 500; color: var(--foreground);
+      white-space: nowrap;
+    }
+    .pref-label .pref-sub {
+      font-size: 11px; font-weight: 400; color: var(--muted-foreground);
+      margin-left: 6px;
+    }
+    .pref-input-wrap { display: flex; align-items: center; gap: 6px; }
+    .pref-input { width: 110px; text-align: right; }
+    .pref-unit {
+      font-size: 12px; color: var(--muted-foreground); white-space: nowrap;
+    }
+    .pref-regime-grid { display: flex; gap: 8px; flex-wrap: wrap; }
+    .pref-regime-cell { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+    .regime-tag {
+      font-size: 10px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .05em; padding: 2px 7px; border-radius: 4px;
+    }
+    .regime-tag.risk-on  { background: rgba(16,185,129,.15); color: #10b981; }
+    .regime-tag.cautious { background: rgba(245,158,11,.15);  color: #f59e0b; }
+    .regime-tag.risk-off { background: rgba(239,68,68,.15);   color: #ef4444; }
+    /* Toggle switch */
+    .toggle-switch { position: relative; display: inline-block; width: 40px; height: 22px; cursor: pointer; flex-shrink: 0; }
+    .toggle-switch input { opacity: 0; width: 0; height: 0; position: absolute; }
+    .toggle-track {
+      position: absolute; inset: 0;
+      background: var(--muted); border-radius: 22px;
+      transition: background .2s;
+    }
+    .toggle-switch input:checked + .toggle-track { background: var(--primary); }
+    .toggle-thumb {
+      position: absolute; left: 3px; top: 3px;
+      width: 16px; height: 16px; background: #fff; border-radius: 50%;
+      transition: transform .2s; box-shadow: 0 1px 3px rgba(0,0,0,.3);
+    }
+    .toggle-switch input:checked + .toggle-track .toggle-thumb { transform: translateX(18px); }
+    .badge-b {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 16px; height: 16px; background: var(--primary); color: #fff;
+      font-size: 10px; font-weight: 700; border-radius: 3px; vertical-align: middle;
+      margin-left: 5px;
+    }
+    /* ── Sector Regimes rows ── */
+    .sector-grid { display: flex; flex-direction: column; gap: 0; }
+    .sector-row {
+      display: flex; align-items: center; gap: 12px;
+      padding: 9px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .sector-row:last-child { border-bottom: none; }
+    .sector-name {
+      font-size: 11px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .06em; color: var(--muted-foreground);
+      width: 100px; flex-shrink: 0;
+    }
+    .sector-bar-wrap {
+      position: relative; flex: 1; min-width: 0;
+    }
+    .sector-bar {
+      height: 5px; border-radius: 99px;
+      background: linear-gradient(to right, #ef4444 0%, #f59e0b 50%, #10b981 100%);
+    }
+    .sector-bar-marker {
+      position: absolute; top: 50%;
+      transform: translate(-50%, -50%);
+      width: 13px; height: 13px; border-radius: 50%;
+      background: var(--card);
+      border: 2.5px solid currentColor;
+      box-shadow: 0 0 0 2px rgba(0,0,0,.08), 0 1px 3px rgba(0,0,0,.15);
+      transition: left .5s cubic-bezier(.34,1.4,.64,1);
+    }
+    .sector-right {
+      display: flex; align-items: center; gap: 8px;
+      width: 160px; flex-shrink: 0; justify-content: flex-end;
+    }
+    .sector-regime-lbl {
+      font-size: 11px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .04em;
+    }
+    .sector-rs {
+      font-size: 10px; font-weight: 600; font-variant-numeric: tabular-nums;
+      padding: 2px 6px; border-radius: 4px; white-space: nowrap;
+    }
+    .sector-rs.rs-pos { background: rgba(16,185,129,.12); color: #10b981; }
+    .sector-rs.rs-neg { background: rgba(239,68,68,.12);  color: #ef4444; }
+    .sector-rs.rs-neu { background: var(--secondary); color: var(--muted-foreground); }
+
+    /* ── Pipeline progress bar button ── */
+    .pipeline-btn-wrap { position: relative; width: 100%; }
+    #pipeline-progress-bar {
+      display: none;
+      position: relative; width: 100%; overflow: hidden;
+      height: 42px; border-radius: var(--radius);
+      background: #fff;
+      border: 1px solid var(--border);
+    }
+    #pipeline-progress-bar.active { display: flex; align-items: center; justify-content: center; }
+    .pipeline-bar-fill {
+      position: absolute; left: 0; top: 0; bottom: 0;
+      background: var(--primary);
+      transition: width .6s cubic-bezier(.4,0,.2,1);
+      border-radius: var(--radius);
+    }
+    .pipeline-bar-text {
+      position: relative; z-index: 1;
+      font-size: 13px; font-weight: 600; color: #d97706;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .pipeline-bar-pct {
+      font-variant-numeric: tabular-nums;
+      font-size: 12px;
+    }
+    /* ── Pipeline result panel ── */
+    #pipeline-result {
+      display: none; margin-top: 10px;
+      border: 1px solid var(--border); border-radius: var(--radius);
+      overflow: hidden; font-size: 13px;
+    }
+    #pipeline-result.visible { display: block; }
+    .pr-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 8px 12px;
+      background: var(--secondary);
+      border-bottom: 1px solid var(--border);
+      font-weight: 600; font-size: 12px; color: var(--muted-foreground);
+      text-transform: uppercase; letter-spacing: .05em;
+    }
+    .pr-elapsed { font-weight: 400; font-size: 11px; }
+    .pr-stage {
+      display: flex; align-items: flex-start; gap: 10px;
+      padding: 8px 12px; border-bottom: 1px solid var(--border);
+    }
+    .pr-stage:last-child { border-bottom: none; }
+    .pr-icon { flex-shrink: 0; width: 18px; height: 18px; margin-top: 1px; }
+    .pr-body { flex: 1; min-width: 0; }
+    .pr-name { font-weight: 600; color: var(--foreground); }
+    .pr-detail { color: var(--muted-foreground); margin-top: 2px; font-size: 12px; line-height: 1.5; }
+    .pr-warnings { margin-top: 4px; }
+    .pr-warn-item {
+      font-size: 11px; color: #d97706;
+      padding: 2px 0; display: flex; align-items: flex-start; gap: 4px;
+    }
+    .pr-warn-item::before { content: '⚠'; flex-shrink: 0; }
+
+    @keyframes pipeline-done-flash {
+      0%   { background: var(--primary); }
+      40%  { background: #10b981; }
+      100% { background: var(--primary); }
+    }
+    #pipeline-progress-bar.flash { animation: pipeline-done-flash .8s ease forwards; }
+
+    .pref-sub-row {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 12px; padding: 8px 0 8px 16px;
+      border-bottom: 1px solid var(--border);
+      border-left: 2px solid var(--primary);
+      margin-left: 4px;
+    }
+
     .metric-box {
       padding: var(--space-2); border: 1px solid var(--border);
       border-radius: var(--radius); background: var(--secondary);
@@ -30,7 +360,7 @@
 </head>
 <body>
   <nav class="nav">
-    <a href="/dashboard" class="active"><span data-icon="layout-dashboard"></span> Dashboard</a>
+    <a href="/dashboard" class="active"><span data-icon="sliders-horizontal"></span> Configuration</a>
     <a href="/recommendations"><span data-icon="list-checks"></span> Recommendations</a>
     <a href="/research"><span data-icon="search"></span> Research</a>
     <a href="/analysis"><span data-icon="bar-chart-2"></span> Analysis</a>
@@ -41,84 +371,140 @@
   </nav>
 
   <main class="app app--wide">
-    <h1 class="page-title">Dashboard</h1>
-    <p class="page-desc">Control center for your trading pipeline. Run the pipeline to ingest news, analyse sentiment, and generate today's recommendations.</p>
+    <h1 class="page-title">Configuration</h1>
+    <p class="page-desc">Configure your trading pipeline, manage settings, and monitor market conditions.</p>
 
     <div id="toast" class="alert" role="alert" style="display:none;"></div>
 
-    <div class="dashboard-grid">
+    <!-- ── Tab bar ── -->
+    <div class="config-tabs" role="tablist" id="config-tabs">
+      <button class="config-tab-btn active" role="tab" data-panel="settings" aria-selected="true">
+        <span data-icon="shield"></span> Settings
+      </button>
+      <button class="config-tab-btn" role="tab" data-panel="pipeline" aria-selected="false">
+        <span data-icon="zap"></span> Pipeline
+      </button>
+      <button class="config-tab-btn" role="tab" data-panel="market" aria-selected="false">
+        <span data-icon="activity"></span> Market
+      </button>
+      <button class="config-tab-btn" role="tab" data-panel="calibration" aria-selected="false">
+        <span data-icon="sliders-horizontal"></span> Calibration
+      </button>
+      <button class="config-tab-btn" role="tab" data-panel="docs" aria-selected="false">
+        <span data-icon="book-open"></span> Docs
+      </button>
+    </div>
 
-      <!-- ═══════════════════════════════════════════════════════════════════════
-           SETTINGS SECTION (Cards with input fields)
-           ═══════════════════════════════════════════════════════════════════════ -->
+    <!-- ══════════════════════ TAB: SETTINGS ══════════════════════ -->
+    <div class="config-panel" id="panel-settings" role="tabpanel">
+      <div class="config-grid">
+        <!-- Risk preference -->
+        <section class="card">
+          <h2 class="section-title"><span data-icon="shield"></span> Risk preference</h2>
 
-      <!-- Risk preference -->
-      <section class="card">
-        <h2 class="section-title"><span data-icon="shield"></span> Risk preference</h2>
-        <p class="meta">Only assets at or below this risk level will be recommended. Takes effect on the next batch.</p>
-        <div class="form-group">
-          <label for="preferred-risk">Risk stance</label>
-          <select id="preferred-risk" class="input" style="max-width:200px;">
-            <option value="conservative">Conservative</option>
-            <option value="moderate">Moderate</option>
-            <option value="aggressive">Aggressive</option>
-          </select>
-        </div>
-        <div class="form-group mt-2">
-          <label for="risk-budget">Risk budget per batch (sum of Size %)</label>
-          <input type="number" id="risk-budget" class="input" style="max-width:200px;" min="0" max="50" step="0.5" placeholder="25">
-          <p class="meta mt-1">Each recommendation has a <strong>Size</strong> (% of capital). The <em>sum</em> across <strong>all</strong> rows must stay under this cap. The daily batch targets <strong>up to 5 per category</strong> (~20 ideas); use <strong>25</strong> (default) or higher so the budget does not cut the list short. Low values (e.g. <strong>1.0</strong>) only allow a couple of small positions total.</p>
-        </div>
-        <div class="form-group mt-2">
-          <label for="sentiment-decay">Sentiment decay half-life (hours)</label>
-          <input type="number" id="sentiment-decay" class="input" style="max-width:200px;" min="1" max="168" step="1" placeholder="24">
-          <p class="meta mt-1">How quickly old news loses influence. <strong>24h</strong> (default) = news from 24h ago has half the weight. Lower = more reactive to recent news. Higher = longer memory.</p>
-        </div>
-        <div class="form-group mt-2">
-          <label>Minimum confidence thresholds per regime</label>
-          <p class="meta mb-1">Candidates below these thresholds are excluded. Lower = more permissive, higher = stricter.</p>
-          <div class="flex gap-2" style="flex-wrap:wrap;">
-            <div>
-              <label for="conf-risk-on" class="meta" style="font-size:11px;">Risk-On</label>
-              <input type="number" id="conf-risk-on" class="input" style="width:80px;" min="0" max="80" step="5" placeholder="30">
+          <!-- Risk stance -->
+          <div class="pref-row">
+            <div class="pref-label-wrap">
+              <label for="preferred-risk" class="pref-label">Risk stance</label>
+              <button type="button" class="help-btn" aria-label="About risk stance">
+                <span data-icon="info" style="width:14px;height:14px;"></span>
+                <span class="help-tooltip">Only assets at or below this risk level will be recommended. Takes effect on the next batch run.</span>
+              </button>
             </div>
-            <div>
-              <label for="conf-cautious" class="meta" style="font-size:11px;">Cautious</label>
-              <input type="number" id="conf-cautious" class="input" style="width:80px;" min="0" max="80" step="5" placeholder="35">
+            <select id="preferred-risk" class="input pref-input">
+              <option value="conservative">Conservative</option>
+              <option value="moderate">Moderate</option>
+              <option value="aggressive">Aggressive</option>
+            </select>
+          </div>
+
+          <!-- Risk budget -->
+          <div class="pref-row">
+            <div class="pref-label-wrap">
+              <label for="risk-budget" class="pref-label">Risk budget per batch <span class="pref-sub">sum of Size %</span></label>
+              <button type="button" class="help-btn" aria-label="About risk budget">
+                <span data-icon="info" style="width:14px;height:14px;"></span>
+                <span class="help-tooltip">Each recommendation has a <strong>Size</strong> (% of capital). The <em>sum</em> across <strong>all</strong> rows must stay under this cap. The daily batch targets <strong>up to 5 per category</strong> (~20 ideas); use <strong>25</strong> (default) or higher so the budget does not cut the list short. Low values (e.g. <strong>1.0</strong>) only allow a couple of small positions total.</span>
+              </button>
             </div>
-            <div>
-              <label for="conf-risk-off" class="meta" style="font-size:11px;">Risk-Off</label>
-              <input type="number" id="conf-risk-off" class="input" style="width:80px;" min="0" max="80" step="5" placeholder="40">
+            <div class="pref-input-wrap">
+              <input type="number" id="risk-budget" class="input pref-input" min="0" max="50" step="0.5" placeholder="25">
+              <span class="pref-unit">%</span>
             </div>
           </div>
-        </div>
-        <div class="form-group mt-2">
-          <label>Commodity-only gates</label>
-          <p class="meta mb-1">Only the <strong>commodities</strong> category uses these. Equities and indices keep the regime thresholds above and a fixed <strong>1.5</strong> minimum R:R. Negative confidence offset = easier to pass the gate.</p>
-          <div class="flex gap-2" style="flex-wrap:wrap;align-items:flex-end;">
-            <div>
-              <label for="commodity-conf-offset" class="meta" style="font-size:11px;">Confidence offset (pts)</label>
-              <input type="number" id="commodity-conf-offset" class="input" style="width:88px;" min="-30" max="20" step="1" title="Added to regime minimum for commodities; negative = looser" value="-5">
+
+          <!-- Sentiment decay -->
+          <div class="pref-row">
+            <div class="pref-label-wrap">
+              <label for="sentiment-decay" class="pref-label">Sentiment decay half-life</label>
+              <button type="button" class="help-btn" aria-label="About sentiment decay">
+                <span data-icon="info" style="width:14px;height:14px;"></span>
+                <span class="help-tooltip">How quickly old news loses influence. <strong>24h</strong> (default) = news from 24 hours ago has half the weight. Lower = more reactive to recent news. Higher = longer memory.</span>
+              </button>
             </div>
-            <div>
-              <label for="commodity-min-rr" class="meta" style="font-size:11px;">Min R:R</label>
-              <input type="number" id="commodity-min-rr" class="input" style="width:88px;" min="1.05" max="2.5" step="0.05" title="Minimum risk:reward for commodity ideas" value="1.25">
+            <div class="pref-input-wrap">
+              <input type="number" id="sentiment-decay" class="input pref-input" min="1" max="168" step="1" placeholder="24">
+              <span class="pref-unit">hours</span>
             </div>
           </div>
-        </div>
-        <div class="form-group mt-2">
-          <label class="checkbox-label" style="display:flex;align-items:center;gap:8px;">
-            <input type="checkbox" id="shadow-mode-enabled">
-            <span><strong>A/B shadow mode</strong> (profile B)</span>
-          </label>
-          <p class="meta mt-1">When enabled, each new batch still uses your normal confidence gate. We also record whether each saved row would pass a <strong>second</strong> gate: live minimum + delta (clamped 0–100). Positive delta = stricter B; negative = looser. Compare on the Recommendations page under column <strong>B</strong>.</p>
-          <div class="flex gap-2 mt-1" style="flex-wrap:wrap;align-items:center;">
-            <label for="shadow-delta" class="meta">B vs live (delta points)</label>
-            <input type="number" id="shadow-delta" class="input" style="width:88px;" min="-20" max="30" step="1" value="5" title="Added to regime min confidence for profile B">
-            <button type="button" class="btn btn--secondary btn-sm" id="shadow-save">Save shadow settings</button>
+
+          <!-- Confidence thresholds -->
+          <div class="pref-row pref-row--multi">
+            <div class="pref-label-wrap" style="padding-top:6px;">
+              <span class="pref-label">Min. confidence per regime</span>
+              <button type="button" class="help-btn" aria-label="About confidence thresholds">
+                <span data-icon="info" style="width:14px;height:14px;"></span>
+                <span class="help-tooltip">Candidates below these thresholds are excluded from the recommendation batch. Lower = more permissive; higher = stricter. Each regime can be tuned independently.</span>
+              </button>
+            </div>
+            <div class="pref-regime-grid">
+              <div class="pref-regime-cell">
+                <span class="regime-tag risk-on">Risk-On</span>
+                <input type="number" id="conf-risk-on" class="input" style="width:72px;text-align:center;" min="0" max="80" step="5" placeholder="30">
+              </div>
+              <div class="pref-regime-cell">
+                <span class="regime-tag cautious">Cautious</span>
+                <input type="number" id="conf-cautious" class="input" style="width:72px;text-align:center;" min="0" max="80" step="5" placeholder="35">
+              </div>
+              <div class="pref-regime-cell">
+                <span class="regime-tag risk-off">Risk-Off</span>
+                <input type="number" id="conf-risk-off" class="input" style="width:72px;text-align:center;" min="0" max="80" step="5" placeholder="40">
+              </div>
+            </div>
           </div>
-        </div>
-      </section>
+
+          <!-- A/B shadow mode -->
+          <div class="pref-row">
+            <div class="pref-label-wrap">
+              <span class="pref-label">A/B shadow mode <span class="badge-b">B</span></span>
+              <button type="button" class="help-btn" aria-label="About A/B shadow mode">
+                <span data-icon="info" style="width:14px;height:14px;"></span>
+                <span class="help-tooltip">When enabled, each new batch still uses your normal confidence gate. We also record whether each saved row would pass a <strong>second</strong> gate: live minimum + delta (clamped 0–100). Positive delta = stricter B; negative = looser. Compare on the Recommendations page under column <strong>B</strong>.</span>
+              </button>
+            </div>
+            <label class="toggle-switch" aria-label="Enable A/B shadow mode">
+              <input type="checkbox" id="shadow-mode-enabled">
+              <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            </label>
+          </div>
+
+          <!-- B delta (visible when shadow enabled) -->
+          <div class="pref-sub-row" id="shadow-delta-row" style="display:none;">
+            <div class="pref-label-wrap">
+              <label for="shadow-delta" class="pref-label">B vs live delta</label>
+              <button type="button" class="help-btn" aria-label="About shadow delta">
+                <span data-icon="info" style="width:14px;height:14px;"></span>
+                <span class="help-tooltip">Points added to the regime minimum confidence for profile B. Positive = stricter gate for B; negative = looser. Range: −20 to +30.</span>
+              </button>
+            </div>
+            <div class="pref-input-wrap">
+              <input type="number" id="shadow-delta" class="input pref-input" min="-20" max="30" step="1" value="5">
+              <span class="pref-unit">pts</span>
+              <button type="button" class="btn btn--secondary btn-sm" id="shadow-save">Save</button>
+            </div>
+          </div>
+
+        </section>
 
       <!-- LLM provider -->
       <section class="card">
@@ -148,8 +534,10 @@
         </button>
       </section>
 
+      </div><!-- /.config-grid -->
+
       <!-- Webhook Notifications -->
-      <section class="card" style="grid-column: 1 / -1;" id="notifications-section">
+      <section class="card" id="notifications-section">
         <h2 class="section-title"><span data-icon="bell"></span> Webhook Notifications</h2>
         <p class="meta mb-2">Receive alerts via Discord, Slack, or any webhook-compatible service when batches are ready or market regime changes.</p>
         <div class="flex gap-3 mb-2" style="flex-wrap:wrap;align-items:flex-end;">
@@ -195,19 +583,34 @@
         </div>
       </section>
 
-      <!-- ═══════════════════════════════════════════════════════════════════════
-           ACTIONS SECTION (Pipeline buttons)
-           ═══════════════════════════════════════════════════════════════════════ -->
+    </div><!-- /#panel-settings -->
 
-      <!-- Pipeline actions -->
-      <section class="card">
+    <!-- ══════════════════════ TAB: PIPELINE ══════════════════════ -->
+    <div class="config-panel" id="panel-pipeline" role="tabpanel" hidden>
+      <div class="config-grid">
+        <!-- Pipeline actions -->
+        <section class="card">
         <h2 class="section-title"><span data-icon="zap"></span> Pipeline actions</h2>
         <div class="flex-col gap-2">
-          <div>
-            <button type="button" class="btn btn--primary" data-action="run-pipeline-once" style="width:100%;">
+          <div class="pipeline-btn-wrap">
+            <button type="button" class="btn btn--primary" id="pipeline-run-btn" data-action="run-pipeline-once" style="width:100%;">
               <span data-icon="zap"></span>
               <span class="btn-label">Run full pipeline</span>
             </button>
+            <div id="pipeline-progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+              <div class="pipeline-bar-fill" id="pipeline-bar-fill" style="width:0%"></div>
+              <span class="pipeline-bar-text">
+                <span id="pipeline-bar-msg">Starting…</span>
+                <span class="pipeline-bar-pct"><span id="pipeline-bar-pct">0</span>%</span>
+              </span>
+            </div>
+            <div id="pipeline-result">
+              <div class="pr-header">
+                <span>Last run result</span>
+                <span class="pr-elapsed" id="pr-elapsed"></span>
+              </div>
+              <div id="pr-stages"></div>
+            </div>
             <p class="meta mt-1">Ingests RSS feeds, runs sentiment analysis, generates today's recommendations.</p>
           </div>
           <div>
@@ -234,59 +637,103 @@
         </div>
       </section>
 
-      <!-- ═══════════════════════════════════════════════════════════════════════
-           INFO SECTION (Read-only market data)
-           ═══════════════════════════════════════════════════════════════════════ -->
+        <!-- Regime status -->
+        <section class="card regime-card" id="regime-section">
+          <!-- Header -->
+          <div class="regime-title-row">
+            <h2 class="section-title" style="margin:0;">
+              <span data-icon="gauge"></span> Market Regime
+              <button class="help-btn" tabindex="0" aria-label="What is a market regime?">
+                <span data-icon="info"></span>
+                <span class="help-tooltip">
+                  <strong>What is a market regime?</strong><br><br>
+                  The bot analyzes SPX trend and VIX level to classify conditions into three regimes:<br><br>
+                  <strong style="color:#10b981;">Risk-On</strong> — Bullish trend, low volatility. More aggressive recommendations, relaxed confidence thresholds.<br><br>
+                  <strong style="color:#f59e0b;">Cautious</strong> — Mixed signals or moderate volatility. Balanced approach, standard thresholds.<br><br>
+                  <strong style="color:#ef4444;">Risk-Off</strong> — Bearish or high volatility. Defensive stance, may flip longs to shorts, stricter filters.<br><br>
+                  Regime transitions trigger alerts for active trades that may need review.
+                </span>
+              </button>
+            </h2>
+            <span class="regime-refresh-badge" id="regime-refresh-badge">
+              <span id="regime-countdown">60</span>s
+            </span>
+          </div>
 
-      <!-- Regime status -->
-      <section class="card" id="regime-section">
-        <h2 class="section-title"><span data-icon="gauge"></span> Market Regime Status</h2>
-        <p class="meta mb-2">
-          <strong>What is a market regime?</strong> The bot analyzes SPX trend and VIX level to classify market conditions into three regimes:
-          <span style="display:inline-block;margin-left:8px;"><strong style="color:var(--green)">Risk-On</strong> (bullish, low volatility) — more aggressive recommendations;</span>
-          <span style="display:inline-block;margin-left:8px;"><strong style="color:var(--yellow)">Cautious</strong> (mixed signals) — balanced approach;</span>
-          <span style="display:inline-block;margin-left:8px;"><strong style="color:var(--red)">Risk-Off</strong> (bearish or high volatility) — defensive, may flip to shorts.</span>
-          Regime transitions trigger alerts for active trades that may need review.
-        </p>
-        <div id="regime-content">
-          <div class="flex gap-3 mb-2" style="flex-wrap:wrap;">
-            <div class="metric-box">
-              <span class="metric-label">Current Regime</span>
-              <span class="metric-value" id="regime-current">—</span>
-              <span class="metric-hint" id="regime-since">—</span>
-            </div>
-            <div class="metric-box">
-              <span class="metric-label">Flagged Trades</span>
-              <span class="metric-value" id="regime-flagged">—</span>
-              <span class="metric-hint">Trades needing review</span>
+          <!-- Badge + description -->
+          <div class="regime-main">
+            <div>
+              <span class="regime-badge" id="regime-current">—</span>
+              <p class="regime-desc" id="regime-desc">Loading market conditions…</p>
             </div>
           </div>
-          <div id="regime-alerts" style="display:none;" class="alert alert--warning mb-2">
+
+          <!-- Gradient spectrum bar -->
+          <div class="regime-bar-wrap">
+            <div class="regime-bar">
+              <div class="regime-bar-marker" id="regime-marker" style="left:50%;"></div>
+            </div>
+            <div class="regime-bar-labels">
+              <span>Risk-Off</span>
+              <span>Cautious</span>
+              <span>Risk-On</span>
+            </div>
+          </div>
+
+          <!-- Stats strip -->
+          <div class="regime-stats">
+            <div class="regime-stat">
+              <span class="regime-stat-val" id="regime-since">—</span>
+              <span class="regime-stat-lbl">duration</span>
+            </div>
+            <div class="regime-stat-sep"></div>
+            <div class="regime-stat">
+              <span class="regime-stat-val" id="regime-flagged">—</span>
+              <span class="regime-stat-lbl">flagged</span>
+            </div>
+          </div>
+
+          <div id="regime-alerts" style="display:none;" class="alert alert--warning mt-2">
             <strong>Regime transition detected</strong>
             <div id="regime-alert-list" class="mt-1 text-sm"></div>
           </div>
-        </div>
-      </section>
+        </section>
 
-      <!-- Sector Regimes -->
-      <section class="card" id="sector-section">
-        <h2 class="section-title"><span data-icon="bar-chart-2"></span> Sector Regimes</h2>
-        <p class="meta mb-2">Each sector has its own trend based on sector ETF performance. Outperforming sectors (positive relative strength) are highlighted.</p>
-        <div id="sector-grid" class="flex gap-2" style="flex-wrap:wrap;">
-          <span class="meta">Loading...</span>
-        </div>
-      </section>
+      </div><!-- /.config-grid -->
+    </div><!-- /#panel-pipeline -->
 
-      <!-- Correlation Matrix -->
-      <section class="card" id="correlation-section">
+    <!-- ══════════════════════ TAB: MARKET ══════════════════════ -->
+    <div class="config-panel" id="panel-market" role="tabpanel" hidden>
+      <div class="config-grid">
+        <!-- Sector Regimes -->
+        <section class="card" id="sector-section">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+            <h2 class="section-title" style="margin:0;"><span data-icon="bar-chart-2"></span> Sector Regimes</h2>
+            <button type="button" class="help-btn" aria-label="About sector regimes" style="margin-left:6px;">
+              <span data-icon="info" style="width:14px;height:14px;"></span>
+              <span class="help-tooltip">Each sector has its own trend based on sector ETF performance vs SPX. The bar shows where the sector sits on the risk spectrum. Positive RS = outperforming the market.</span>
+            </button>
+          </div>
+          <div id="sector-grid" class="sector-grid">
+            <span class="meta">Loading…</span>
+          </div>
+        </section>
+
+        <!-- Correlation Matrix -->
+        <section class="card" id="correlation-section">
         <h2 class="section-title"><span data-icon="activity"></span> Cross-Asset Correlations</h2>
         <p class="meta mb-2">20-day rolling correlations between key assets. Divergences from expected relationships may signal regime shifts.</p>
         <div id="correlation-signals" class="mb-2"></div>
         <div id="correlation-matrix" style="overflow-x:auto;"></div>
       </section>
 
+      </div><!-- /.config-grid -->
+    </div><!-- /#panel-market -->
+
+    <!-- ══════════════════════ TAB: CALIBRATION ══════════════════════ -->
+    <div class="config-panel" id="panel-calibration" role="tabpanel" hidden>
       <!-- Calibration stats -->
-      <section class="card" style="grid-column: 1 / -1;" id="calibration-section">
+      <section class="card" id="calibration-section">
         <h2 class="section-title"><span data-icon="sliders-horizontal"></span> Calibration &amp; Performance</h2>
         <p class="meta mb-2">Empirical hit rates per confidence bucket, Brier score, and Expected Calibration Error from closed trades. Fitted Platt <strong>A/B</strong> is saved to <code>data/platt_calibration.json</code> and reloaded when the app starts.</p>
         <div id="calibration-content" style="display:none;">
@@ -346,8 +793,12 @@
         <p class="meta" id="calibration-empty" style="display:none;">No closed trades yet. Calibration stats will appear once trades reach TP, SL, or expiry.</p>
       </section>
 
+    </div><!-- /#panel-calibration -->
+
+    <!-- ══════════════════════ TAB: DOCS ══════════════════════ -->
+    <div class="config-panel" id="panel-docs" role="tabpanel" hidden>
       <!-- Help & Glossary -->
-      <section class="card" style="grid-column: 1 / -1;">
+      <section class="card">
         <h2 class="section-title"><span data-icon="info"></span> Key Concepts</h2>
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:var(--space-3);">
           <div>
@@ -389,7 +840,7 @@
       </section>
 
       <!-- Quick navigation -->
-      <section class="card" style="grid-column: 1 / -1;">
+      <section class="card">
         <h2 class="section-title"><span data-icon="map"></span> Quick navigation</h2>
         <div class="btn-group" style="flex-wrap:wrap;">
           <a href="/recommendations" class="btn btn--secondary"><span data-icon="list-checks"></span> Recommendations</a>
@@ -401,7 +852,7 @@
           <a href="/docs" target="_blank" rel="noopener" class="btn btn--secondary"><span data-icon="file-text"></span> API docs</a>
         </div>
       </section>
-    </div>
+    </div><!-- /#panel-docs -->
 
     <p class="disclaimer">Educational and research purposes only. Not financial advice.</p>
   </main>
@@ -536,9 +987,15 @@
     /* A/B shadow mode */
     const shadowEnabled = document.getElementById('shadow-mode-enabled');
     const shadowDeltaInput = document.getElementById('shadow-delta');
+    const shadowDeltaRow = document.getElementById('shadow-delta-row');
+    function updateShadowDeltaVisibility() {
+      shadowDeltaRow.style.display = shadowEnabled.checked ? 'flex' : 'none';
+    }
+    shadowEnabled.addEventListener('change', updateShadowDeltaVisibility);
     fetch('/api/preferences').then(r=>r.json()).then(d => {
       if (d.shadow_mode_enabled != null) shadowEnabled.checked = !!d.shadow_mode_enabled;
       if (d.shadow_confidence_delta != null) shadowDeltaInput.value = d.shadow_confidence_delta;
+      updateShadowDeltaVisibility();
     }).catch(()=>{});
     document.getElementById('shadow-save').addEventListener('click', () => {
       const delta = parseInt(shadowDeltaInput.value, 10);
@@ -557,29 +1014,44 @@
     });
 
     /* Sector Regimes */
+    const SECTOR_REGIME_META = {
+      risk_on:  { color: '#10b981', markerLeft: '93%', label: 'Risk-On' },
+      cautious: { color: '#f59e0b', markerLeft: '50%', label: 'Cautious' },
+      risk_off: { color: '#ef4444', markerLeft: '7%',  label: 'Risk-Off' },
+    };
+
     async function loadSectorRegimes() {
+      const grid = document.getElementById('sector-grid');
       try {
         const r = await fetch('/api/market/sectors');
         if (!r.ok) throw new Error('Failed');
         const data = await r.json();
-        const grid = document.getElementById('sector-grid');
         const sectors = data.sectors || {};
         if (Object.keys(sectors).length === 0) {
           grid.innerHTML = '<span class="meta">No sector data available</span>';
           return;
         }
         grid.innerHTML = Object.entries(sectors).map(([name, s]) => {
-          const regimeColor = s.regime === 'risk_on' ? 'var(--green)' : s.regime === 'risk_off' ? 'var(--red)' : 'var(--yellow)';
-          const rsSign = s.relative_strength_vs_spx > 0 ? '+' : '';
-          const rsColor = s.relative_strength_vs_spx > 0.01 ? 'var(--green)' : s.relative_strength_vs_spx < -0.01 ? 'var(--red)' : 'var(--muted-foreground)';
-          return `<div class="metric-box" style="min-width:120px;">
-            <span class="metric-label">${name.charAt(0).toUpperCase() + name.slice(1)}</span>
-            <span class="metric-value" style="font-size:1rem;color:${regimeColor}">${s.regime.replace('_', ' ')}</span>
-            <span class="metric-hint" style="color:${rsColor}">${s.relative_strength_vs_spx != null ? rsSign + (s.relative_strength_vs_spx * 100).toFixed(1) + '% vs SPX' : ''}</span>
+          const meta    = SECTOR_REGIME_META[s.regime] || SECTOR_REGIME_META.cautious;
+          const rs      = s.relative_strength_vs_spx;
+          const rsSign  = rs > 0 ? '+' : '';
+          const rsClass = rs > 0.005 ? 'rs-pos' : rs < -0.005 ? 'rs-neg' : 'rs-neu';
+          const rsText  = rs != null ? rsSign + (rs * 100).toFixed(1) + '% vs SPX' : '—';
+          const label   = name.charAt(0).toUpperCase() + name.slice(1);
+          return `<div class="sector-row">
+            <span class="sector-name">${label}</span>
+            <div class="sector-bar-wrap">
+              <div class="sector-bar"></div>
+              <div class="sector-bar-marker" style="left:${meta.markerLeft};color:${meta.color};"></div>
+            </div>
+            <div class="sector-right">
+              <span class="sector-regime-lbl" style="color:${meta.color}">${meta.label}</span>
+              <span class="sector-rs ${rsClass}">${rsText}</span>
+            </div>
           </div>`;
         }).join('');
       } catch (e) {
-        document.getElementById('sector-grid').innerHTML = '<span class="meta">Failed to load sectors</span>';
+        grid.innerHTML = '<span class="meta">Failed to load sectors</span>';
       }
     }
     loadSectorRegimes();
@@ -595,12 +1067,84 @@
         const signalsDiv = document.getElementById('correlation-signals');
         const signals = data.signals || [];
         const diverging = signals.filter(s => s.diverging);
+
+        const TICKER_NAME = {
+          '^GSPC': 'S&P 500', 'SPY': 'S&P 500', '^SPX': 'S&P 500',
+          '^VIX': 'VIX', 'VIX': 'VIX',
+          'GC=F': 'Gold', 'GLD': 'Gold',
+          'CL=F': 'Oil', 'USO': 'Oil',
+          'DX-Y.NYB': 'USD Index', 'UUP': 'USD',
+          '^TNX': '10Y Yield', 'TLT': '10Y Bonds',
+          'BTC-USD': 'Bitcoin', 'ETH-USD': 'Ethereum',
+        };
+        const friendly = t => TICKER_NAME[t] || t.replace('^', '').replace('=F', '');
+        const dirWord  = d => d === 'up' ? 'rising' : d === 'down' ? 'falling' : d;
+
         if (diverging.length > 0) {
-          signalsDiv.innerHTML = '<div class="alert alert--warning mb-2"><strong>Divergence Warning:</strong> ' +
-            diverging.map(s => `${s.asset_a} (${s.a_direction}) vs ${s.asset_b} (${s.b_direction})`).join('; ') +
-            '</div>';
+          const items = diverging.map(s => {
+            const a = friendly(s.asset_a);
+            const b = friendly(s.asset_b);
+            const aDir = dirWord(s.a_direction);
+            const bDir = dirWord(s.b_direction);
+            let sentence = `${a} is ${aDir} while ${b} is also ${bDir}`;
+            if (s.expected) {
+              const expMap = {
+                'normally_inverse': 'they normally move in opposite directions',
+                'normally_positive': 'they normally move together',
+                'safe_haven': `${b} is a safe-haven that usually rises when ${a} falls`,
+                'inverse': 'they normally move in opposite directions',
+                'positive': 'they normally move together',
+              };
+              const expText = expMap[s.expected] || s.expected.replace(/_/g, ' ');
+              sentence += ` — ${expText}`;
+            }
+            return `<li>${sentence}</li>`;
+          }).join('');
+          signalsDiv.innerHTML = `
+            <div class="alert alert--warning mb-2">
+              <strong>Unusual correlations detected</strong>
+              <ul style="margin:6px 0 0 16px;padding:0;font-size:13px;line-height:1.7;">${items}</ul>
+            </div>
+            <div id="corr-llm-wrap" style="margin-bottom:10px;">
+              <div style="
+                border-left: 3px solid var(--primary);
+                border-radius: 0 var(--radius) var(--radius) 0;
+                padding: 10px 14px;
+                background: color-mix(in srgb, var(--primary) 6%, var(--card));
+              ">
+                <div style="display:flex;align-items:center;gap:6px;margin-bottom:7px;">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--primary)" stroke-width="2.5"><path d="M12 2a10 10 0 1 0 0 20A10 10 0 0 0 12 2z"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
+                  <span style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--primary);">LLM Analysis</span>
+                </div>
+                <p id="corr-llm-text" style="margin:0;font-size:13px;line-height:1.75;color:var(--muted-foreground);font-style:italic;">Analysing…</p>
+              </div>
+            </div>`;
+          // Async LLM call — doesn't block the matrix render
+          fetch('/api/market/correlations/analysis')
+            .then(r => r.json())
+            .then(d => {
+              const el = document.getElementById('corr-llm-text');
+              if (!el) return;
+              if (d.analysis) {
+                // Strip markdown headers/bold and trim
+                const clean = d.analysis
+                  .replace(/^#{1,3}\s+.+\n?/gm, '')   // ## headings
+                  .replace(/\*\*(.+?)\*\*/g, '$1')     // **bold**
+                  .replace(/\*(.+?)\*/g, '$1')          // *italic*
+                  .trim();
+                el.style.fontStyle = 'normal';
+                el.style.color = 'var(--foreground)';
+                el.textContent = clean;
+              } else {
+                document.getElementById('corr-llm-wrap').style.display = 'none';
+              }
+            })
+            .catch(() => {
+              const w = document.getElementById('corr-llm-wrap');
+              if (w) w.style.display = 'none';
+            });
         } else {
-          signalsDiv.innerHTML = '<div class="alert alert--success mb-2">All cross-asset relationships normal</div>';
+          signalsDiv.innerHTML = '<div class="alert alert--success mb-2">All cross-asset relationships look normal</div>';
         }
         
         // Matrix
@@ -672,18 +1216,131 @@
         .finally(() => { btn.disabled = false; btn.querySelector('.btn-label').textContent = 'Save LLM settings'; });
     });
 
-    /* Pipeline action buttons with spinner */
-    document.querySelectorAll('button[data-action]').forEach(btn => {
+    /* ── Pipeline progress bar (run-pipeline-once only) ── */
+    (function () {
+      const runBtn    = document.getElementById('pipeline-run-btn');
+      const barWrap   = document.getElementById('pipeline-progress-bar');
+      const barFill   = document.getElementById('pipeline-bar-fill');
+      const barMsg    = document.getElementById('pipeline-bar-msg');
+      const barPct    = document.getElementById('pipeline-bar-pct');
+      const resultBox = document.getElementById('pipeline-result');
+      const prStages  = document.getElementById('pr-stages');
+      const prElapsed = document.getElementById('pr-elapsed');
+      let pollTimer   = null;
+
+      function setBar(pct, msg) {
+        barFill.style.width = pct + '%';
+        barMsg.textContent  = msg || 'Running…';
+        barPct.textContent  = pct;
+        barWrap.setAttribute('aria-valuenow', pct);
+      }
+
+      function stopPolling() { clearInterval(pollTimer); pollTimer = null; }
+
+      const STATUS_ICON = {
+        ok:      '<svg class="pr-icon" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>',
+        warn:    '<svg class="pr-icon" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" stroke-width="2.5"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
+        error:   '<svg class="pr-icon" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>',
+        skipped: '<svg class="pr-icon" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="8" y1="12" x2="16" y2="12"/></svg>',
+      };
+
+      function renderResult(d) {
+        if (!d.stages || d.stages.length === 0) return;
+        prStages.innerHTML = d.stages.map(s => {
+          const icon = STATUS_ICON[s.status] || STATUS_ICON.skipped;
+          const warns = (s.warnings || []).map(w =>
+            `<div class="pr-warn-item">${w}</div>`
+          ).join('');
+          return `<div class="pr-stage">
+            ${icon}
+            <div class="pr-body">
+              <div class="pr-name">${s.name}</div>
+              <div class="pr-detail">${s.detail}</div>
+              ${warns ? `<div class="pr-warnings">${warns}</div>` : ''}
+            </div>
+          </div>`;
+        }).join('');
+        if (d.elapsed_seconds != null) {
+          const m = Math.floor(d.elapsed_seconds / 60);
+          const s = d.elapsed_seconds % 60;
+          prElapsed.textContent = m > 0 ? `${m}m ${s}s` : `${s}s`;
+        }
+        // If top-level error, add it as an error stage
+        if (d.error) {
+          prStages.insertAdjacentHTML('beforeend', `<div class="pr-stage">
+            ${STATUS_ICON.error}
+            <div class="pr-body">
+              <div class="pr-name">Pipeline error</div>
+              <div class="pr-detail" style="color:#ef4444">${d.error}</div>
+            </div>
+          </div>`);
+        }
+        resultBox.classList.add('visible');
+      }
+
+      async function pollProgress() {
+        try {
+          const r = await fetch('/api/pipeline/progress');
+          if (!r.ok) return;
+          const d = await r.json();
+          setBar(d.pct || 0, d.message || d.stage);
+          if (!d.running) {
+            stopPolling();
+            if (d.error) {
+              showToast('Pipeline error: ' + d.error, false);
+            } else {
+              barWrap.classList.add('flash');
+              setBar(100, 'Complete');
+              showToast('Pipeline run complete. Check recommendations.', true);
+            }
+            renderResult(d);
+            setTimeout(() => {
+              barWrap.classList.remove('active', 'flash');
+              runBtn.style.display = '';
+              runBtn.disabled = false;
+            }, 1200);
+          }
+        } catch (_) { /* network blip — keep polling */ }
+      }
+
+      runBtn.addEventListener('click', async () => {
+        runBtn.style.display = 'none';
+        resultBox.classList.remove('visible');
+        barWrap.classList.add('active');
+        setBar(0, 'Starting…');
+        // Endpoint returns 202 immediately; progress is tracked via polling
+        fetch('/api/actions/run-pipeline-once', { method: 'POST' })
+          .then(async r => {
+            const d = await r.json().catch(() => ({}));
+            if (!r.ok) {
+              showToast(d.message || 'Pipeline failed to start', false);
+              stopPolling();
+              barWrap.classList.remove('active');
+              runBtn.style.display = '';
+              runBtn.disabled = false;
+            }
+          })
+          .catch(e => {
+            showToast('Request failed: ' + e.message, false);
+            stopPolling();
+            barWrap.classList.remove('active');
+            runBtn.style.display = '';
+            runBtn.disabled = false;
+          });
+        // Poll progress every 1.5 s
+        pollTimer = setInterval(pollProgress, 1500);
+      });
+    })();
+
+    /* Other pipeline action buttons with spinner */
+    document.querySelectorAll('button[data-action]:not(#pipeline-run-btn)').forEach(btn => {
       btn.addEventListener('click', async () => {
         const action = btn.dataset.action;
         if (action === 'purge-all' && !confirm('Delete ALL recommendations and active trades? This cannot be undone.')) return;
         const label = btn.querySelector('.btn-label');
         const origText = label.textContent;
         btn.disabled = true;
-        label.innerHTML = '<span class="spinner spinner--white"></span> Working...';
-        if (!btn.classList.contains('btn--primary')) {
-          label.innerHTML = '<span class="spinner"></span> Working...';
-        }
+        label.innerHTML = '<span class="spinner"></span> Working...';
         try {
           const r = await fetch('/api/actions/' + action, { method: 'POST' });
           const d = await r.json();
@@ -750,42 +1407,87 @@
     loadCalibration();
 
     /* Regime status */
+    const REGIME_META = {
+      risk_on:  { color: '#10b981', markerLeft: '90%', desc: 'Bullish trend · Low volatility · Aggressive stance active' },
+      cautious: { color: '#f59e0b', markerLeft: '50%', desc: 'Mixed signals · Balanced approach · Standard filters' },
+      risk_off: { color: '#ef4444', markerLeft: '10%', desc: 'Bearish / High volatility · Defensive · May flip longs to shorts' },
+    };
     async function loadRegimeStatus() {
       try {
         const r = await fetch('/api/regime/status');
         if (!r.ok) throw new Error('Failed');
-        const data = await r.json();
-        const state = data.regime_state || {};
+        const data    = await r.json();
+        const state   = data.regime_state || {};
         const flagged = data.flagged_trades || [];
         const regimeName = state.current_regime || 'unknown';
-        const regimeDisplay = regimeName.replace('_', ' ');
-        const regimeEl = document.getElementById('regime-current');
-        regimeEl.textContent = regimeDisplay;
-        regimeEl.style.color = regimeName === 'risk_on' ? 'var(--green)' : regimeName === 'risk_off' ? 'var(--red)' : 'var(--yellow)';
-        if (state.regime_since) {
-          const since = new Date(state.regime_since);
-          const hours = ((new Date() - since) / 3600000).toFixed(1);
-          document.getElementById('regime-since').textContent = 'For ' + hours + ' hours';
-        } else {
-          document.getElementById('regime-since').textContent = 'Initializing...';
+        const meta    = REGIME_META[regimeName] || { color: 'var(--muted-foreground)', markerLeft: '50%', desc: 'Regime data unavailable' };
+
+        // Badge
+        const badgeEl = document.getElementById('regime-current');
+        badgeEl.textContent = regimeName.replace(/_/g, '-');
+        badgeEl.style.color = meta.color;
+
+        // Description
+        document.getElementById('regime-desc').textContent = meta.desc;
+
+        // Live dot color
+        const dot = document.getElementById('regime-dot');
+        if (dot) dot.style.background = meta.color;
+
+        // Gradient bar marker
+        const marker = document.getElementById('regime-marker');
+        if (marker) {
+          marker.style.left = meta.markerLeft;
+          marker.style.borderColor = meta.color;
         }
+
+        // Duration
+        if (state.regime_since) {
+          const hours = ((new Date() - new Date(state.regime_since)) / 3600000).toFixed(1);
+          document.getElementById('regime-since').textContent = hours + 'h';
+        } else {
+          document.getElementById('regime-since').textContent = '—';
+        }
+
+        // Flagged
         document.getElementById('regime-flagged').textContent = flagged.length;
+        const alertBox = document.getElementById('regime-alerts');
         if (flagged.length > 0) {
-          document.getElementById('regime-alerts').style.display = 'block';
-          const list = document.getElementById('regime-alert-list');
-          list.innerHTML = flagged.map(f =>
+          alertBox.style.display = 'block';
+          document.getElementById('regime-alert-list').innerHTML = flagged.map(f =>
             '<div><strong>' + (f.asset_id || 'Trade') + ':</strong> ' + (f.reason || 'Review needed') + '</div>'
           ).join('');
         } else {
-          document.getElementById('regime-alerts').style.display = 'none';
+          alertBox.style.display = 'none';
         }
       } catch (e) {
         document.getElementById('regime-current').textContent = 'Error';
-        document.getElementById('regime-since').textContent = 'Failed to load';
+        document.getElementById('regime-since').textContent = '—';
       }
     }
     loadRegimeStatus();
-    setInterval(loadRegimeStatus, 60000);
+
+    /* ── Regime countdown: 60s→0, green→yellow→red+blink ── */
+    (function() {
+      let count = 60;
+      const cdEl    = document.getElementById('regime-countdown');
+      const badgeEl = document.getElementById('regime-refresh-badge');
+
+      function tick() {
+        count--;
+        if (count <= 0) {
+          count = 60;
+          loadRegimeStatus();
+        }
+        if (cdEl) cdEl.textContent = count;
+        if (badgeEl) {
+          badgeEl.classList.remove('state-yellow', 'state-red');
+          if (count <= 10) badgeEl.classList.add('state-red');
+          else if (count <= 30) badgeEl.classList.add('state-yellow');
+        }
+      }
+      setInterval(tick, 1000);
+    })();
 
     document.getElementById('fit-calibration-btn').addEventListener('click', async function() {
       const btn = this;
@@ -870,6 +1572,32 @@
       label.textContent = 'Test';
       btn.disabled = false;
     });
+
+    /* ── Tab switching ── */
+    (function() {
+      const tabs    = document.querySelectorAll('.config-tab-btn');
+      const panels  = document.querySelectorAll('.config-panel');
+      const HASH_KEY = 'cfg-tab';
+
+      function activate(panelId) {
+        tabs.forEach(t => {
+          const on = t.dataset.panel === panelId;
+          t.classList.toggle('active', on);
+          t.setAttribute('aria-selected', on);
+        });
+        panels.forEach(p => {
+          p.hidden = p.id !== 'panel-' + panelId;
+        });
+        history.replaceState(null, '', '#' + panelId);
+      }
+
+      tabs.forEach(t => t.addEventListener('click', () => activate(t.dataset.panel)));
+
+      // Restore from URL hash on load
+      const hash = location.hash.replace('#', '');
+      const valid = Array.from(tabs).map(t => t.dataset.panel);
+      activate(valid.includes(hash) ? hash : 'settings');
+    })();
   </script>
 </body>
 </html>

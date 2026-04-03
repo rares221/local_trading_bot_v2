@@ -4,6 +4,244 @@ All notable changes to this project will be documented here.
 
 ---
 
+## [Unreleased] — 2026-04-03
+
+### Branch: `ui/recommendations-table-improvements`
+
+---
+
+### Added
+
+#### `app/static/briefing.html` — Full Page Redesign
+
+- Replaced plain-text `block-summary` dump with a structured **metric cards grid**
+- Each known market metric renders as an individual card with icon, large value, sub-label, and color-coded left border:
+  - **S&P 500** — shows percentage move; green border if positive, red if negative
+  - **VIX** — auto-detects ≥20 threshold; red value + amber alert border when elevated
+  - **WTI Crude / Brent Crude** — price formatted with `$` prefix and comma separator, `USD/bbl` sub-label
+  - **Gold / Silver** — same formatting with `USD/oz` sub-label
+  - **Recommendations** — shows count with green value when >0
+- Items marked with `*` in the briefing text receive an amber **"Notable"** badge in the card top-right corner and an alert border
+- Unknown/unparsed items rendered in a clean **"Additional signals"** table below the grid (key / value / notable flag)
+- **Refresh button** added in the card header — triggers a new run without scrolling to the bottom
+- Number formatting: commodity prices use `toLocaleString('en-US')` for comma separators
+- All dynamic icons use `window.icon()` directly (not `data-icon` spans which require DOM hydration)
+- New CSS classes: `.briefing-header`, `.briefing-timestamp`, `.briefing-grid`, `.bm-card`, `.bm-card--alert`, `.bm-card--positive`, `.bm-card--negative`, `.bm-label`, `.bm-value`, `.bm-value--green`, `.bm-value--red`, `.bm-value--amber`, `.bm-sub`, `.bm-alert-badge`, `.briefing-extras`, `.briefing-extra-row`, `.briefing-extra-key`, `.briefing-extra-val`, `.briefing-extra-badge`
+
+---
+
+#### `app/static/recommendations.html` — Column Header Tooltips
+
+- Added `headerTooltip` to all 13 Tabulator columns — hovering any column header shows a concise description of what that column means:
+  - **Asset** — symbol, trend-alignment badge, volatility regime badge explanation
+  - **Dir** — Long vs Short meaning
+  - **Entry** — suggested open price
+  - **Current** — live price with % change from entry
+  - **SL** — Stop Loss purpose
+  - **TP** — Take Profit purpose
+  - **R:R** — Risk-to-Reward explanation with example
+  - **Conf** — confidence score + calibrated probability explanation
+  - **B** — Shadow-B filter pass/fail explanation
+  - **Risk** — tier assignment logic
+  - **Size** — portfolio % to risk
+  - **Expiry** — stale date + days remaining
+  - **Actions** — Took it / Skip / Research button purposes
+
+---
+
+#### `app/static/recommendations.html` — Large Number Formatting
+
+- `fmtNum()` updated from `.toFixed(2)` to `.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })`
+- Prices like `73319.55` now display as `73,319.55` across Entry, Current, SL, and TP columns
+
+---
+
+#### `app/static/dashboard.html` — Sector Regimes Redesign
+
+- Replaced the metric-box grid with a full-width row-based layout — each sector occupies one row
+- Each row: sector name (fixed 100px left) → gradient bar filling all remaining space → regime label + RS badge (right-aligned 160px)
+- Gradient bar (red→yellow→green) reuses the same pattern as the Market Regime card
+- Marker dot spring-animates to regime position (`risk_off: 7%`, `cautious: 50%`, `risk_on: 93%`)
+- RS badge color-coded: green pill (positive), red pill (negative), gray (neutral), threshold ±0.5%
+- Description text moved to ⓘ tooltip on section header (same `.help-btn` pattern)
+- New CSS classes: `.sector-grid`, `.sector-row`, `.sector-name`, `.sector-bar-wrap`, `.sector-bar`, `.sector-bar-marker`, `.sector-right`, `.sector-regime-lbl`, `.sector-rs`
+
+---
+
+#### `app/static/dashboard.html` — Cross-Asset Correlations: Human-Friendly Warnings
+
+- Replaced raw ticker symbols (`GC=F`, `^GSPC`) with human names via `TICKER_NAME` map
+- Replaced `(up)`/`(down)` direction codes with `rising`/`falling`
+- Each divergence now renders as a plain-English sentence: *"Gold is rising while S&P 500 is also rising — they normally move in opposite directions"*
+- Multiple divergences render as a bullet list
+- `expected_relationship` field from API mapped to readable explanations (`inverse` → "they normally move in opposite directions")
+
+---
+
+#### `app/services/research/llm.py` + `app/api/routes.py` + `app/static/dashboard.html` — LLM Correlation Analysis
+
+- New `generate_correlation_analysis(diverging_signals)` function in `llm.py`:
+  - Dedicated system prompt: concise market analyst, 2-3 sentences, plain text only (no markdown)
+  - Uses same multi-provider dispatch as `generate_rationale()` (OpenAI / Anthropic / Ollama / OpenRouter)
+  - Builds a compact prompt listing diverging pairs with asset names and directions
+- New `GET /api/market/correlations/analysis` endpoint:
+  - Fetches live signals via `asyncio.to_thread(check_cross_asset_signals)`
+  - Filters diverging signals, calls `generate_correlation_analysis()`
+  - Returns `{analysis, signal_count}` or `{analysis: null, reason: "no_divergences"}`
+  - Fully async — does not block event loop or other requests
+- Frontend renders LLM result below the rule-based warning:
+  - Left blue accent border + primary-tinted background
+  - "LLM ANALYSIS" label with info icon
+  - Fires as a separate `fetch()` after matrix renders — non-blocking
+  - Shows *"Analysing…"* placeholder while waiting
+  - JS strips any markdown (`##` headers, `**bold**`, `*italic*`) the LLM returns
+  - Box hidden silently if LLM unavailable or no divergences
+- Analysis is generated live per request (not cached from pipeline) — reflects current market data
+
+---
+
+#### `app/static/active-trades.html` — SL/TP Level History Chart (TradingView Lightweight Charts)
+
+- Added TradingView Lightweight Charts v4.2.0 (CDN, pinned to avoid v5 breaking API changes) to the Active Trades page
+- Each trade's level history panel now shows an interactive dark-mode chart with:
+  - Green line — Take Profit over time
+  - Red line — Stop Loss over time
+  - Dashed white line — Entry price (constant reference)
+- Chart initializes lazily on first panel open (avoids zero-width issue when panel is hidden)
+- `ResizeObserver` per chart instance handles container width changes
+- All chart instances are destroyed and re-created on data reload to prevent stale state
+- `.history-layout` CSS splits the panel into left (table) and right (chart) at 55%/45%
+
+---
+
+#### `app/static/dashboard.html` — Renamed to Configuration + Tabbed Layout
+
+- Page title and nav link renamed from "Dashboard" to "Configuration" across all 8 HTML pages
+- Nav icon changed from `layout-dashboard` to `sliders-horizontal`
+- All sections reorganized into 5 tabs with segmented control UI:
+  - **Settings** — Risk preference, LLM provider, Webhook notifications
+  - **Pipeline** — Pipeline actions, Market regime status
+  - **Market** — Sector regimes, Correlations
+  - **Calibration** — Confidence calibration stats
+  - **Docs** — Metric explanations, Quick navigation
+- Tab state persisted to URL hash (`#settings`, `#pipeline`, etc.) and restored on page load
+
+---
+
+#### `app/static/dashboard.html` — Market Regime Status Card Redesign
+
+- Full visual redesign of the Market Regime card to a trading-style layout:
+  - Gradient progress bar (red → yellow → green) spanning Risk-Off to Risk-On
+  - Animated spring-easing marker (`cubic-bezier(.34,1.4,.64,1)`) that moves to current regime position
+  - Large uppercase regime badge with color-coded background
+  - Description line below badge summarizing what the regime means
+- `REGIME_META` object maps regime names to marker position, color, and description text
+- Replaced static "LIVE" badge with a 60-second countdown timer:
+  - Starts green, transitions to yellow at 30s, red + blink at 10s
+  - Resets and re-fetches regime data at 0
+- Verbose regime description text moved to a CSS-only tooltip on an info (ⓘ) icon
+- Tooltip positioned below-right of icon with upward-pointing arrow; does not overflow viewport
+- Duration and Flagged trade count displayed as stat chips below the badge
+
+---
+
+#### `app/services/regime_monitor.py` — Persist Regime State Across Restarts
+
+- Added `_STATE_FILE = Path("./data/regime_state.json")` (same Docker volume as SQLite DB)
+- `_load_state()` — reads JSON once per process on first call (guarded by `_state_loaded` flag)
+- `_save_state()` — writes `{regime, since}` JSON after every state change
+- `detect_regime_transition()` now calls `_load_state()` on entry and `_save_state()` after updates
+- `reset_regime_tracking()` now also deletes the JSON file and resets `_state_loaded`
+- Regime duration (`since` timestamp) now survives container restarts
+
+---
+
+#### `app/api/routes.py` — Fixed Duration Reset on `/api/regime/status`
+
+- Root cause: endpoint was calling `build_market_context()` + `detect_regime_transition()` on every 60-second UI poll; yfinance data oscillating near VIX thresholds caused regime to flip each call, resetting `_last_regime_at` to `now()`
+- Fix: endpoint now only reads persisted state via `get_current_regime_state()` — no live market fetch
+- One-time bootstrap added: if `current_regime` is `None` (fresh install, no state file), the endpoint fetches live market context once to initialize state
+
+---
+
+#### `app/static/dashboard.html` — Risk Preference Card Redesign
+
+- Replaced verbose inline `<p class="meta">` explanations with a clean row-based layout
+- Each setting is a horizontal row: label (left) + input (right), separated by a bottom border
+- All explanatory text moved into CSS-only tooltips on ⓘ info icon buttons (reuses `.help-btn` / `.help-tooltip` pattern)
+- **Risk stance** — select dropdown, right-aligned
+- **Risk budget per batch** — number input + "%" unit label
+- **Sentiment decay half-life** — number input + "hours" unit label
+- **Min. confidence thresholds** — colored regime tags (green/yellow/red pill) above each input in a flex row
+- **A/B shadow mode** — replaced bare checkbox with an animated toggle switch (CSS-only, no JS)
+- **B delta sub-row** — indented with left accent border, only visible when shadow mode is enabled; collapses when toggled off
+- New CSS classes: `.pref-row`, `.pref-label-wrap`, `.pref-label`, `.pref-input-wrap`, `.pref-unit`, `.pref-regime-grid`, `.pref-regime-cell`, `.regime-tag`, `.toggle-switch`, `.toggle-track`, `.toggle-thumb`, `.badge-b`, `.pref-sub-row`
+
+---
+
+#### `app/services/pipeline_progress.py` — New: In-Memory Pipeline Progress Tracking
+
+- New singleton module providing shared pipeline state readable by the API
+- `start()` — resets all state, records `started_at`
+- `update(pct, stage, message)` — updates progress mid-run (clamped 0–99)
+- `log_stage(name, status, detail, warnings)` — records a completed stage result with status `ok | warn | error | skipped`
+- `finish(error=None)` — marks run complete; sets `pct=100` on success or records error string
+- `get()` — returns JSON-serialisable dict including `running`, `pct`, `stage`, `message`, `error`, `elapsed_seconds`, and `stages[]` list
+
+---
+
+#### `app/jobs/scheduler.py` — Pipeline Progress Instrumentation
+
+- `job_ingest_and_sentiment()`:
+  - `fetch_all_feeds()` wrapped in `asyncio.to_thread()` (was blocking the event loop during RSS network I/O)
+  - VADER scoring loop wrapped in `asyncio.to_thread()` (CPU-bound sync work)
+  - 6 progress checkpoints: 2% → 8% → 12% → 12–25% (per-item) → 25%
+  - Logs stage result: feed count, scored item count
+- `job_run_analysis()`:
+  - 3 progress checkpoints: 27% → 32% → 50%
+  - Logs stage result on completion
+- `job_daily_batch()`:
+  - 8 progress checkpoints: 52% → 55% → 60% → 60–96% (per LLM call, shows asset name) → 97% → 100%
+  - Tracks `llm_failures[]` list — assets where rationale generation failed
+  - Logs stage result: candidate count, category breakdown (e.g. "3 stocks, 2 commodities"), rationale success rate, warnings list for each LLM failure
+
+---
+
+#### `app/api/routes.py` — Pipeline Progress API + Background Execution
+
+- `GET /api/pipeline/progress` — returns current `pipeline_progress.get()` state for polling
+- `POST /api/actions/run-pipeline-once` — refactored to:
+  - Return `202` immediately (fire-and-forget via `asyncio.create_task()`)
+  - Guard against double-run: returns `{"ok": false}` if already running
+  - Pipeline runs as background task; HTTP server remains responsive for progress polls
+
+---
+
+#### `app/static/dashboard.html` — Pipeline Progress Bar
+
+- **Run full pipeline** button replaced by animated progress bar during execution:
+  - White background, blue fill sweeping left → right (`transition: width .6s cubic-bezier`)
+  - Amber text (`#d97706`) centered over bar: stage message + percentage
+  - Flashes green briefly on completion, then fades back to normal button
+- Polls `GET /api/pipeline/progress` every 1.5 seconds while running
+- On error: toast shown, bar dismissed, button restored
+- Guard: result panel hidden and bar reset on each new run start
+
+---
+
+#### `app/static/dashboard.html` — Pipeline Result Status Panel
+
+- After each pipeline run a result panel appears below the button showing per-stage outcomes:
+  - ✅ Green check — stage completed successfully
+  - ⚠️ Yellow warning — stage completed with non-fatal issues (e.g. some LLM rationales failed)
+  - ❌ Red X — stage errored out
+  - Inline warning list for each LLM failure: `{asset_id}: {error}`
+- Run elapsed time shown in panel header (e.g. `1m 43s`)
+- Panel hidden when a new run starts
+- Inline SVG icons (no external dependency)
+
+---
+
 ## [Unreleased] — 2026-03-27
 
 ### Branch: `ui_improvements_1`

@@ -2,17 +2,53 @@
 Market regime transition monitoring and alerts.
 Detects when regime changes (risk_on <-> cautious <-> risk_off) and flags
 active trades that may need review or adjustment.
+
+State is persisted to data/regime_state.json so duration survives restarts.
 """
+import json
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
-# Last known regime (persisted in memory; could be stored in DB for persistence across restarts)
+_STATE_FILE = Path("./data/regime_state.json")
+
 _last_regime: Optional[str] = None
 _last_regime_at: Optional[datetime] = None
+_state_loaded: bool = False
+
+
+def _load_state() -> None:
+    """Load persisted regime state from disk on first call."""
+    global _last_regime, _last_regime_at, _state_loaded
+    if _state_loaded:
+        return
+    _state_loaded = True
+    try:
+        if _STATE_FILE.exists():
+            data = json.loads(_STATE_FILE.read_text())
+            _last_regime = data.get("regime")
+            since_str = data.get("since")
+            if since_str:
+                _last_regime_at = datetime.fromisoformat(since_str)
+            logger.info("[REGIME] Loaded persisted state: %s since %s", _last_regime, _last_regime_at)
+    except Exception as exc:
+        logger.warning("[REGIME] Could not load state file: %s", exc)
+
+
+def _save_state() -> None:
+    """Persist current regime state to disk."""
+    try:
+        _STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _STATE_FILE.write_text(json.dumps({
+            "regime": _last_regime,
+            "since": _last_regime_at.isoformat() if _last_regime_at else None,
+        }))
+    except Exception as exc:
+        logger.warning("[REGIME] Could not save state file: %s", exc)
 
 
 @dataclass
@@ -31,46 +67,47 @@ def detect_regime_transition(current_regime: str) -> Optional[RegimeTransition]:
     """
     Detect if regime has changed since last check.
     Returns RegimeTransition if changed, None otherwise.
-    Updates internal state to track current regime.
+    Updates internal state and persists it to disk.
     """
     global _last_regime, _last_regime_at
-    
+
+    # Load from disk on first call after (re)start
+    _load_state()
+
     if _last_regime is None:
         # First run: initialize without triggering transition
         _last_regime = current_regime
         _last_regime_at = datetime.now(timezone.utc)
+        _save_state()
         logger.info("[REGIME] Initialized regime tracking: %s", current_regime)
         return None
-    
+
     if _last_regime == current_regime:
-        # No change
         return None
-    
+
     # Regime changed
     now = datetime.now(timezone.utc)
-    
-    # Determine severity
     severity = "minor"
     if _last_regime == "risk_off" or current_regime == "risk_off":
         severity = "major"
-    
+
     transition = RegimeTransition(
         from_regime=_last_regime,
         to_regime=current_regime,
         detected_at=now,
         severity=severity,
     )
-    
+
     logger.warning(
         "[REGIME] %s (previous regime lasted %.1f hours)",
         transition.description(),
         (now - _last_regime_at).total_seconds() / 3600 if _last_regime_at else 0,
     )
-    
-    # Update state
+
     _last_regime = current_regime
     _last_regime_at = now
-    
+    _save_state()
+
     return transition
 
 
@@ -159,7 +196,13 @@ def get_trades_needing_review(
 
 def reset_regime_tracking() -> None:
     """Reset regime tracking (for testing or manual override)."""
-    global _last_regime, _last_regime_at
+    global _last_regime, _last_regime_at, _state_loaded
     _last_regime = None
     _last_regime_at = None
+    _state_loaded = False
+    try:
+        if _STATE_FILE.exists():
+            _STATE_FILE.unlink()
+    except Exception:
+        pass
     logger.info("[REGIME] Regime tracking reset")
