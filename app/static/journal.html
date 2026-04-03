@@ -49,6 +49,7 @@
   <nav class="nav">
     <a href="/dashboard"><span data-icon="layout-dashboard"></span> Dashboard</a>
     <a href="/recommendations"><span data-icon="list-checks"></span> Recommendations</a>
+    <a href="/trade-builder"><span data-icon="sliders-horizontal"></span> Trade builder</a>
     <a href="/research"><span data-icon="search"></span> Research</a>
     <a href="/analysis"><span data-icon="bar-chart-2"></span> Analysis</a>
     <a href="/active-trades"><span data-icon="activity"></span> Active trades</a>
@@ -190,6 +191,7 @@
                 <th class="num">R:R</th>
                 <th>Conf</th>
                 <th>Bucket</th>
+                <th>Plan</th>
                 <th>Outcome</th>
                 <th>Closed At</th>
               </tr>
@@ -258,7 +260,7 @@
       const tbody = document.getElementById('journal-tbody');
       tbody.innerHTML = '';
       if (filteredTrades.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="12" class="table-empty">No closed trades match the filters</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="13" class="table-empty">No closed trades match the filters</td></tr>';
         return;
       }
       filteredTrades.forEach(t => {
@@ -274,6 +276,7 @@
           '<td class="num">' + fmtRR(t.risk_reward) + '</td>' +
           '<td>' + confBadge(t.confidence_score) + '</td>' +
           '<td>' + bucketBadge(t.confidence_bucket) + '</td>' +
+          '<td class="text-sm text-muted">' + esc(t.strategy_label || 'Vanilla') + '</td>' +
           '<td>' + outcomeBadge(t.outcome) + '</td>' +
           '<td class="text-sm">' + fmtDateTime(t.outcome_at) + '</td>';
         tbody.appendChild(tr);

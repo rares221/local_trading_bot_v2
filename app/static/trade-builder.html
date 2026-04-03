@@ -1,0 +1,691 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Trade builder — Trading Bot</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/common.css">
+  <script src="/static/js/icons.js"></script>
+  <style>
+    .trade-card {
+      background: var(--card); border: 1px solid var(--border);
+      border-left: 4px solid #3b82f6; border-radius: var(--radius);
+      box-shadow: var(--shadow); overflow: hidden; margin-bottom: var(--space-3);
+    }
+    .trade-header {
+      display: flex; align-items: center; justify-content: space-between;
+      flex-wrap: wrap; gap: var(--space-2);
+      padding: 14px var(--space-3); border-bottom: 1px solid var(--border);
+      background: var(--secondary);
+    }
+    .trade-asset { font-size: 1.25rem; font-weight: 700; }
+    .trade-levels {
+      display: grid; grid-template-columns: repeat(3, 1fr);
+      border-bottom: 1px solid var(--border);
+    }
+    .level-cell {
+      padding: 14px var(--space-2); border-right: 1px solid var(--border);
+      display: flex; flex-direction: column; gap: 4px;
+    }
+    .level-cell:last-child { border-right: none; }
+    .level-label {
+      font-size: 11px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: .06em; color: var(--muted-foreground);
+    }
+    .level-main {
+      font-size: 1.2rem; font-weight: 700; font-variant-numeric: tabular-nums;
+      font-family: var(--font-mono);
+    }
+    .strategy-explain {
+      margin-top: var(--space-3); padding: var(--space-3);
+      background: var(--secondary); border: 1px solid var(--border);
+      border-radius: var(--radius); font-size: 14px; line-height: 1.65;
+      white-space: pre-wrap; color: var(--foreground);
+    }
+    .strategy-explain--loading { color: var(--muted-foreground); font-style: italic; }
+    .strategy-explain-meta { font-size: 11px; color: var(--muted-foreground); margin-top: 8px; }
+    .sim-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .sim-table th, .sim-table td {
+      border: 1px solid var(--border); padding: 8px 10px; text-align: left;
+    }
+    .sim-table th { background: var(--secondary); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+    .sim-table td.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; text-align: right; }
+    .r-pos { color: #10b981; font-weight: 600; }
+    .r-neg { color: #ef4444; font-weight: 600; }
+    .r-zero { color: var(--muted-foreground); }
+    @media (max-width: 720px) {
+      .trade-levels { grid-template-columns: 1fr; }
+      .level-cell { border-right: none; border-bottom: 1px solid var(--border); }
+    }
+  </style>
+</head>
+<body>
+  <nav class="nav">
+    <a href="/dashboard"><span data-icon="layout-dashboard"></span> Dashboard</a>
+    <a href="/recommendations"><span data-icon="list-checks"></span> Recommendations</a>
+    <a href="/trade-builder" class="active"><span data-icon="sliders-horizontal"></span> Trade builder</a>
+    <a href="/research"><span data-icon="search"></span> Research</a>
+    <a href="/analysis"><span data-icon="bar-chart-2"></span> Analysis</a>
+    <a href="/active-trades"><span data-icon="activity"></span> Active trades</a>
+    <a href="/journal"><span data-icon="book-open"></span> Journal</a>
+    <a href="/briefing"><span data-icon="newspaper"></span> Briefing</a>
+    <a href="/calendar"><span data-icon="calendar"></span> Calendar</a>
+  </nav>
+
+  <main class="app app--wide">
+    <h1 class="page-title">Trade builder</h1>
+    <p class="page-desc">Review the system idea, pick an execution strategy from the list, read the explanation, then confirm. Trades are only created after you confirm below.</p>
+
+    <div id="err" class="alert alert--error" style="display:none;"></div>
+    <div id="loading" class="loading-overlay"><span class="spinner spinner--lg"></span> Loading recommendation&hellip;</div>
+
+    <div id="main" style="display:none;">
+      <section class="trade-card" id="rec-card">
+        <div class="trade-header">
+          <div>
+            <span class="trade-asset" id="hdr-asset">—</span>
+            <span class="badge badge--gray" id="hdr-cat" style="margin-left:8px;">—</span>
+          </div>
+          <div id="hdr-badges"></div>
+        </div>
+        <div class="trade-levels">
+          <div class="level-cell">
+            <span class="level-label">Entry</span>
+            <span class="level-main" id="v-entry">—</span>
+            <span class="text-sm text-muted" id="v-cur"></span>
+          </div>
+          <div class="level-cell">
+            <span class="level-label">Stop loss</span>
+            <span class="level-main" style="color:#ef4444;" id="v-sl">—</span>
+          </div>
+          <div class="level-cell">
+            <span class="level-label">Take profit</span>
+            <span class="level-main" style="color:#10b981;" id="v-tp">—</span>
+            <span class="text-sm text-muted" id="v-rr"></span>
+          </div>
+        </div>
+        <div style="padding:12px var(--space-3); font-size:13px; color:var(--muted-foreground);" id="rec-notes"></div>
+      </section>
+
+      <section class="card mb-3">
+        <h2 class="section-title"><span data-icon="sliders-horizontal"></span> Execution strategy</h2>
+        <div class="form-group">
+          <label for="strategy-select">Strategy</label>
+          <select id="strategy-select" class="input" style="max-width:min(100%, 520px);"></select>
+        </div>
+        <p class="text-sm text-muted mt-1 mb-0" id="strategy-levels-hint" style="display:none;"></p>
+        <h3 class="text-sm font-semibold mt-3 mb-1" style="color:var(--foreground);">Explanation</h3>
+        <div id="strategy-explain" class="strategy-explain strategy-explain--loading">Select a strategy to generate an explanation.</div>
+        <p class="strategy-explain-meta" id="strategy-explain-meta"></p>
+      </section>
+
+      <section class="card mb-3">
+        <h2 class="section-title"><span data-icon="activity"></span> Scenario sketch (R-multiples)</h2>
+        <p class="text-sm text-muted mb-2" id="sim-footnote"></p>
+        <div class="table-wrap">
+          <table class="sim-table">
+            <thead>
+              <tr>
+                <th>Scenario</th>
+                <th>Assumption</th>
+                <th class="num">Vanilla (R)</th>
+                <th class="num" id="sim-r-header-selected">Chosen (R)</th>
+              </tr>
+            </thead>
+            <tbody id="sim-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <div class="flex gap-2 flex-wrap" style="align-items:center;">
+        <button type="button" class="btn btn--primary" id="btn-confirm"><span data-icon="check"></span> Confirm &amp; open trade(s)</button>
+        <a href="/recommendations" class="btn btn--secondary">Back to recommendations</a>
+        <span class="text-sm text-muted" id="confirm-hint">Saves 1 active trade unless a multi-leg strategy is selected.</span>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    function esc(s) {
+      if (s == null) return '';
+      const d = document.createElement('div');
+      d.textContent = s;
+      return d.innerHTML;
+    }
+    function fmtNum(n) {
+      if (n == null || isNaN(n)) return '—';
+      return Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+    }
+    function dirBadge(d) {
+      const isLong = (d || 'long').toLowerCase() !== 'short';
+      const cls = isLong ? 'badge--green' : 'badge--red';
+      const label = isLong ? 'LONG' : 'SHORT';
+      return '<span class="badge ' + cls + '">' + label + '</span>';
+    }
+    function riskR(entry, sl) {
+      const r = Math.abs(entry - sl);
+      return r > 0 ? r : 1e-9;
+    }
+    function rToTarget(entry, target, sl) {
+      return Math.abs(target - entry) / riskR(entry, sl);
+    }
+    function tpAtOneR(entry, sl, tp) {
+      const r = Math.abs(entry - sl);
+      if (r <= 0) return entry;
+      if (tp > entry) return Math.min(entry + r, tp);
+      if (tp < entry) return Math.max(entry - r, tp);
+      return entry;
+    }
+    function tpAtNR(entry, sl, tp, n) {
+      const r = Math.abs(entry - sl);
+      if (r <= 0) return entry;
+      if (tp > entry) return Math.min(entry + n * r, tp);
+      if (tp < entry) return Math.max(entry - n * r, tp);
+      return entry;
+    }
+    function fibWaypoints(entry, tp) {
+      const d = tp - entry;
+      return [
+        Math.round((entry + 0.382 * d) * 100) / 100,
+        Math.round((entry + 0.618 * d) * 100) / 100,
+        tp,
+      ];
+    }
+    function mergePriceFracs(entry, tp, pairs) {
+      const map = {};
+      pairs.forEach(function (pair) {
+        const p = pair[0], f = pair[1];
+        const k = Math.round(p * 100) / 100;
+        map[k] = (map[k] || 0) + f;
+      });
+      const asc = tp >= entry;
+      const keys = Object.keys(map).map(Number).sort(function (a, b) { return asc ? a - b : b - a; });
+      return keys.map(function (k) { return [k, map[k]]; });
+    }
+    function thirdWaypoints(entry, tp) {
+      const d = tp - entry;
+      return [
+        Math.round((entry + d / 3) * 100) / 100,
+        Math.round((entry + 2 * d / 3) * 100) / 100,
+        tp,
+      ];
+    }
+    function fmtR(x) {
+      if (x == null || isNaN(x)) return '—';
+      const v = x.toFixed(2);
+      if (x > 0.001) return '<span class="r-pos">+' + v + 'R</span>';
+      if (x < -0.001) return '<span class="r-neg">' + v + 'R</span>';
+      return '<span class="r-zero">~0R</span>';
+    }
+
+    function getVanillaScenarioRs(e, sl, tp) {
+      const rFull = rToTarget(e, tp, sl);
+      const rMid = rToTarget(e, e + 0.5 * (tp - e), sl);
+      return [rFull, 0.5 * rMid - 0.5, 0, -1];
+    }
+
+    /** Right-column R values + label + footnote fragment for chosen strategy. */
+    function getSelectedScenarioMeta(strategy, entry, sl, tp) {
+      const rFull = rToTarget(entry, tp, sl);
+      const tpMid = entry + 0.5 * (tp - entry);
+      const rMid = rToTarget(entry, tpMid, sl);
+      const r1r = rToTarget(entry, tpAtOneR(entry, sl, tp), sl);
+      const tw = thirdWaypoints(entry, tp);
+      const rA = rToTarget(entry, tw[0], sl);
+      const rB = rToTarget(entry, tw[1], sl);
+      const vRs = getVanillaScenarioRs(entry, sl, tp);
+
+      function foot(rightDesc) {
+        return (
+          'Illustrative only — not a forecast. <strong>1R</strong> = full combined risk to stop (same stop for all legs). ' +
+          '<strong>Vanilla</strong> (left): one full-size exit at the system take-profit. ' +
+          '<strong>Chosen</strong> (right): ' + rightDesc + '.'
+        );
+      }
+
+      if (strategy === 'vanilla') {
+        return {
+          rs: vRs.slice(),
+          selectedLabel: 'Vanilla',
+          foot: foot('same as vanilla — single full-size exit at system TP'),
+        };
+      }
+      if (strategy === 'split_tp_50_50') {
+        return {
+          rs: [
+            0.5 * rMid + 0.5 * rFull,
+            0.5 * rMid - 0.5,
+            0.5 * rMid,
+            -1,
+          ],
+          selectedLabel: 'Midpoint 50/50',
+          foot: foot('two equal legs — midpoint then full target'),
+        };
+      }
+      if (strategy === 'runner_50_50_one_r') {
+        return {
+          rs: [
+            0.5 * r1r + 0.5 * rFull,
+            0.5 * r1r - 0.5,
+            0.5 * r1r,
+            -1,
+          ],
+          selectedLabel: 'Classic +1R / full',
+          foot: foot('two equal legs — +1R then full target'),
+        };
+      }
+      if (strategy === 'scale_half_1r_half_2r') {
+        const merged = mergePriceFracs(entry, tp, [[tpAtOneR(entry, sl, tp), 0.5], [tpAtNR(entry, sl, tp, 2), 0.5]]);
+        if (merged.length < 2) {
+          return {
+            rs: vRs.slice(),
+            selectedLabel: 'Vanilla (same levels)',
+            foot: foot('+1R and +2R collapse to one price — same as vanilla'),
+          };
+        }
+        const w0 = merged[0][1], w1 = merged[1][1];
+        const r0 = rToTarget(entry, merged[0][0], sl);
+        const r1 = rToTarget(entry, merged[1][0], sl);
+        return {
+          rs: [
+            w0 * r0 + w1 * r1,
+            w0 * r0 - w1 * 0.5,
+            w0 * r0,
+            -1,
+          ],
+          selectedLabel: '+1R / +2R split',
+          foot: foot('two equal legs — +1R and +2R (capped at system TP)'),
+        };
+      }
+      if (strategy === 'split_25_75_midpoint') {
+        return {
+          rs: [
+            0.25 * rMid + 0.75 * rFull,
+            0.25 * rMid - 0.75,
+            0.25 * rMid,
+            -1,
+          ],
+          selectedLabel: 'Split 25/75',
+          foot: foot('25% at midpoint, 75% at full target'),
+        };
+      }
+      if (strategy === 'thirds_equal') {
+        const sysR = (rA + rB + rFull) / 3;
+        return {
+          rs: [
+            sysR,
+            rA / 3 - 1 / 3,
+            (rA + rB) / 3 - 1 / 6,
+            -1,
+          ],
+          selectedLabel: 'Equal ladder',
+          foot: foot('three equal legs at ⅓, ⅔, and full target along the move'),
+        };
+      }
+      if (strategy === 'equal_thirds_1r_2r_full') {
+        const merged = mergePriceFracs(entry, tp, [[tpAtOneR(entry, sl, tp), 1 / 3], [tpAtNR(entry, sl, tp, 2), 1 / 3], [tp, 1 / 3]]);
+        if (merged.length === 1) {
+          return {
+            rs: vRs.slice(),
+            selectedLabel: 'Vanilla (same levels)',
+            foot: foot('R-levels merged to one price — same as vanilla'),
+          };
+        }
+        if (merged.length === 2) {
+          const w0 = merged[0][1], w1 = merged[1][1];
+          const x0 = rToTarget(entry, merged[0][0], sl);
+          const x1 = rToTarget(entry, merged[1][0], sl);
+          return {
+            rs: [
+              w0 * x0 + w1 * x1,
+              w0 * x0 - w1 * 0.5,
+              w0 * x0,
+              -1,
+            ],
+            selectedLabel: 'R-ladder (merged)',
+            foot: foot('equal thirds at +1R, +2R, full — some levels merged'),
+          };
+        }
+        const p0 = merged[0][0], p1 = merged[1][0], p2 = merged[2][0];
+        const g0 = rToTarget(entry, p0, sl), g1 = rToTarget(entry, p1, sl), g2 = rToTarget(entry, p2, sl);
+        const sysR = (g0 + g1 + g2) / 3;
+        return {
+          rs: [
+            sysR,
+            g0 / 3 - 1 / 3,
+            (g0 + g1) / 3 - 1 / 6,
+            -1,
+          ],
+          selectedLabel: 'R-ladder thirds',
+          foot: foot('three equal legs at +1R, +2R, and full target'),
+        };
+      }
+      if (strategy === 'fibonacci_thirds_382_618_full') {
+        const fw = fibWaypoints(entry, tp);
+        const merged = mergePriceFracs(entry, tp, [[fw[0], 1 / 3], [fw[1], 1 / 3], [fw[2], 1 / 3]]);
+        if (merged.length === 1) {
+          return {
+            rs: vRs.slice(),
+            selectedLabel: 'Vanilla (same levels)',
+            foot: foot('Fib levels merged to one price — same as vanilla'),
+          };
+        }
+        if (merged.length === 2) {
+          const w0 = merged[0][1], w1 = merged[1][1];
+          const x0 = rToTarget(entry, merged[0][0], sl);
+          const x1 = rToTarget(entry, merged[1][0], sl);
+          return {
+            rs: [
+              w0 * x0 + w1 * x1,
+              w0 * x0 - w1 * 0.5,
+              w0 * x0,
+              -1,
+            ],
+            selectedLabel: 'Fib ladder (merged)',
+            foot: foot('equal thirds at ~38.2%, ~61.8%, full — some levels merged'),
+          };
+        }
+        const p0 = merged[0][0], p1 = merged[1][0], p2 = merged[2][0];
+        const g0 = rToTarget(entry, p0, sl), g1 = rToTarget(entry, p1, sl), g2 = rToTarget(entry, p2, sl);
+        const sysR = (g0 + g1 + g2) / 3;
+        return {
+          rs: [
+            sysR,
+            g0 / 3 - 1 / 3,
+            (g0 + g1) / 3 - 1 / 6,
+            -1,
+          ],
+          selectedLabel: 'Fibonacci-style thirds',
+          foot: foot('three equal legs at ~38.2%, ~61.8%, and full target along the move'),
+        };
+      }
+      return {
+        rs: vRs.slice(),
+        selectedLabel: 'Vanilla',
+        foot: foot('single full-size exit at system TP'),
+      };
+    }
+
+    var SIM_SCENARIO_TITLES = ['System right', 'Partially right', 'Partially wrong', 'Wrong'];
+    var SIM_SCENARIO_DETAILS = [
+      'All planned take-profit levels for the plan are reached before the stop.',
+      'First scale-out fills; remaining size stopped (≈½R drag on runner notional, illustrative).',
+      'First scale-out fills; remaining size scratched near flat.',
+      'Stop before meaningful profit (≈−1R on combined risk).',
+    ];
+
+    function buildSimulationForStrategy(strategy, entry, sl, tp) {
+      const vRs = getVanillaScenarioRs(entry, sl, tp);
+      const meta = getSelectedScenarioMeta(strategy, entry, sl, tp);
+      document.getElementById('sim-footnote').innerHTML = meta.foot;
+      document.getElementById('sim-r-header-selected').textContent = meta.selectedLabel + ' (R)';
+
+      const tbody = document.getElementById('sim-body');
+      tbody.innerHTML = SIM_SCENARIO_TITLES.map(function (title, i) {
+        return (
+          '<tr><td><strong>' + esc(title) + '</strong></td>' +
+          '<td class="text-sm text-muted">' + esc(SIM_SCENARIO_DETAILS[i]) + '</td>' +
+          '<td class="num">' + fmtR(vRs[i]) + '</td>' +
+          '<td class="num">' + fmtR(meta.rs[i]) + '</td></tr>'
+        );
+      }).join('');
+    }
+
+    function legCountForStrategy(st, e, sl, tp) {
+      if (st === 'vanilla') return 1;
+      if (st === 'scale_half_1r_half_2r') {
+        return mergePriceFracs(e, tp, [[tpAtOneR(e, sl, tp), 0.5], [tpAtNR(e, sl, tp, 2), 0.5]]).length;
+      }
+      if (st === 'equal_thirds_1r_2r_full') {
+        return mergePriceFracs(e, tp, [[tpAtOneR(e, sl, tp), 1 / 3], [tpAtNR(e, sl, tp, 2), 1 / 3], [tp, 1 / 3]]).length;
+      }
+      if (st === 'fibonacci_thirds_382_618_full') {
+        const fw = fibWaypoints(e, tp);
+        return mergePriceFracs(e, tp, [[fw[0], 1 / 3], [fw[1], 1 / 3], [fw[2], 1 / 3]]).length;
+      }
+      if (st === 'thirds_equal') return 3;
+      return 2;
+    }
+
+    function updateConfirmHint(st, e, sl, tp) {
+      const n = (e != null && sl != null && tp != null) ? legCountForStrategy(st, e, sl, tp) : (st === 'vanilla' ? 1 : st === 'thirds_equal' ? 3 : 2);
+      const el = document.getElementById('confirm-hint');
+      el.textContent = n === 1
+        ? 'Saves 1 active trade matching the recommendation.'
+        : 'Saves ' + n + ' active trades (same stop, different take-profits per leg).';
+    }
+
+    function updateStrategyLevelsHint(st, e, sl, tp) {
+      const el = document.getElementById('strategy-levels-hint');
+      if (st === 'vanilla') {
+        el.style.display = 'none';
+        return;
+      }
+      el.style.display = 'block';
+      const mid = e + 0.5 * (tp - e);
+      const oneR = tpAtOneR(e, sl, tp);
+      const tw = thirdWaypoints(e, tp);
+      if (st === 'split_tp_50_50') {
+        el.innerHTML = 'Leg 1 (50%): midpoint <strong class="font-mono">' + fmtNum(mid) + '</strong> · Leg 2 (50%): full TP <strong class="font-mono">' + fmtNum(tp) + '</strong>';
+      } else if (st === 'runner_50_50_one_r') {
+        el.innerHTML = 'Leg 1 (50%): +1R toward TP <strong class="font-mono">' + fmtNum(oneR) + '</strong> · Leg 2 (50%): full TP <strong class="font-mono">' + fmtNum(tp) + '</strong>';
+      } else if (st === 'split_25_75_midpoint') {
+        el.innerHTML = 'Leg 1 (25%): midpoint <strong class="font-mono">' + fmtNum(mid) + '</strong> · Leg 2 (75%): full TP <strong class="font-mono">' + fmtNum(tp) + '</strong>';
+      } else if (st === 'thirds_equal') {
+        el.innerHTML = 'Three ~33% legs: <strong class="font-mono">' + fmtNum(tw[0]) + '</strong> → <strong class="font-mono">' + fmtNum(tw[1]) + '</strong> → <strong class="font-mono">' + fmtNum(tw[2]) + '</strong>';
+      } else if (st === 'scale_half_1r_half_2r') {
+        const merged12 = mergePriceFracs(e, tp, [[tpAtOneR(e, sl, tp), 0.5], [tpAtNR(e, sl, tp, 2), 0.5]]);
+        if (merged12.length < 2) {
+          el.innerHTML = '+1R and +2R collapse to the same level with this target — <strong>one</strong> combined position at <strong class="font-mono">' + fmtNum(merged12[0][0]) + '</strong>.';
+        } else {
+          const t2r = tpAtNR(e, sl, tp, 2);
+          el.innerHTML = 'Leg 1 (50%): +1R <strong class="font-mono">' + fmtNum(oneR) + '</strong> · Leg 2 (50%): +2R (capped) <strong class="font-mono">' + fmtNum(t2r) + '</strong>';
+        }
+      } else if (st === 'equal_thirds_1r_2r_full') {
+        const m = mergePriceFracs(e, tp, [[tpAtOneR(e, sl, tp), 1 / 3], [tpAtNR(e, sl, tp, 2), 1 / 3], [tp, 1 / 3]]);
+        el.innerHTML = m.map(function (row, i) {
+          return 'Leg ' + (i + 1) + ' (' + (row[1] * 100).toFixed(0) + '%): <strong class="font-mono">' + fmtNum(row[0]) + '</strong>';
+        }).join(' · ');
+      } else if (st === 'fibonacci_thirds_382_618_full') {
+        const fw = fibWaypoints(e, tp);
+        const m = mergePriceFracs(e, tp, [[fw[0], 1 / 3], [fw[1], 1 / 3], [fw[2], 1 / 3]]);
+        el.innerHTML = m.map(function (row, i) {
+          return 'Leg ' + (i + 1) + ' (' + (row[1] * 100).toFixed(0) + '%): <strong class="font-mono">' + fmtNum(row[0]) + '</strong>';
+        }).join(' · ');
+      } else {
+        el.style.display = 'none';
+      }
+    }
+
+    let llmExplainAbort = null;
+    let explainDebounceTimer = null;
+    let strategyExplainSeq = 0;
+
+    async function loadStrategyExplanation(strategy) {
+      const box = document.getElementById('strategy-explain');
+      const meta = document.getElementById('strategy-explain-meta');
+      if (!rec || !recId) return;
+      if (explainDebounceTimer) clearTimeout(explainDebounceTimer);
+      if (llmExplainAbort) llmExplainAbort.abort();
+
+      const seq = ++strategyExplainSeq;
+      box.className = 'strategy-explain strategy-explain--loading';
+      box.textContent = 'Loading summary…';
+      meta.textContent = '';
+
+      const qs = new URLSearchParams({ recommendation_id: rec.id, strategy: strategy });
+      try {
+        const stat = await fetch('/api/trade-builder/static-explanation?' + qs.toString());
+        const sd = await stat.json();
+        if (seq !== strategyExplainSeq) return;
+        if (!stat.ok) throw new Error(sd.detail || 'Static summary failed');
+        box.className = 'strategy-explain';
+        box.textContent = sd.explanation || '—';
+        meta.textContent = 'Instant summary. Optional AI detail loads next if your research LLM is configured.';
+        if (sd.leg_count != null && sd.leg_count >= 1) {
+          const hintEl = document.getElementById('confirm-hint');
+          const n = sd.leg_count;
+          hintEl.textContent = n === 1
+            ? 'Saves 1 active trade matching the recommendation.'
+            : 'Saves ' + n + ' active trades (same stop, different take-profits per leg).';
+        }
+      } catch (err) {
+        if (seq !== strategyExplainSeq) return;
+        box.className = 'strategy-explain';
+        box.textContent = 'Could not load summary: ' + (err.message || err);
+        meta.textContent = '';
+        return;
+      }
+
+      explainDebounceTimer = setTimeout(async () => {
+        if (seq !== strategyExplainSeq) return;
+        llmExplainAbort = new AbortController();
+        const ctrl = llmExplainAbort;
+        meta.textContent = 'Instant summary. Asking research LLM for extra detail…';
+        try {
+          const r = await fetch('/api/trade-builder/explain-strategy', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ recommendation_id: rec.id, strategy: strategy }),
+            signal: ctrl.signal,
+          });
+          const data = await r.json();
+          if (seq !== strategyExplainSeq) return;
+          if (!r.ok) throw new Error(data.detail || 'Request failed');
+          if (data.explanation && String(data.explanation).trim() && data.source === 'llm') {
+            box.textContent = String(data.explanation).trim();
+            meta.textContent = 'Generated with your Dashboard research LLM settings (replaces instant summary above for this view).';
+          } else {
+            meta.textContent = 'Instant summary only — research LLM unavailable or returned nothing. Configure keys / Ollama on the Dashboard for richer text.';
+          }
+        } catch (e) {
+          if (e.name === 'AbortError' || seq !== strategyExplainSeq) return;
+          meta.textContent = 'Instant summary shown; AI pass failed: ' + (e.message || e);
+        }
+      }, 280);
+    }
+
+    function onStrategyChange() {
+      const sel = document.getElementById('strategy-select');
+      const st = sel.value || 'vanilla';
+      if (rec) {
+        const e = rec.buy_in_price, sl = rec.stop_loss, tp = rec.take_profit;
+        updateConfirmHint(st, e, sl, tp);
+        updateStrategyLevelsHint(st, e, sl, tp);
+        buildSimulationForStrategy(st, e, sl, tp);
+        loadStrategyExplanation(st);
+      } else {
+        updateConfirmHint(st, null, null, null);
+      }
+    }
+
+    const params = new URLSearchParams(window.location.search);
+    const recId = params.get('rec_id');
+    let rec = null;
+
+    async function load() {
+      if (!recId) {
+        document.getElementById('loading').style.display = 'none';
+        document.getElementById('err').style.display = 'block';
+        document.getElementById('err').textContent = 'Missing rec_id. Open this page from Recommendations (Took it) or append ?rec_id=… to the URL.';
+        return;
+      }
+      try {
+        const r = await fetch('/api/recommendations/item/' + encodeURIComponent(recId));
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.detail || 'Not found');
+        rec = data.item;
+        if (rec.status !== 'pending') {
+          document.getElementById('loading').style.display = 'none';
+          document.getElementById('err').style.display = 'block';
+          document.getElementById('err').innerHTML = 'This recommendation is already <strong>' + esc(rec.status) + '</strong>. <a href="/recommendations">Back to list</a>';
+          return;
+        }
+
+        document.getElementById('hdr-asset').textContent = rec.asset_id || '—';
+        document.getElementById('hdr-cat').textContent = (rec.asset_category || '').toUpperCase() || '—';
+        document.getElementById('hdr-badges').innerHTML = dirBadge(rec.direction) +
+          ' <span class="badge badge--gray">' + (rec.confidence_score != null ? rec.confidence_score + '% conf' : '—') + '</span>';
+
+        const e = rec.buy_in_price, sl = rec.stop_loss, tp = rec.take_profit;
+        document.getElementById('v-entry').textContent = fmtNum(e);
+        document.getElementById('v-sl').textContent = fmtNum(sl);
+        document.getElementById('v-tp').textContent = fmtNum(tp);
+        if (rec.current_price != null) {
+          document.getElementById('v-cur').textContent = 'Last ~ ' + fmtNum(rec.current_price);
+        }
+        const rr = rec.risk_reward != null ? rec.risk_reward.toFixed(1) + ':1 R:R' : '';
+        document.getElementById('v-rr').textContent = rr;
+
+        document.getElementById('rec-notes').textContent = rec.volatility_notes || '';
+
+        const sel = document.getElementById('strategy-select');
+        sel.innerHTML = '';
+        try {
+          const sr = await fetch('/api/trade-builder/strategies');
+          const sd = await sr.json();
+          const list = (sd.strategies || []);
+          list.forEach(s => {
+            const o = document.createElement('option');
+            o.value = s.id;
+            o.textContent = s.label || s.id;
+            sel.appendChild(o);
+          });
+        } catch (_) {
+          [
+            ['vanilla', 'All-in — single position to full target (simple TP/SL)'],
+            ['runner_50_50_one_r', 'Classic +1R scale-out — 50% off at +1R, 50% to full target'],
+            ['scale_half_1r_half_2r', 'R-multiple split — 50% at +1R, 50% at +2R (capped at system TP)'],
+            ['split_tp_50_50', 'Midpoint scale-out — 50% at half the move, 50% at full target'],
+            ['split_25_75_midpoint', 'Light partial — 25% at midpoint, 75% runner to full target'],
+            ['thirds_equal', 'Equal ladder — thirds at 1/3, 2/3, and full target along the move'],
+            ['equal_thirds_1r_2r_full', 'R-ladder thirds — equal exits at +1R, +2R, and full target'],
+            ['fibonacci_thirds_382_618_full', 'Fibonacci-style thirds — 38.2%, 61.8%, and full target along the move'],
+          ].forEach(([id, label]) => {
+            const o = document.createElement('option');
+            o.value = id;
+            o.textContent = label;
+            sel.appendChild(o);
+          });
+        }
+        sel.onchange = onStrategyChange;
+        onStrategyChange();
+
+        document.getElementById('loading').style.display = 'none';
+        document.getElementById('main').style.display = 'block';
+      } catch (err) {
+        document.getElementById('loading').style.display = 'none';
+        document.getElementById('err').style.display = 'block';
+        document.getElementById('err').textContent = err.message || 'Failed to load';
+      }
+    }
+
+    document.getElementById('btn-confirm').addEventListener('click', async () => {
+      if (!rec) return;
+      const strat = (document.getElementById('strategy-select') || {}).value || 'vanilla';
+      const btn = document.getElementById('btn-confirm');
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner spinner--white"></span> Saving…';
+      try {
+        const r = await fetch('/api/recommendations/' + encodeURIComponent(rec.id) + '/took-it', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ strategy: strat }),
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.detail || 'Failed');
+        window.location.href = '/active-trades';
+      } catch (e) {
+        alert(e.message || e);
+        btn.disabled = false;
+        btn.innerHTML = (window.icon ? window.icon('check', 14) : '') + ' Confirm &amp; open trade(s)';
+      }
+    });
+
+    load();
+  </script>
+</body>
+</html>

@@ -5,7 +5,7 @@ from datetime import datetime, date
 from typing import Optional
 from uuid import uuid4
 
-from sqlalchemy import Boolean, DateTime, Date, Integer, String, Float, ForeignKey, Text, Index
+from sqlalchemy import Boolean, DateTime, Date, Integer, String, Float, ForeignKey, Text, Index, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.base import Base
 
@@ -36,16 +36,21 @@ class Recommendation(Base):
     shadow_b_threshold: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     shadow_b_pass: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
 
-    active_trade: Mapped[Optional["ActiveTrade"]] = relationship("ActiveTrade", back_populates="recommendation", uselist=False)
+    active_trades: Mapped[list["ActiveTrade"]] = relationship(
+        "ActiveTrade", back_populates="recommendation"
+    )
 
     __table_args__ = (Index("ix_recommendations_batch_status", "batch_id", "status"),)
 
 
 class ActiveTrade(Base):
     __tablename__ = "active_trades"
+    __table_args__ = (
+        UniqueConstraint("recommendation_id", "strategy_leg", name="uq_active_trades_rec_strategy_leg"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
-    recommendation_id: Mapped[str] = mapped_column(String(36), ForeignKey("recommendations.id"), nullable=False, unique=True)
+    recommendation_id: Mapped[str] = mapped_column(String(36), ForeignKey("recommendations.id"), nullable=False, index=True)
     user_taken_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     # Original levels when user took the trade (never overwritten by update job)
     current_sl: Mapped[float] = mapped_column(Float, nullable=False)
@@ -66,8 +71,11 @@ class ActiveTrade(Base):
     outcome: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
     outcome_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     closing_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)  # Price when outcome occurred
+    # Execution plan: vanilla = one row; split strategies = multiple rows (same rec, different strategy_leg / TP).
+    strategy_leg: Mapped[str] = mapped_column(String(32), nullable=False, default="vanilla")
+    position_fraction: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
 
-    recommendation: Mapped["Recommendation"] = relationship("Recommendation", back_populates="active_trade")
+    recommendation: Mapped["Recommendation"] = relationship("Recommendation", back_populates="active_trades")
     levels: Mapped[list["ActiveTradeLevel"]] = relationship(
         "ActiveTradeLevel", back_populates="active_trade", order_by="ActiveTradeLevel.created_at"
     )

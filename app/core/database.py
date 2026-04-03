@@ -135,6 +135,52 @@ def _migrate_engine_v2_v3(sync_conn) -> None:
     ])
 
 
+def _migrate_active_trades_strategy_multi_leg(sync_conn) -> None:
+    """
+    Replace UNIQUE(recommendation_id) with UNIQUE(recommendation_id, strategy_leg);
+    add strategy_leg + position_fraction. Required for split-Take strategies.
+    """
+    rows = sync_conn.execute(text("PRAGMA table_info(active_trades)")).fetchall()
+    if not rows:
+        return
+    colnames = [r[1] for r in rows]
+    if "strategy_leg" in colnames:
+        return
+
+    parts: list[str] = []
+    for r in rows:
+        _cid, name, ctype, notnull, _dflt, pk = r
+        coltype = (ctype or "NUMERIC").strip()
+        if not coltype:
+            coltype = "NUMERIC"
+        line = f'"{name}" {coltype}'
+        if pk:
+            line += " NOT NULL PRIMARY KEY"
+        elif notnull:
+            line += " NOT NULL"
+        parts.append(line)
+    parts.append('"strategy_leg" VARCHAR(32) NOT NULL DEFAULT \'vanilla\'')
+    parts.append('"position_fraction" REAL NOT NULL DEFAULT 1.0')
+    cols_sql = ", ".join(parts)
+    create_sql = (
+        f"CREATE TABLE active_trades_new ({cols_sql}, "
+        "UNIQUE (recommendation_id, strategy_leg), "
+        "FOREIGN KEY (recommendation_id) REFERENCES recommendations (id))"
+    )
+    old_cols_q = ", ".join(f'"{c}"' for c in colnames)
+    sync_conn.execute(text("PRAGMA foreign_keys=OFF"))
+    sync_conn.execute(text(create_sql))
+    sync_conn.execute(
+        text(
+            f"INSERT INTO active_trades_new ({old_cols_q}, strategy_leg, position_fraction) "
+            f"SELECT {old_cols_q}, 'vanilla', 1.0 FROM active_trades"
+        )
+    )
+    sync_conn.execute(text("DROP TABLE active_trades"))
+    sync_conn.execute(text("ALTER TABLE active_trades_new RENAME TO active_trades"))
+    sync_conn.execute(text("PRAGMA foreign_keys=ON"))
+
+
 async def init_db() -> None:
     import app.models  # noqa: F401 - register all models with Base.metadata
 
@@ -144,6 +190,7 @@ async def init_db() -> None:
         await conn.run_sync(_migrate_daily_briefings)
         await conn.run_sync(_migrate_active_trades_and_levels)
         await conn.run_sync(_migrate_engine_v2_v3)
+        await conn.run_sync(_migrate_active_trades_strategy_multi_leg)
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:

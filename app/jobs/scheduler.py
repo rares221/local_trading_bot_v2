@@ -297,7 +297,7 @@ async def job_update_active_trades() -> None:
                         trade.outcome = "hit_sl"
                         trade.outcome_at = now
                         trade.closing_price = current_price
-                elif current_price >= rec.take_profit:
+                elif current_price >= trade.current_tp:
                     trade.trade_phase = "closed_tp"
                     if getattr(trade, "outcome", None) is None:
                         trade.outcome = "hit_tp"
@@ -310,7 +310,7 @@ async def job_update_active_trades() -> None:
                         trade.outcome = "hit_sl"
                         trade.outcome_at = now
                         trade.closing_price = current_price
-                elif current_price <= rec.take_profit:
+                elif current_price <= trade.current_tp:
                     trade.trade_phase = "closed_tp"
                     if getattr(trade, "outcome", None) is None:
                         trade.outcome = "hit_tp"

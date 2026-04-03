@@ -2,6 +2,8 @@ from contextlib import asynccontextmanager
 import logging
 from pathlib import Path
 
+logger = logging.getLogger(__name__)
+
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -40,7 +42,16 @@ _setup_app_logging()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await init_db()
+    try:
+        await init_db()
+    except Exception:
+        logger.exception(
+            "Database initialization failed. If you are not using the project virtualenv, run: "
+            ".venv\\Scripts\\python -m pip install -r requirements.txt "
+            "then .venv\\Scripts\\python -m uvicorn app.main:app --reload. "
+            "If SQLite failed mid-migration, restore data/*.db from backup or remove the DB file once (data is wiped)."
+        )
+        raise
     try:
         from app.services.calibration import load_platt_from_disk
         load_platt_from_disk()
@@ -87,6 +98,12 @@ async def dashboard() -> HTMLResponse:
 async def recommendations_page() -> HTMLResponse:
     """Recommendations page: stocks, commodities, other; Took it / Skipped."""
     return HTMLResponse(content=_read_static("recommendations.html"))
+
+
+@app.get("/trade-builder", response_class=HTMLResponse)
+async def trade_builder_page() -> HTMLResponse:
+    """Plan execution (vanilla vs split TP) before opening active trades."""
+    return HTMLResponse(content=_read_static("trade-builder.html"))
 
 
 @app.get("/analysis", response_class=HTMLResponse)

@@ -6,7 +6,7 @@ import asyncio
 from datetime import datetime, timezone, date
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -335,39 +335,194 @@ async def export_recommendations_csv(
     )
 
 
+class TakeTradeRequest(BaseModel):
+    """Optional body for POST took-it (trade builder). Default strategy = follow recommendation as-is."""
+    strategy: str = "vanilla"  # see app.services.trade_strategies.VALID_STRATEGIES
+
+
+@router.get("/recommendations/item/{recommendation_id}")
+async def get_recommendation_item(
+    recommendation_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Single recommendation for trade builder + current price snapshot."""
+    rec = await db.get(Recommendation, recommendation_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail="Recommendation not found")
+    from app.services.recommendations.engine import snapshot_prices_for_recommendations
+
+    item = _rec_to_item(rec)
+    prices = await asyncio.to_thread(snapshot_prices_for_recommendations, [rec])
+    item["current_price"] = prices.get(rec.asset_id or "") if prices else None
+    return _with_disclaimer({"item": item})
+
+
 @router.post("/recommendations/{recommendation_id}/took-it")
 async def mark_took_it(
     recommendation_id: str,
     db: AsyncSession = Depends(get_db),
+    body: TakeTradeRequest | None = Body(default=None),
 ) -> dict[str, Any]:
-    """Mark recommendation as taken; create active trade for updates (PLAN_MODE)."""
+    """Mark recommendation as taken; create one or more active trades (vanilla or split TP)."""
+    from app.services.trade_strategies import legs_for_strategy, normalize_strategy
+
     rec = await db.get(Recommendation, recommendation_id)
     if not rec:
         raise HTTPException(status_code=404, detail="Recommendation not found")
     if rec.status != "pending":
         raise HTTPException(status_code=400, detail=f"Recommendation already {rec.status}")
+    try:
+        strategy = normalize_strategy((body or TakeTradeRequest()).strategy)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    legs = legs_for_strategy(
+        strategy,
+        rec.buy_in_price,
+        rec.stop_loss,
+        rec.take_profit,
+        getattr(rec, "direction", "long") or "long",
+    )
     rec.status = "taken"
     now = datetime.now(timezone.utc)
-    active = ActiveTrade(
-        recommendation_id=rec.id,
-        user_taken_at=now,
-        current_sl=rec.stop_loss,
-        current_tp=rec.take_profit,
-        expiry=rec.expiry_date,
-        last_updated=now,
-    )
-    db.add(active)
-    await db.flush()
-    level = ActiveTradeLevel(
-        active_trade_id=active.id,
-        sl=rec.stop_loss,
-        tp=rec.take_profit,
-        created_at=now,
-        source="initial",
-    )
-    db.add(level)
+    created_ids: list[str] = []
+    for leg in legs:
+        active = ActiveTrade(
+            recommendation_id=rec.id,
+            user_taken_at=now,
+            current_sl=rec.stop_loss,
+            current_tp=leg["take_profit"],
+            expiry=rec.expiry_date,
+            last_updated=now,
+            strategy_leg=leg["strategy_leg"],
+            position_fraction=leg["position_fraction"],
+        )
+        db.add(active)
+        await db.flush()
+        created_ids.append(active.id)
+        level = ActiveTradeLevel(
+            active_trade_id=active.id,
+            sl=rec.stop_loss,
+            tp=leg["take_profit"],
+            created_at=now,
+            source="initial",
+        )
+        db.add(level)
     await db.commit()
-    return _with_disclaimer({"ok": True, "recommendation_id": recommendation_id, "active_trade_created": True})
+    return _with_disclaimer({
+        "ok": True,
+        "recommendation_id": recommendation_id,
+        "active_trade_created": True,
+        "active_trade_ids": created_ids,
+        "strategy": strategy,
+    })
+
+
+class TradeBuilderExplainRequest(BaseModel):
+    recommendation_id: str
+    strategy: str = "vanilla"
+
+
+@router.get("/trade-builder/strategies")
+async def list_trade_builder_strategies() -> dict[str, Any]:
+    """Execution strategies available in the trade builder (id + label for dropdowns)."""
+    from app.services.trade_strategies import strategy_catalog
+
+    return _with_disclaimer({"strategies": strategy_catalog()})
+
+
+@router.get("/trade-builder/static-explanation")
+async def trade_builder_static_explanation(
+    recommendation_id: str,
+    strategy: str = "vanilla",
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Instant strategy summary (no LLM). Use with POST explain-strategy for optional AI detail."""
+    from app.services.trade_strategies import (
+        leg_count_for_strategy,
+        normalize_strategy,
+        strategy_static_explanation,
+    )
+
+    rec = await db.get(Recommendation, recommendation_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail="Recommendation not found")
+    try:
+        strat = normalize_strategy(strategy)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    direction = getattr(rec, "direction", "long") or "long"
+    text = strategy_static_explanation(
+        strat, rec.buy_in_price, rec.stop_loss, rec.take_profit, direction
+    )
+    n_legs = leg_count_for_strategy(
+        strat,
+        rec.buy_in_price,
+        rec.stop_loss,
+        rec.take_profit,
+        direction,
+    )
+    return _with_disclaimer(
+        {
+            "explanation": text,
+            "strategy": strat,
+            "leg_count": n_legs,
+        }
+    )
+
+
+@router.post("/trade-builder/explain-strategy")
+async def explain_trade_builder_strategy(
+    body: TradeBuilderExplainRequest,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """
+    Optional richer explanation via the Dashboard research LLM.
+    Client should show GET /trade-builder/static-explanation first; this may return null if LLM is off or fails.
+    """
+    from app.services.research.llm import generate_strategy_explanation
+    from app.services.trade_strategies import (
+        build_strategy_explanation_user_message,
+        normalize_strategy,
+    )
+
+    rec = await db.get(Recommendation, body.recommendation_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail="Recommendation not found")
+    try:
+        strat = normalize_strategy(body.strategy)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    direction = getattr(rec, "direction", "long") or "long"
+    user_msg = build_strategy_explanation_user_message(
+        strat,
+        rec.asset_id,
+        rec.asset_category or "",
+        direction,
+        rec.buy_in_price,
+        rec.stop_loss,
+        rec.take_profit,
+        getattr(rec, "risk_reward", None),
+        getattr(rec, "volatility_notes", None),
+    )
+    explanation = await generate_strategy_explanation(user_msg)
+    if not explanation or not str(explanation).strip():
+        return _with_disclaimer(
+            {
+                "explanation": None,
+                "source": "llm_unavailable",
+                "strategy": strat,
+            }
+        )
+    return _with_disclaimer(
+        {
+            "explanation": str(explanation).strip(),
+            "source": "llm",
+            "strategy": strat,
+        }
+    )
 
 
 @router.post("/recommendations/{recommendation_id}/skipped")
@@ -407,13 +562,19 @@ async def list_active_trades(
     result = await db.execute(q)
     trades = result.scalars().unique().all()
     items = []
+    from app.services.trade_strategies import strategy_label_for_leg
+
     for t in trades:
         rec = t.recommendation
         levels_sorted = sorted(t.levels or [], key=lambda L: L.created_at)
         conf_score = getattr(rec, "confidence_score", None) if rec else None
+        strat_leg = getattr(t, "strategy_leg", None) or "vanilla"
         items.append({
             "id": t.id,
             "recommendation_id": t.recommendation_id,
+            "strategy_leg": strat_leg,
+            "strategy_label": strategy_label_for_leg(strat_leg),
+            "position_fraction": getattr(t, "position_fraction", 1.0) or 1.0,
             "asset_id": rec.asset_id if rec else None,
             "asset_category": rec.asset_category if rec else None,
             "buy_in_price": rec.buy_in_price if rec else None,

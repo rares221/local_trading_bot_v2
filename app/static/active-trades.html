@@ -127,6 +127,7 @@
   <nav class="nav">
     <a href="/dashboard"><span data-icon="layout-dashboard"></span> Dashboard</a>
     <a href="/recommendations"><span data-icon="list-checks"></span> Recommendations</a>
+    <a href="/trade-builder"><span data-icon="sliders-horizontal"></span> Trade builder</a>
     <a href="/research"><span data-icon="search"></span> Research</a>
     <a href="/analysis"><span data-icon="bar-chart-2"></span> Analysis</a>
     <a href="/active-trades" class="active"><span data-icon="activity"></span> Active trades</a>
@@ -275,6 +276,7 @@
           <div class="trade-header-left">
             <span class="trade-asset">${esc(t.asset_id || '')}</span>
             ${t.asset_category ? `<span class="badge badge--gray" style="font-size:11px;text-transform:uppercase;letter-spacing:.04em;">${esc(t.asset_category)}</span>` : ''}
+            ${t.strategy_leg && t.strategy_leg !== 'vanilla' ? `<span class="badge badge--gray" style="font-size:10px;max-width:200px;white-space:normal;line-height:1.2;">${esc(t.strategy_label || t.strategy_leg)}</span>` : ''}
           </div>
           <div class="trade-header-badges">
             ${dirBadge(t.direction)}
