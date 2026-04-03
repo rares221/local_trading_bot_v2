@@ -12,6 +12,50 @@ All notable changes to this project will be documented here.
 
 ### Added
 
+#### `app/static/dashboard.html` — Sector Regimes Redesign
+
+- Replaced the metric-box grid with a full-width row-based layout — each sector occupies one row
+- Each row: sector name (fixed 100px left) → gradient bar filling all remaining space → regime label + RS badge (right-aligned 160px)
+- Gradient bar (red→yellow→green) reuses the same pattern as the Market Regime card
+- Marker dot spring-animates to regime position (`risk_off: 7%`, `cautious: 50%`, `risk_on: 93%`)
+- RS badge color-coded: green pill (positive), red pill (negative), gray (neutral), threshold ±0.5%
+- Description text moved to ⓘ tooltip on section header (same `.help-btn` pattern)
+- New CSS classes: `.sector-grid`, `.sector-row`, `.sector-name`, `.sector-bar-wrap`, `.sector-bar`, `.sector-bar-marker`, `.sector-right`, `.sector-regime-lbl`, `.sector-rs`
+
+---
+
+#### `app/static/dashboard.html` — Cross-Asset Correlations: Human-Friendly Warnings
+
+- Replaced raw ticker symbols (`GC=F`, `^GSPC`) with human names via `TICKER_NAME` map
+- Replaced `(up)`/`(down)` direction codes with `rising`/`falling`
+- Each divergence now renders as a plain-English sentence: *"Gold is rising while S&P 500 is also rising — they normally move in opposite directions"*
+- Multiple divergences render as a bullet list
+- `expected_relationship` field from API mapped to readable explanations (`inverse` → "they normally move in opposite directions")
+
+---
+
+#### `app/services/research/llm.py` + `app/api/routes.py` + `app/static/dashboard.html` — LLM Correlation Analysis
+
+- New `generate_correlation_analysis(diverging_signals)` function in `llm.py`:
+  - Dedicated system prompt: concise market analyst, 2-3 sentences, plain text only (no markdown)
+  - Uses same multi-provider dispatch as `generate_rationale()` (OpenAI / Anthropic / Ollama / OpenRouter)
+  - Builds a compact prompt listing diverging pairs with asset names and directions
+- New `GET /api/market/correlations/analysis` endpoint:
+  - Fetches live signals via `asyncio.to_thread(check_cross_asset_signals)`
+  - Filters diverging signals, calls `generate_correlation_analysis()`
+  - Returns `{analysis, signal_count}` or `{analysis: null, reason: "no_divergences"}`
+  - Fully async — does not block event loop or other requests
+- Frontend renders LLM result below the rule-based warning:
+  - Left blue accent border + primary-tinted background
+  - "LLM ANALYSIS" label with info icon
+  - Fires as a separate `fetch()` after matrix renders — non-blocking
+  - Shows *"Analysing…"* placeholder while waiting
+  - JS strips any markdown (`##` headers, `**bold**`, `*italic*`) the LLM returns
+  - Box hidden silently if LLM unavailable or no divergences
+- Analysis is generated live per request (not cached from pipeline) — reflects current market data
+
+---
+
 #### `app/static/active-trades.html` — SL/TP Level History Chart (TradingView Lightweight Charts)
 
 - Added TradingView Lightweight Charts v4.2.0 (CDN, pinned to avoid v5 breaking API changes) to the Active Trades page
