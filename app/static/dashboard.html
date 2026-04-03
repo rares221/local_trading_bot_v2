@@ -223,6 +223,51 @@
       font-size: 10px; font-weight: 700; border-radius: 3px; vertical-align: middle;
       margin-left: 5px;
     }
+    /* ── Sector Regimes rows ── */
+    .sector-grid { display: flex; flex-direction: column; gap: 0; }
+    .sector-row {
+      display: flex; align-items: center; gap: 12px;
+      padding: 9px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .sector-row:last-child { border-bottom: none; }
+    .sector-name {
+      font-size: 11px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .06em; color: var(--muted-foreground);
+      width: 100px; flex-shrink: 0;
+    }
+    .sector-bar-wrap {
+      position: relative; flex: 1; min-width: 0;
+    }
+    .sector-bar {
+      height: 5px; border-radius: 99px;
+      background: linear-gradient(to right, #ef4444 0%, #f59e0b 50%, #10b981 100%);
+    }
+    .sector-bar-marker {
+      position: absolute; top: 50%;
+      transform: translate(-50%, -50%);
+      width: 13px; height: 13px; border-radius: 50%;
+      background: var(--card);
+      border: 2.5px solid currentColor;
+      box-shadow: 0 0 0 2px rgba(0,0,0,.08), 0 1px 3px rgba(0,0,0,.15);
+      transition: left .5s cubic-bezier(.34,1.4,.64,1);
+    }
+    .sector-right {
+      display: flex; align-items: center; gap: 8px;
+      width: 160px; flex-shrink: 0; justify-content: flex-end;
+    }
+    .sector-regime-lbl {
+      font-size: 11px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .04em;
+    }
+    .sector-rs {
+      font-size: 10px; font-weight: 600; font-variant-numeric: tabular-nums;
+      padding: 2px 6px; border-radius: 4px; white-space: nowrap;
+    }
+    .sector-rs.rs-pos { background: rgba(16,185,129,.12); color: #10b981; }
+    .sector-rs.rs-neg { background: rgba(239,68,68,.12);  color: #ef4444; }
+    .sector-rs.rs-neu { background: var(--secondary); color: var(--muted-foreground); }
+
     /* ── Pipeline progress bar button ── */
     .pipeline-btn-wrap { position: relative; width: 100%; }
     #pipeline-progress-bar {
@@ -662,12 +707,17 @@
       <div class="config-grid">
         <!-- Sector Regimes -->
         <section class="card" id="sector-section">
-        <h2 class="section-title"><span data-icon="bar-chart-2"></span> Sector Regimes</h2>
-        <p class="meta mb-2">Each sector has its own trend based on sector ETF performance. Outperforming sectors (positive relative strength) are highlighted.</p>
-        <div id="sector-grid" class="flex gap-2" style="flex-wrap:wrap;">
-          <span class="meta">Loading...</span>
-        </div>
-      </section>
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+            <h2 class="section-title" style="margin:0;"><span data-icon="bar-chart-2"></span> Sector Regimes</h2>
+            <button type="button" class="help-btn" aria-label="About sector regimes" style="margin-left:6px;">
+              <span data-icon="info" style="width:14px;height:14px;"></span>
+              <span class="help-tooltip">Each sector has its own trend based on sector ETF performance vs SPX. The bar shows where the sector sits on the risk spectrum. Positive RS = outperforming the market.</span>
+            </button>
+          </div>
+          <div id="sector-grid" class="sector-grid">
+            <span class="meta">Loading…</span>
+          </div>
+        </section>
 
         <!-- Correlation Matrix -->
         <section class="card" id="correlation-section">
@@ -935,29 +985,44 @@
     });
 
     /* Sector Regimes */
+    const SECTOR_REGIME_META = {
+      risk_on:  { color: '#10b981', markerLeft: '93%', label: 'Risk-On' },
+      cautious: { color: '#f59e0b', markerLeft: '50%', label: 'Cautious' },
+      risk_off: { color: '#ef4444', markerLeft: '7%',  label: 'Risk-Off' },
+    };
+
     async function loadSectorRegimes() {
+      const grid = document.getElementById('sector-grid');
       try {
         const r = await fetch('/api/market/sectors');
         if (!r.ok) throw new Error('Failed');
         const data = await r.json();
-        const grid = document.getElementById('sector-grid');
         const sectors = data.sectors || {};
         if (Object.keys(sectors).length === 0) {
           grid.innerHTML = '<span class="meta">No sector data available</span>';
           return;
         }
         grid.innerHTML = Object.entries(sectors).map(([name, s]) => {
-          const regimeColor = s.regime === 'risk_on' ? 'var(--green)' : s.regime === 'risk_off' ? 'var(--red)' : 'var(--yellow)';
-          const rsSign = s.relative_strength_vs_spx > 0 ? '+' : '';
-          const rsColor = s.relative_strength_vs_spx > 0.01 ? 'var(--green)' : s.relative_strength_vs_spx < -0.01 ? 'var(--red)' : 'var(--muted-foreground)';
-          return `<div class="metric-box" style="min-width:120px;">
-            <span class="metric-label">${name.charAt(0).toUpperCase() + name.slice(1)}</span>
-            <span class="metric-value" style="font-size:1rem;color:${regimeColor}">${s.regime.replace('_', ' ')}</span>
-            <span class="metric-hint" style="color:${rsColor}">${s.relative_strength_vs_spx != null ? rsSign + (s.relative_strength_vs_spx * 100).toFixed(1) + '% vs SPX' : ''}</span>
+          const meta    = SECTOR_REGIME_META[s.regime] || SECTOR_REGIME_META.cautious;
+          const rs      = s.relative_strength_vs_spx;
+          const rsSign  = rs > 0 ? '+' : '';
+          const rsClass = rs > 0.005 ? 'rs-pos' : rs < -0.005 ? 'rs-neg' : 'rs-neu';
+          const rsText  = rs != null ? rsSign + (rs * 100).toFixed(1) + '% vs SPX' : '—';
+          const label   = name.charAt(0).toUpperCase() + name.slice(1);
+          return `<div class="sector-row">
+            <span class="sector-name">${label}</span>
+            <div class="sector-bar-wrap">
+              <div class="sector-bar"></div>
+              <div class="sector-bar-marker" style="left:${meta.markerLeft};color:${meta.color};"></div>
+            </div>
+            <div class="sector-right">
+              <span class="sector-regime-lbl" style="color:${meta.color}">${meta.label}</span>
+              <span class="sector-rs ${rsClass}">${rsText}</span>
+            </div>
           </div>`;
         }).join('');
       } catch (e) {
-        document.getElementById('sector-grid').innerHTML = '<span class="meta">Failed to load sectors</span>';
+        grid.innerHTML = '<span class="meta">Failed to load sectors</span>';
       }
     }
     loadSectorRegimes();
