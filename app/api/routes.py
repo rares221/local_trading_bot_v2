@@ -126,6 +126,35 @@ async def get_latest_briefing(db: AsyncSession = Depends(get_db)) -> dict[str, A
     })
 
 
+@router.get("/briefing/sparklines")
+async def get_briefing_sparklines() -> dict[str, Any]:
+    """Return 30-day close price history for key briefing tickers."""
+    import yfinance as yf
+
+    TICKERS = {
+        "spx":    "^GSPC",
+        "vix":    "^VIX",
+        "wti":    "CL=F",
+        "brent":  "BZ=F",
+        "gold":   "GC=F",
+        "silver": "SI=F",
+    }
+
+    def _fetch() -> dict[str, list[float]]:
+        result: dict[str, list[float]] = {}
+        for key, ticker in TICKERS.items():
+            try:
+                hist = yf.Ticker(ticker).history(period="30d")
+                if not hist.empty:
+                    result[key] = [round(float(v), 4) for v in hist["Close"].dropna().tolist()]
+            except Exception:
+                pass
+        return result
+
+    data = await asyncio.to_thread(_fetch)
+    return data
+
+
 @router.get("/briefing/checklist")
 async def get_briefing_checklist() -> dict[str, Any]:
     """Return the configured briefing checklist (for UI or editing)."""

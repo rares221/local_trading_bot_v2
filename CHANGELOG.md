@@ -12,6 +12,50 @@ All notable changes to this project will be documented here.
 
 ### Added
 
+#### `app/static/briefing.html` — Full Page Redesign
+
+- Replaced plain-text `block-summary` dump with a structured **metric cards grid**
+- Each known market metric renders as an individual card with icon, large value, sub-label, and color-coded left border:
+  - **S&P 500** — shows percentage move; green border if positive, red if negative
+  - **VIX** — auto-detects ≥20 threshold; red value + amber alert border when elevated
+  - **WTI Crude / Brent Crude** — price formatted with `$` prefix and comma separator, `USD/bbl` sub-label
+  - **Gold / Silver** — same formatting with `USD/oz` sub-label
+  - **Recommendations** — shows count with green value when >0
+- Items marked with `*` in the briefing text receive an amber **"Notable"** badge in the card top-right corner and an alert border
+- Unknown/unparsed items rendered in a clean **"Additional signals"** table below the grid (key / value / notable flag)
+- **Refresh button** added in the card header — triggers a new run without scrolling to the bottom
+- Number formatting: commodity prices use `toLocaleString('en-US')` for comma separators
+- All dynamic icons use `window.icon()` directly (not `data-icon` spans which require DOM hydration)
+- New CSS classes: `.briefing-header`, `.briefing-timestamp`, `.briefing-grid`, `.bm-card`, `.bm-card--alert`, `.bm-card--positive`, `.bm-card--negative`, `.bm-label`, `.bm-value`, `.bm-value--green`, `.bm-value--red`, `.bm-value--amber`, `.bm-sub`, `.bm-alert-badge`, `.briefing-extras`, `.briefing-extra-row`, `.briefing-extra-key`, `.briefing-extra-val`, `.briefing-extra-badge`
+
+---
+
+#### `app/static/recommendations.html` — Column Header Tooltips
+
+- Added `headerTooltip` to all 13 Tabulator columns — hovering any column header shows a concise description of what that column means:
+  - **Asset** — symbol, trend-alignment badge, volatility regime badge explanation
+  - **Dir** — Long vs Short meaning
+  - **Entry** — suggested open price
+  - **Current** — live price with % change from entry
+  - **SL** — Stop Loss purpose
+  - **TP** — Take Profit purpose
+  - **R:R** — Risk-to-Reward explanation with example
+  - **Conf** — confidence score + calibrated probability explanation
+  - **B** — Shadow-B filter pass/fail explanation
+  - **Risk** — tier assignment logic
+  - **Size** — portfolio % to risk
+  - **Expiry** — stale date + days remaining
+  - **Actions** — Took it / Skip / Research button purposes
+
+---
+
+#### `app/static/recommendations.html` — Large Number Formatting
+
+- `fmtNum()` updated from `.toFixed(2)` to `.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })`
+- Prices like `73319.55` now display as `73,319.55` across Entry, Current, SL, and TP columns
+
+---
+
 #### `app/static/dashboard.html` — Sector Regimes Redesign
 
 - Replaced the metric-box grid with a full-width row-based layout — each sector occupies one row

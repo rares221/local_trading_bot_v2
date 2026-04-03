@@ -9,6 +9,150 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/css/common.css">
   <script src="/static/js/icons.js"></script>
+  <style>
+    .briefing-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: var(--space-3);
+    }
+    .briefing-timestamp {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+      color: var(--muted-foreground);
+    }
+    .briefing-timestamp svg { flex-shrink: 0; }
+
+    /* Metric grid */
+    .briefing-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+      gap: 12px;
+      margin-bottom: var(--space-3);
+    }
+    .bm-card {
+      background: var(--muted);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      position: relative;
+      transition: border-color .15s;
+    }
+    .bm-card:hover { border-color: var(--primary); }
+    .bm-card--alert { border-left: 3px solid #f59e0b; }
+    .bm-card--positive { border-left: 3px solid #10b981; }
+    .bm-card--negative { border-left: 3px solid #ef4444; }
+
+    .bm-label {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+      color: var(--muted-foreground);
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .bm-value {
+      font-size: 22px;
+      font-weight: 700;
+      line-height: 1.1;
+      font-variant-numeric: tabular-nums;
+      color: var(--foreground);
+    }
+    .bm-value--green { color: #10b981; }
+    .bm-value--red   { color: #ef4444; }
+    .bm-value--amber { color: #f59e0b; }
+
+    .bm-sub {
+      font-size: 12px;
+      color: var(--muted-foreground);
+      font-variant-numeric: tabular-nums;
+    }
+    .bm-alert-badge {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      background: #fef3c7;
+      color: #92400e;
+      border-radius: 4px;
+      padding: 1px 6px;
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+    }
+    @media (prefers-color-scheme: dark) {
+      .bm-alert-badge { background: #451a03; color: #fde68a; }
+    }
+
+    /* Unknown/extra items as a clean list */
+    .briefing-extras {
+      border-top: 1px solid var(--border);
+      padding-top: var(--space-2);
+      margin-top: var(--space-1);
+    }
+    .briefing-extras-title {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+      color: var(--muted-foreground);
+      margin-bottom: 8px;
+    }
+    .briefing-extra-row {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      padding: 5px 0;
+      border-bottom: 1px solid var(--border);
+      font-size: 14px;
+    }
+    .briefing-extra-row:last-child { border-bottom: none; }
+    .briefing-extra-key {
+      color: var(--muted-foreground);
+      min-width: 160px;
+      flex-shrink: 0;
+    }
+    .briefing-extra-val {
+      font-weight: 600;
+      color: var(--foreground);
+      font-variant-numeric: tabular-nums;
+    }
+    .briefing-extra-badge {
+      margin-left: auto;
+      font-size: 10px;
+      font-weight: 700;
+      color: #f59e0b;
+    }
+
+    /* Sparkline */
+    .bm-sparkline {
+      margin-top: 8px;
+      width: 100%;
+      height: 40px;
+      display: block;
+      overflow: visible;
+    }
+    .bm-sparkline-path {
+      fill: none;
+      stroke-width: 1.5;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    .bm-sparkline-area {
+      stroke: none;
+      opacity: 0.12;
+    }
+    .bm-sparkline-dot {
+      r: 2.5;
+    }
+  </style>
 </head>
 <body>
   <nav class="nav">
@@ -24,16 +168,26 @@
 
   <main class="app app--wide">
     <h1 class="page-title">Daily Briefing</h1>
-    <p class="page-desc">Quick morning checklist: key moves (SPX, VIX, oil), recommendation count, and notable signals. Runs once daily on schedule or on demand.</p>
+    <p class="page-desc">Quick morning snapshot: key market moves, VIX, commodities, and recommendation count. Runs once daily on schedule or on demand.</p>
 
     <div id="loading" class="loading-overlay"><span class="spinner spinner--lg"></span> Loading briefing&hellip;</div>
 
     <section class="card" id="briefing-card" style="display:none;">
-      <div class="flex items-center gap-2 mb-2">
-        <h2 class="section-title" style="margin:0;">Latest briefing</h2>
-        <span class="meta" id="briefing-time"></span>
+      <div class="briefing-header">
+        <div>
+          <h2 class="section-title" style="margin-bottom:4px;">Market Snapshot</h2>
+          <div class="briefing-timestamp">
+            <span data-icon="clock" style="width:13px;height:13px;"></span>
+            <span id="briefing-time"></span>
+          </div>
+        </div>
+        <button type="button" class="btn btn--secondary btn--sm" id="run-btn-top">
+          <span data-icon="refresh-cw"></span> Refresh
+        </button>
       </div>
-      <div id="briefing-text" class="block-summary"></div>
+
+      <div id="briefing-metrics" class="briefing-grid"></div>
+      <div id="briefing-extras"></div>
     </section>
 
     <div id="no-briefing" class="alert alert--warning" style="display:none;">
@@ -51,29 +205,231 @@
   </main>
 
   <script>
-    function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
-    const loadingEl = document.getElementById('loading');
-    const card = document.getElementById('briefing-card');
-    const textEl = document.getElementById('briefing-text');
-    const timeEl = document.getElementById('briefing-time');
-    const noEl = document.getElementById('no-briefing');
-    const runBtn = document.getElementById('run-btn');
+    /* ── Helpers ── */
+    function fmtNum(s) {
+      const n = parseFloat(s);
+      if (isNaN(n)) return s;
+      return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+
+    /* ── SVG Sparkline ── */
+    function makeSvgSparkline(values, color) {
+      if (!values || values.length < 2) return '';
+      const W = 200, H = 40, PAD = 3;
+      const min = Math.min(...values), max = Math.max(...values);
+      const range = max - min || 1;
+      const pts = values.map((v, i) => [
+        PAD + (i / (values.length - 1)) * (W - PAD * 2),
+        PAD + (1 - (v - min) / range) * (H - PAD * 2),
+      ]);
+      const linePath = pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(' ');
+      const areaPath = `${linePath} L${pts[pts.length-1][0].toFixed(1)},${H} L${pts[0][0].toFixed(1)},${H} Z`;
+      const [lx, ly] = pts[pts.length - 1];
+      return `<svg class="bm-sparkline" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+        <path class="bm-sparkline-area" d="${areaPath}" fill="${color}"/>
+        <path class="bm-sparkline-path" d="${linePath}" stroke="${color}"/>
+        <circle class="bm-sparkline-dot" cx="${lx.toFixed(1)}" cy="${ly.toFixed(1)}" fill="${color}"/>
+      </svg>`;
+    }
+
+    /* ── Known metric configs ── */
+    const METRIC_MAP = [
+      {
+        match: /^s&?p\s*500\s*move/i,
+        label: 'S&P 500',
+        icon: 'trending-up',
+        sparklineKey: 'spx',
+        sparklineColor: '#10b981',
+        parse(val) {
+          // e.g. "+0.11% (close 6582.69)"
+          const m = val.match(/([+-]?\d+\.?\d*%)/);
+          const c = val.match(/close\s+([\d.]+)/i);
+          const move = m ? m[1] : val;
+          const isPos = move.startsWith('+') || (!move.startsWith('-') && parseFloat(move) > 0);
+          return {
+            value: move,
+            sub: c ? 'close ' + fmtNum(c[1]) : '',
+            valueClass: isPos ? 'bm-value--green' : 'bm-value--red',
+            cardClass: isPos ? 'bm-card--positive' : 'bm-card--negative',
+          };
+        },
+      },
+      {
+        match: /^vix\s*(level|index)?/i,
+        label: 'VIX',
+        icon: 'activity',
+        sparklineKey: 'vix',
+        sparklineColor: '#ef4444',
+        parse(val, starred) {
+          const n = parseFloat(val);
+          const high = n >= 20;
+          const sub = val.replace(/^[\d.]+\s*/, '').replace(/\*/g, '').trim() ||
+                      (high ? 'elevated — above 20' : 'low — below 20');
+          return {
+            value: isNaN(n) ? val : n.toFixed(2),
+            sub,
+            valueClass: high ? 'bm-value--red' : 'bm-value--green',
+            cardClass: high || starred ? 'bm-card--alert' : '',
+          };
+        },
+      },
+      {
+        match: /^wti\s*crude/i,
+        label: 'WTI Crude',
+        icon: 'droplets',
+        sparklineKey: 'wti',
+        sparklineColor: '#3b82f6',
+        parse(val) { return { value: '$' + fmtNum(val.replace(/[^0-9.]/g, '')), sub: 'USD/bbl' }; },
+      },
+      {
+        match: /^brent\s*crude/i,
+        label: 'Brent Crude',
+        icon: 'droplets',
+        sparklineKey: 'brent',
+        sparklineColor: '#6366f1',
+        parse(val) { return { value: '$' + fmtNum(val.replace(/[^0-9.]/g, '')), sub: 'USD/bbl' }; },
+      },
+      {
+        match: /^gold/i,
+        label: 'Gold',
+        icon: 'circle-dollar-sign',
+        sparklineKey: 'gold',
+        sparklineColor: '#f59e0b',
+        parse(val) { return { value: '$' + fmtNum(val.replace(/[^0-9.]/g, '')), sub: 'USD/oz' }; },
+      },
+      {
+        match: /^silver/i,
+        label: 'Silver',
+        icon: 'circle-dollar-sign',
+        sparklineKey: 'silver',
+        sparklineColor: '#94a3b8',
+        parse(val) { return { value: '$' + fmtNum(val.replace(/[^0-9.]/g, '')), sub: 'USD/oz' }; },
+      },
+      {
+        match: /^recommendations?\s*(today)?/i,
+        label: 'Recommendations',
+        icon: 'list-checks',
+        parse(val, starred) {
+          const n = parseInt(val);
+          return {
+            value: isNaN(n) ? val.replace('recs', '').trim() : String(n),
+            sub: 'today',
+            valueClass: (!isNaN(n) && n > 0) ? 'bm-value--green' : '',
+            cardClass: starred ? 'bm-card--alert' : '',
+          };
+        },
+      },
+    ];
+
+    /* ── Parse briefing text into items ── */
+    function parseBriefing(text) {
+      const lines = text.split('\n').map(l => l.trim()).filter(l => l.startsWith('-'));
+      return lines.map(line => {
+        const raw = line.replace(/^-\s*/, '');
+        const starred = raw.endsWith('*');
+        const content = starred ? raw.slice(0, -1).trim() : raw;
+        const colonIdx = content.indexOf(':');
+        if (colonIdx > 0) {
+          return { key: content.slice(0, colonIdx).trim(), val: content.slice(colonIdx + 1).trim(), starred, raw: content };
+        }
+        return { key: content, val: '', starred, raw: content };
+      });
+    }
+
+    /* ── Render ── */
+    function renderMetrics(items) {
+      const metricsEl = document.getElementById('briefing-metrics');
+      const extrasEl  = document.getElementById('briefing-extras');
+      metricsEl.innerHTML = '';
+      extrasEl.innerHTML  = '';
+
+      const extras = [];
+
+      for (const item of items) {
+        const cfg = METRIC_MAP.find(m => m.match.test(item.key));
+        if (cfg) {
+          const parsed = cfg.parse(item.val, item.starred);
+          const cardClass = ['bm-card', parsed.cardClass || ''].filter(Boolean).join(' ');
+          const alertBadge = item.starred ? '<span class="bm-alert-badge">Notable</span>' : '';
+          const iconSvg = window.icon ? window.icon(cfg.icon, 12) : '';
+          const bmKey = cfg.sparklineKey || '';
+          metricsEl.insertAdjacentHTML('beforeend', `
+            <div class="${cardClass}" ${bmKey ? `data-bm-key="${bmKey}"` : ''}>
+              ${alertBadge}
+              <div class="bm-label">${iconSvg} ${cfg.label}</div>
+              <div class="bm-value ${parsed.valueClass || ''}">${parsed.value}</div>
+              ${parsed.sub ? `<div class="bm-sub">${parsed.sub}</div>` : ''}
+              ${bmKey ? `<div class="bm-spark-slot"></div>` : ''}
+            </div>
+          `);
+        } else {
+          extras.push(item);
+        }
+      }
+
+      if (extras.length) {
+        extrasEl.innerHTML = `
+          <div class="briefing-extras">
+            <div class="briefing-extras-title">Additional signals</div>
+            ${extras.map(e => `
+              <div class="briefing-extra-row">
+                <span class="briefing-extra-key">${e.key}</span>
+                <span class="briefing-extra-val">${e.val || '—'}</span>
+                ${e.starred ? '<span class="briefing-extra-badge">Notable</span>' : ''}
+              </div>
+            `).join('')}
+          </div>
+        `;
+      }
+
+    }
+
+    /* ── Sparkline loader (non-blocking, fires after metrics render) ── */
+    async function loadSparklines() {
+      try {
+        const r = await fetch('/api/briefing/sparklines');
+        if (!r.ok) return;
+        const data = await r.json();
+        // Build a key→color map from METRIC_MAP
+        const colorMap = {};
+        for (const cfg of METRIC_MAP) {
+          if (cfg.sparklineKey) colorMap[cfg.sparklineKey] = cfg.sparklineColor || '#3b82f6';
+        }
+        document.querySelectorAll('[data-bm-key]').forEach(card => {
+          const key = card.getAttribute('data-bm-key');
+          const values = data[key];
+          const slot = card.querySelector('.bm-spark-slot');
+          if (slot && values && values.length >= 2) {
+            slot.innerHTML = makeSvgSparkline(values, colorMap[key] || '#3b82f6');
+          }
+        });
+      } catch (_) { /* sparklines are decorative — fail silently */ }
+    }
 
     function showBriefing(data) {
+      const card  = document.getElementById('briefing-card');
+      const noEl  = document.getElementById('no-briefing');
+      const timeEl = document.getElementById('briefing-time');
       if (data && data.content_text) {
-        card.style.display = 'block'; noEl.style.display = 'none';
-        textEl.textContent = data.content_text;
+        card.style.display = 'block';
+        noEl.style.display = 'none';
         timeEl.textContent = data.created_at ? new Date(data.created_at).toLocaleString() : '';
+        const items = parseBriefing(data.content_text);
+        renderMetrics(items);
+        loadSparklines();
       } else {
-        card.style.display = 'none'; noEl.style.display = 'block';
+        card.style.display = 'none';
+        noEl.style.display = 'block';
       }
     }
 
     async function loadLatest() {
+      const loadingEl = document.getElementById('loading');
+      const noEl = document.getElementById('no-briefing');
       try {
         const r = await fetch('/api/briefing/latest');
         if (r.ok) { showBriefing(await r.json()); }
-        else { card.style.display = 'none'; noEl.style.display = 'block'; }
+        else { document.getElementById('briefing-card').style.display = 'none'; noEl.style.display = 'block'; }
       } catch (e) {
         noEl.textContent = 'Failed to load: ' + e.message;
         noEl.style.display = 'block';
@@ -81,10 +437,12 @@
       loadingEl.style.display = 'none';
     }
 
-    runBtn.addEventListener('click', async () => {
-      const label = runBtn.querySelector('.btn-label');
-      runBtn.disabled = true;
-      label.innerHTML = '<span class="spinner spinner--white"></span> Generating&hellip;';
+    async function runBriefing(btn) {
+      const label = btn.querySelector('.btn-label') || btn;
+      const originalHTML = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner spinner--white"></span> Generating&hellip;';
+      const noEl = document.getElementById('no-briefing');
       try {
         const r = await fetch('/api/briefing/run', { method: 'POST' });
         const data = await r.json();
@@ -93,8 +451,12 @@
       } catch (e) {
         noEl.textContent = 'Run failed: ' + e.message; noEl.style.display = 'block';
       }
-      runBtn.disabled = false; label.textContent = 'Run briefing now';
-    });
+      btn.disabled = false;
+      btn.innerHTML = originalHTML;
+    }
+
+    document.getElementById('run-btn').addEventListener('click', e => runBriefing(e.currentTarget));
+    document.getElementById('run-btn-top').addEventListener('click', e => runBriefing(e.currentTarget));
 
     loadLatest();
   </script>
