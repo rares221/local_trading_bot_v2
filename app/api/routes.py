@@ -650,18 +650,22 @@ async def get_regime_status(db: AsyncSession = Depends(get_db)) -> dict[str, Any
     )
     from sqlalchemy.orm import selectinload
 
-    live_regime: str | None = None
-    try:
-        ctx = await asyncio.to_thread(build_market_context)
-        if ctx and getattr(ctx, "regime", None):
-            live_regime = ctx.regime.regime
-            await asyncio.to_thread(detect_regime_transition, live_regime)
-    except Exception:
-        pass
-
+    # Read persisted regime state — do NOT recalculate here.
+    # detect_regime_transition() is called by the scheduler job (every ~2h).
+    # Calling it on every UI poll caused the regime to oscillate on threshold
+    # boundaries (e.g. VIX near 20/25), resetting _last_regime_at each time.
     regime_state = get_current_regime_state()
-    if regime_state.get("current_regime") is None and live_regime:
-        regime_state = {**regime_state, "current_regime": live_regime}
+
+    # If state file is missing (fresh install), do a one-time silent bootstrap
+    # without triggering a recorded transition.
+    if regime_state.get("current_regime") is None:
+        try:
+            ctx = await asyncio.to_thread(build_market_context)
+            if ctx and getattr(ctx, "regime", None):
+                await asyncio.to_thread(detect_regime_transition, ctx.regime.regime)
+                regime_state = get_current_regime_state()
+        except Exception:
+            pass
     
     # Get active trades
     q = (
@@ -1008,14 +1012,38 @@ async def test_notification() -> dict[str, Any]:
 
 # --- Actions (same logic as scripts; for UI buttons) ---
 
+@router.get("/pipeline/progress")
+async def get_pipeline_progress() -> dict[str, Any]:
+    """Return current pipeline progress state (for live progress bar polling)."""
+    import app.services.pipeline_progress as progress
+    return progress.get()
+
+
 @router.post("/actions/run-pipeline-once")
 async def action_run_pipeline_once() -> dict[str, Any]:
-    """Run ingestion + sentiment, analysis, and daily batch (same as scripts/run_pipeline_once.py)."""
+    """
+    Kick off the pipeline as a background task and return immediately (202).
+    Progress is polled via GET /api/pipeline/progress.
+    """
+    import asyncio
+    import app.services.pipeline_progress as progress
     from app.jobs.scheduler import job_ingest_and_sentiment, job_run_analysis, job_daily_batch
-    await job_ingest_and_sentiment()
-    await job_run_analysis()
-    await job_daily_batch()
-    return _with_disclaimer({"ok": True, "message": "Pipeline run complete. Check recommendations."})
+
+    if progress.get()["running"]:
+        return _with_disclaimer({"ok": False, "message": "Pipeline already running."})
+
+    async def _run() -> None:
+        try:
+            await job_ingest_and_sentiment()
+            await job_run_analysis()
+            await job_daily_batch()
+            progress.finish()
+        except Exception as exc:
+            progress.finish(error=str(exc))
+
+    progress.start()
+    asyncio.create_task(_run())
+    return _with_disclaimer({"ok": True, "message": "Pipeline started in background."})
 
 
 @router.post("/actions/refresh-todays-batch")

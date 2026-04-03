@@ -168,6 +168,101 @@
       border: 6px solid transparent; border-bottom-color: var(--card);
     }
 
+    /* ── Preference rows ── */
+    .pref-row {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 12px; padding: 11px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .pref-row:last-child { border-bottom: none; padding-bottom: 0; }
+    .pref-row:first-child { padding-top: 0; }
+    .pref-row--multi { align-items: flex-start; }
+    .pref-label-wrap {
+      display: flex; align-items: center; gap: 2px; flex: 1; min-width: 0;
+    }
+    .pref-label {
+      font-size: 13px; font-weight: 500; color: var(--foreground);
+      white-space: nowrap;
+    }
+    .pref-label .pref-sub {
+      font-size: 11px; font-weight: 400; color: var(--muted-foreground);
+      margin-left: 6px;
+    }
+    .pref-input-wrap { display: flex; align-items: center; gap: 6px; }
+    .pref-input { width: 110px; text-align: right; }
+    .pref-unit {
+      font-size: 12px; color: var(--muted-foreground); white-space: nowrap;
+    }
+    .pref-regime-grid { display: flex; gap: 8px; flex-wrap: wrap; }
+    .pref-regime-cell { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+    .regime-tag {
+      font-size: 10px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .05em; padding: 2px 7px; border-radius: 4px;
+    }
+    .regime-tag.risk-on  { background: rgba(16,185,129,.15); color: #10b981; }
+    .regime-tag.cautious { background: rgba(245,158,11,.15);  color: #f59e0b; }
+    .regime-tag.risk-off { background: rgba(239,68,68,.15);   color: #ef4444; }
+    /* Toggle switch */
+    .toggle-switch { position: relative; display: inline-block; width: 40px; height: 22px; cursor: pointer; flex-shrink: 0; }
+    .toggle-switch input { opacity: 0; width: 0; height: 0; position: absolute; }
+    .toggle-track {
+      position: absolute; inset: 0;
+      background: var(--muted); border-radius: 22px;
+      transition: background .2s;
+    }
+    .toggle-switch input:checked + .toggle-track { background: var(--primary); }
+    .toggle-thumb {
+      position: absolute; left: 3px; top: 3px;
+      width: 16px; height: 16px; background: #fff; border-radius: 50%;
+      transition: transform .2s; box-shadow: 0 1px 3px rgba(0,0,0,.3);
+    }
+    .toggle-switch input:checked + .toggle-track .toggle-thumb { transform: translateX(18px); }
+    .badge-b {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 16px; height: 16px; background: var(--primary); color: #fff;
+      font-size: 10px; font-weight: 700; border-radius: 3px; vertical-align: middle;
+      margin-left: 5px;
+    }
+    /* ── Pipeline progress bar button ── */
+    .pipeline-btn-wrap { position: relative; width: 100%; }
+    #pipeline-progress-bar {
+      display: none;
+      position: relative; width: 100%; overflow: hidden;
+      height: 42px; border-radius: var(--radius);
+      background: #fff;
+      border: 1px solid var(--border);
+    }
+    #pipeline-progress-bar.active { display: flex; align-items: center; justify-content: center; }
+    .pipeline-bar-fill {
+      position: absolute; left: 0; top: 0; bottom: 0;
+      background: var(--primary);
+      transition: width .6s cubic-bezier(.4,0,.2,1);
+      border-radius: var(--radius);
+    }
+    .pipeline-bar-text {
+      position: relative; z-index: 1;
+      font-size: 13px; font-weight: 600; color: #d97706;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .pipeline-bar-pct {
+      font-variant-numeric: tabular-nums;
+      font-size: 12px;
+    }
+    @keyframes pipeline-done-flash {
+      0%   { background: var(--primary); }
+      40%  { background: #10b981; }
+      100% { background: var(--primary); }
+    }
+    #pipeline-progress-bar.flash { animation: pipeline-done-flash .8s ease forwards; }
+
+    .pref-sub-row {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 12px; padding: 8px 0 8px 16px;
+      border-bottom: 1px solid var(--border);
+      border-left: 2px solid var(--primary);
+      margin-left: 4px;
+    }
+
     .metric-box {
       padding: var(--space-2); border: 1px solid var(--border);
       border-radius: var(--radius); background: var(--secondary);
@@ -228,57 +323,111 @@
       <div class="config-grid">
         <!-- Risk preference -->
         <section class="card">
-        <h2 class="section-title"><span data-icon="shield"></span> Risk preference</h2>
-        <p class="meta">Only assets at or below this risk level will be recommended. Takes effect on the next batch.</p>
-        <div class="form-group">
-          <label for="preferred-risk">Risk stance</label>
-          <select id="preferred-risk" class="input" style="max-width:200px;">
-            <option value="conservative">Conservative</option>
-            <option value="moderate">Moderate</option>
-            <option value="aggressive">Aggressive</option>
-          </select>
-        </div>
-        <div class="form-group mt-2">
-          <label for="risk-budget">Risk budget per batch (sum of Size %)</label>
-          <input type="number" id="risk-budget" class="input" style="max-width:200px;" min="0" max="50" step="0.5" placeholder="25">
-          <p class="meta mt-1">Each recommendation has a <strong>Size</strong> (% of capital). The <em>sum</em> across <strong>all</strong> rows must stay under this cap. The daily batch targets <strong>up to 5 per category</strong> (~20 ideas); use <strong>25</strong> (default) or higher so the budget does not cut the list short. Low values (e.g. <strong>1.0</strong>) only allow a couple of small positions total.</p>
-        </div>
-        <div class="form-group mt-2">
-          <label for="sentiment-decay">Sentiment decay half-life (hours)</label>
-          <input type="number" id="sentiment-decay" class="input" style="max-width:200px;" min="1" max="168" step="1" placeholder="24">
-          <p class="meta mt-1">How quickly old news loses influence. <strong>24h</strong> (default) = news from 24h ago has half the weight. Lower = more reactive to recent news. Higher = longer memory.</p>
-        </div>
-        <div class="form-group mt-2">
-          <label>Minimum confidence thresholds per regime</label>
-          <p class="meta mb-1">Candidates below these thresholds are excluded. Lower = more permissive, higher = stricter.</p>
-          <div class="flex gap-2" style="flex-wrap:wrap;">
-            <div>
-              <label for="conf-risk-on" class="meta" style="font-size:11px;">Risk-On</label>
-              <input type="number" id="conf-risk-on" class="input" style="width:80px;" min="0" max="80" step="5" placeholder="30">
+          <h2 class="section-title"><span data-icon="shield"></span> Risk preference</h2>
+
+          <!-- Risk stance -->
+          <div class="pref-row">
+            <div class="pref-label-wrap">
+              <label for="preferred-risk" class="pref-label">Risk stance</label>
+              <button type="button" class="help-btn" aria-label="About risk stance">
+                <span data-icon="info" style="width:14px;height:14px;"></span>
+                <span class="help-tooltip">Only assets at or below this risk level will be recommended. Takes effect on the next batch run.</span>
+              </button>
             </div>
-            <div>
-              <label for="conf-cautious" class="meta" style="font-size:11px;">Cautious</label>
-              <input type="number" id="conf-cautious" class="input" style="width:80px;" min="0" max="80" step="5" placeholder="35">
+            <select id="preferred-risk" class="input pref-input">
+              <option value="conservative">Conservative</option>
+              <option value="moderate">Moderate</option>
+              <option value="aggressive">Aggressive</option>
+            </select>
+          </div>
+
+          <!-- Risk budget -->
+          <div class="pref-row">
+            <div class="pref-label-wrap">
+              <label for="risk-budget" class="pref-label">Risk budget per batch <span class="pref-sub">sum of Size %</span></label>
+              <button type="button" class="help-btn" aria-label="About risk budget">
+                <span data-icon="info" style="width:14px;height:14px;"></span>
+                <span class="help-tooltip">Each recommendation has a <strong>Size</strong> (% of capital). The <em>sum</em> across <strong>all</strong> rows must stay under this cap. The daily batch targets <strong>up to 5 per category</strong> (~20 ideas); use <strong>25</strong> (default) or higher so the budget does not cut the list short. Low values (e.g. <strong>1.0</strong>) only allow a couple of small positions total.</span>
+              </button>
             </div>
-            <div>
-              <label for="conf-risk-off" class="meta" style="font-size:11px;">Risk-Off</label>
-              <input type="number" id="conf-risk-off" class="input" style="width:80px;" min="0" max="80" step="5" placeholder="40">
+            <div class="pref-input-wrap">
+              <input type="number" id="risk-budget" class="input pref-input" min="0" max="50" step="0.5" placeholder="25">
+              <span class="pref-unit">%</span>
             </div>
           </div>
-        </div>
-        <div class="form-group mt-2">
-          <label class="checkbox-label" style="display:flex;align-items:center;gap:8px;">
-            <input type="checkbox" id="shadow-mode-enabled">
-            <span><strong>A/B shadow mode</strong> (profile B)</span>
-          </label>
-          <p class="meta mt-1">When enabled, each new batch still uses your normal confidence gate. We also record whether each saved row would pass a <strong>second</strong> gate: live minimum + delta (clamped 0–100). Positive delta = stricter B; negative = looser. Compare on the Recommendations page under column <strong>B</strong>.</p>
-          <div class="flex gap-2 mt-1" style="flex-wrap:wrap;align-items:center;">
-            <label for="shadow-delta" class="meta">B vs live (delta points)</label>
-            <input type="number" id="shadow-delta" class="input" style="width:88px;" min="-20" max="30" step="1" value="5" title="Added to regime min confidence for profile B">
-            <button type="button" class="btn btn--secondary btn-sm" id="shadow-save">Save shadow settings</button>
+
+          <!-- Sentiment decay -->
+          <div class="pref-row">
+            <div class="pref-label-wrap">
+              <label for="sentiment-decay" class="pref-label">Sentiment decay half-life</label>
+              <button type="button" class="help-btn" aria-label="About sentiment decay">
+                <span data-icon="info" style="width:14px;height:14px;"></span>
+                <span class="help-tooltip">How quickly old news loses influence. <strong>24h</strong> (default) = news from 24 hours ago has half the weight. Lower = more reactive to recent news. Higher = longer memory.</span>
+              </button>
+            </div>
+            <div class="pref-input-wrap">
+              <input type="number" id="sentiment-decay" class="input pref-input" min="1" max="168" step="1" placeholder="24">
+              <span class="pref-unit">hours</span>
+            </div>
           </div>
-        </div>
-      </section>
+
+          <!-- Confidence thresholds -->
+          <div class="pref-row pref-row--multi">
+            <div class="pref-label-wrap" style="padding-top:6px;">
+              <span class="pref-label">Min. confidence per regime</span>
+              <button type="button" class="help-btn" aria-label="About confidence thresholds">
+                <span data-icon="info" style="width:14px;height:14px;"></span>
+                <span class="help-tooltip">Candidates below these thresholds are excluded from the recommendation batch. Lower = more permissive; higher = stricter. Each regime can be tuned independently.</span>
+              </button>
+            </div>
+            <div class="pref-regime-grid">
+              <div class="pref-regime-cell">
+                <span class="regime-tag risk-on">Risk-On</span>
+                <input type="number" id="conf-risk-on" class="input" style="width:72px;text-align:center;" min="0" max="80" step="5" placeholder="30">
+              </div>
+              <div class="pref-regime-cell">
+                <span class="regime-tag cautious">Cautious</span>
+                <input type="number" id="conf-cautious" class="input" style="width:72px;text-align:center;" min="0" max="80" step="5" placeholder="35">
+              </div>
+              <div class="pref-regime-cell">
+                <span class="regime-tag risk-off">Risk-Off</span>
+                <input type="number" id="conf-risk-off" class="input" style="width:72px;text-align:center;" min="0" max="80" step="5" placeholder="40">
+              </div>
+            </div>
+          </div>
+
+          <!-- A/B shadow mode -->
+          <div class="pref-row">
+            <div class="pref-label-wrap">
+              <span class="pref-label">A/B shadow mode <span class="badge-b">B</span></span>
+              <button type="button" class="help-btn" aria-label="About A/B shadow mode">
+                <span data-icon="info" style="width:14px;height:14px;"></span>
+                <span class="help-tooltip">When enabled, each new batch still uses your normal confidence gate. We also record whether each saved row would pass a <strong>second</strong> gate: live minimum + delta (clamped 0–100). Positive delta = stricter B; negative = looser. Compare on the Recommendations page under column <strong>B</strong>.</span>
+              </button>
+            </div>
+            <label class="toggle-switch" aria-label="Enable A/B shadow mode">
+              <input type="checkbox" id="shadow-mode-enabled">
+              <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            </label>
+          </div>
+
+          <!-- B delta (visible when shadow enabled) -->
+          <div class="pref-sub-row" id="shadow-delta-row" style="display:none;">
+            <div class="pref-label-wrap">
+              <label for="shadow-delta" class="pref-label">B vs live delta</label>
+              <button type="button" class="help-btn" aria-label="About shadow delta">
+                <span data-icon="info" style="width:14px;height:14px;"></span>
+                <span class="help-tooltip">Points added to the regime minimum confidence for profile B. Positive = stricter gate for B; negative = looser. Range: −20 to +30.</span>
+              </button>
+            </div>
+            <div class="pref-input-wrap">
+              <input type="number" id="shadow-delta" class="input pref-input" min="-20" max="30" step="1" value="5">
+              <span class="pref-unit">pts</span>
+              <button type="button" class="btn btn--secondary btn-sm" id="shadow-save">Save</button>
+            </div>
+          </div>
+
+        </section>
 
       <!-- LLM provider -->
       <section class="card">
@@ -366,11 +515,18 @@
         <section class="card">
         <h2 class="section-title"><span data-icon="zap"></span> Pipeline actions</h2>
         <div class="flex-col gap-2">
-          <div>
-            <button type="button" class="btn btn--primary" data-action="run-pipeline-once" style="width:100%;">
+          <div class="pipeline-btn-wrap">
+            <button type="button" class="btn btn--primary" id="pipeline-run-btn" data-action="run-pipeline-once" style="width:100%;">
               <span data-icon="zap"></span>
               <span class="btn-label">Run full pipeline</span>
             </button>
+            <div id="pipeline-progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+              <div class="pipeline-bar-fill" id="pipeline-bar-fill" style="width:0%"></div>
+              <span class="pipeline-bar-text">
+                <span id="pipeline-bar-msg">Starting…</span>
+                <span class="pipeline-bar-pct"><span id="pipeline-bar-pct">0</span>%</span>
+              </span>
+            </div>
             <p class="meta mt-1">Ingests RSS feeds, runs sentiment analysis, generates today's recommendations.</p>
           </div>
           <div>
@@ -713,9 +869,15 @@
     /* A/B shadow mode */
     const shadowEnabled = document.getElementById('shadow-mode-enabled');
     const shadowDeltaInput = document.getElementById('shadow-delta');
+    const shadowDeltaRow = document.getElementById('shadow-delta-row');
+    function updateShadowDeltaVisibility() {
+      shadowDeltaRow.style.display = shadowEnabled.checked ? 'flex' : 'none';
+    }
+    shadowEnabled.addEventListener('change', updateShadowDeltaVisibility);
     fetch('/api/preferences').then(r=>r.json()).then(d => {
       if (d.shadow_mode_enabled != null) shadowEnabled.checked = !!d.shadow_mode_enabled;
       if (d.shadow_confidence_delta != null) shadowDeltaInput.value = d.shadow_confidence_delta;
+      updateShadowDeltaVisibility();
     }).catch(()=>{});
     document.getElementById('shadow-save').addEventListener('click', () => {
       const delta = parseInt(shadowDeltaInput.value, 10);
@@ -849,18 +1011,85 @@
         .finally(() => { btn.disabled = false; btn.querySelector('.btn-label').textContent = 'Save LLM settings'; });
     });
 
-    /* Pipeline action buttons with spinner */
-    document.querySelectorAll('button[data-action]').forEach(btn => {
+    /* ── Pipeline progress bar (run-pipeline-once only) ── */
+    (function () {
+      const runBtn   = document.getElementById('pipeline-run-btn');
+      const barWrap  = document.getElementById('pipeline-progress-bar');
+      const barFill  = document.getElementById('pipeline-bar-fill');
+      const barMsg   = document.getElementById('pipeline-bar-msg');
+      const barPct   = document.getElementById('pipeline-bar-pct');
+      let pollTimer  = null;
+
+      function setBar(pct, msg) {
+        barFill.style.width = pct + '%';
+        barMsg.textContent  = msg || 'Running…';
+        barPct.textContent  = pct;
+        barWrap.setAttribute('aria-valuenow', pct);
+      }
+
+      function stopPolling() { clearInterval(pollTimer); pollTimer = null; }
+
+      async function pollProgress() {
+        try {
+          const r = await fetch('/api/pipeline/progress');
+          if (!r.ok) return;
+          const d = await r.json();
+          setBar(d.pct || 0, d.message || d.stage);
+          if (!d.running) {
+            stopPolling();
+            if (d.error) {
+              showToast('Pipeline error: ' + d.error, false);
+            } else {
+              barWrap.classList.add('flash');
+              setBar(100, 'Complete');
+              showToast('Pipeline run complete. Check recommendations.', true);
+            }
+            setTimeout(() => {
+              barWrap.classList.remove('active', 'flash');
+              runBtn.style.display = '';
+              runBtn.disabled = false;
+            }, 1200);
+          }
+        } catch (_) { /* network blip — keep polling */ }
+      }
+
+      runBtn.addEventListener('click', async () => {
+        runBtn.style.display = 'none';
+        barWrap.classList.add('active');
+        setBar(0, 'Starting…');
+        // Endpoint returns 202 immediately; progress is tracked via polling
+        fetch('/api/actions/run-pipeline-once', { method: 'POST' })
+          .then(async r => {
+            const d = await r.json().catch(() => ({}));
+            if (!r.ok) {
+              showToast(d.message || 'Pipeline failed to start', false);
+              stopPolling();
+              barWrap.classList.remove('active');
+              runBtn.style.display = '';
+              runBtn.disabled = false;
+            }
+          })
+          .catch(e => {
+            showToast('Request failed: ' + e.message, false);
+            stopPolling();
+            barWrap.classList.remove('active');
+            runBtn.style.display = '';
+            runBtn.disabled = false;
+          });
+        // Poll progress every 1.5 s
+        pollTimer = setInterval(pollProgress, 1500);
+      });
+    })();
+
+    /* Other pipeline action buttons with spinner */
+    document.querySelectorAll('button[data-action]:not(#pipeline-run-btn)').forEach(btn => {
       btn.addEventListener('click', async () => {
         const action = btn.dataset.action;
         if (action === 'purge-all' && !confirm('Delete ALL recommendations and active trades? This cannot be undone.')) return;
         const label = btn.querySelector('.btn-label');
         const origText = label.textContent;
         btn.disabled = true;
-        label.innerHTML = '<span class="spinner spinner--white"></span> Working...';
-        if (!btn.classList.contains('btn--primary')) {
-          label.innerHTML = '<span class="spinner"></span> Working...';
-        }
+        label.innerHTML = '<span class="spinner"></span> Working...';
         try {
           const r = await fetch('/api/actions/' + action, { method: 'POST' });
           const d = await r.json();
