@@ -26,6 +26,7 @@ def _setup_app_logging() -> None:
     handler.setLevel(logging.INFO)
     handler.setFormatter(fmt)
     for name in (
+        "app.api.routes",
         "app.services.recommendations.engine",
         "app.jobs.scheduler",
         "app.services.technicals",

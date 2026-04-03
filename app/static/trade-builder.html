@@ -60,6 +60,19 @@
       .trade-levels { grid-template-columns: 1fr; }
       .level-cell { border-right: none; border-bottom: 1px solid var(--border); }
     }
+    .tb-refresh-guide {
+      display: block;
+      margin-bottom: var(--space-3);
+      font-size: 14px;
+      line-height: 1.55;
+    }
+    .tb-refresh-guide ul {
+      margin: 8px 0 0;
+      padding-left: 1.15rem;
+    }
+    .tb-refresh-guide li { margin-bottom: 6px; }
+    .tb-refresh-guide li:last-child { margin-bottom: 0; }
+    .tb-refresh-guide .tb-h { font-weight: 600; color: var(--foreground); }
   </style>
 </head>
 <body>
@@ -77,9 +90,54 @@
 
   <main class="app app--wide">
     <h1 class="page-title">Trade builder</h1>
-    <p class="page-desc">Review the system idea, pick an execution strategy from the list, read the explanation, then confirm. Trades are only created after you confirm below.</p>
+    <p class="page-desc">Review the system idea, pick an execution strategy, read the explanation, then confirm. Open from <a href="/recommendations">Recommendations</a> (<strong>Took it</strong>), or start below with any symbol the bot can price (live data + latest analysis sentiment when available). Trades are only created after you confirm.</p>
 
     <div id="err" class="alert alert--error" style="display:none;"></div>
+
+    <div id="start-panel" class="card mb-3" style="display:none;">
+      <h2 class="section-title"><span data-icon="search"></span> Start from a symbol</h2>
+      <p class="text-sm text-muted mb-3">Same engine as <strong>Took it</strong> from the list: live price and technicals for every build. Sentiment and event hints come from the <strong>latest saved analysis</strong> when the pipeline has been run (<a href="/dashboard">Dashboard</a>).</p>
+
+      <div class="alert alert--info tb-refresh-guide">
+        <div class="flex gap-2" style="align-items:flex-start; margin-bottom:6px;">
+          <span data-icon="info" class="text-muted" style="flex-shrink:0; margin-top:2px;"></span>
+          <strong>“Refresh news &amp; analysis” — need it or not?</strong>
+        </div>
+        <ul>
+          <li><span class="tb-h">Not on today&rsquo;s recommendation list?</span> That alone is <strong>not</strong> a reason to enable the refresh. Off-list symbols still build from live data; the list only means that asset wasn&rsquo;t in the last batch ranking.</li>
+          <li><span class="tb-h">Leave the box off (usual case):</span> Fast. Uses whatever analysis is already in the database plus current prices.</li>
+          <li><span class="tb-h">Turn it on only if:</span> You want to pull new headlines and re-run the analysis job <em>before</em> this build (can take several minutes; it refreshes the global feed, not only your symbol). Examples: you haven&rsquo;t run the pipeline yet, or your stored analysis is clearly outdated.</li>
+          <li class="text-sm text-muted" style="list-style:none; margin-left:-1.15rem; margin-top:8px;">Neither option regenerates the full daily recommendations list — use <strong>Dashboard → Run full pipeline</strong> when you want that.</li>
+        </ul>
+      </div>
+
+      <div class="form-group">
+        <label for="sf-category">Category</label>
+        <select id="sf-category" class="input" style="max-width:min(100%, 360px);">
+          <option value="stocks">Stocks</option>
+          <option value="commodities">Commodities</option>
+          <option value="indices">Indices</option>
+          <option value="other">Other</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="sf-asset">Symbol / asset id</label>
+        <input type="text" id="sf-asset" class="input" placeholder="e.g. AAPL" style="max-width:min(100%, 360px);" autocomplete="off">
+      </div>
+      <div class="form-group mb-3">
+        <span class="text-sm font-semibold" style="display:block; margin-bottom:6px;">Optional pre-step</span>
+        <label class="flex gap-2" style="align-items:flex-start; cursor:pointer;">
+          <input type="checkbox" id="sf-refresh" style="margin-top:4px;">
+          <span class="text-sm">Refresh news &amp; analysis before building (ingestion + analysis jobs; slow)</span>
+        </label>
+        <p class="text-sm text-muted mt-1 mb-0">See the blue note above — most users leave this unchecked.</p>
+      </div>
+      <div class="flex gap-2 flex-wrap">
+        <button type="button" class="btn btn--primary" id="sf-submit"><span data-icon="sliders-horizontal"></span> Build plan</button>
+        <a href="/recommendations" class="btn btn--secondary">Pick from today&rsquo;s list</a>
+      </div>
+    </div>
+
     <div id="loading" class="loading-overlay"><span class="spinner spinner--lg"></span> Loading recommendation&hellip;</div>
 
     <div id="main" style="display:none;">
@@ -142,6 +200,7 @@
 
       <div class="flex gap-2 flex-wrap" style="align-items:center;">
         <button type="button" class="btn btn--primary" id="btn-confirm"><span data-icon="check"></span> Confirm &amp; open trade(s)</button>
+        <a href="/trade-builder" class="btn btn--secondary" title="Discard this draft and enter a different symbol"><span data-icon="search"></span> Build another symbol</a>
         <a href="/recommendations" class="btn btn--secondary">Back to recommendations</a>
         <span class="text-sm text-muted" id="confirm-hint">Saves 1 active trade unless a multi-leg strategy is selected.</span>
       </div>
@@ -589,10 +648,11 @@
     async function load() {
       if (!recId) {
         document.getElementById('loading').style.display = 'none';
-        document.getElementById('err').style.display = 'block';
-        document.getElementById('err').textContent = 'Missing rec_id. Open this page from Recommendations (Took it) or append ?rec_id=… to the URL.';
+        document.getElementById('start-panel').style.display = 'block';
+        document.getElementById('err').style.display = 'none';
         return;
       }
+      document.getElementById('start-panel').style.display = 'none';
       try {
         const r = await fetch('/api/recommendations/item/' + encodeURIComponent(recId));
         const data = await r.json();
@@ -662,6 +722,51 @@
         document.getElementById('err').textContent = err.message || 'Failed to load';
       }
     }
+
+    document.getElementById('sf-submit').addEventListener('click', async () => {
+      const cat = (document.getElementById('sf-category').value || 'stocks').trim();
+      const asset = (document.getElementById('sf-asset').value || '').trim();
+      const refresh = document.getElementById('sf-refresh').checked;
+      const btn = document.getElementById('sf-submit');
+      const errEl = document.getElementById('err');
+      if (!asset) {
+        errEl.style.display = 'block';
+        errEl.textContent = 'Enter a symbol or asset id.';
+        return;
+      }
+      errEl.style.display = 'none';
+      btn.disabled = true;
+      const prevHtml = btn.innerHTML;
+      btn.innerHTML = '<span class="spinner spinner--white"></span> Building…';
+      const overlay = document.getElementById('loading');
+      try {
+        overlay.style.display = 'flex';
+        const r = await fetch('/api/trade-builder/from-asset', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            asset_id: asset,
+            category: cat,
+            run_full_pipeline: refresh,
+          }),
+        });
+        const data = await r.json();
+        if (!r.ok) {
+          const d = data.detail;
+          const msg = typeof d === 'string' ? d : (Array.isArray(d) ? d.map(x => x.msg || x).join(' ') : (d && d.message) || 'Request failed');
+          throw new Error(msg);
+        }
+        const id = data.recommendation_id;
+        if (!id) throw new Error('No recommendation_id in response');
+        window.location.href = '/trade-builder?rec_id=' + encodeURIComponent(id);
+      } catch (e) {
+        overlay.style.display = 'none';
+        errEl.style.display = 'block';
+        errEl.textContent = e.message || String(e);
+        btn.disabled = false;
+        btn.innerHTML = prevHtml;
+      }
+    });
 
     document.getElementById('btn-confirm').addEventListener('click', async () => {
       if (!rec) return;

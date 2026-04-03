@@ -150,17 +150,41 @@ def _universe_lookup() -> dict[tuple[str, str], tuple[str, str]]:
     return out
 
 
+def _resolve_universe_entry(
+    category: str,
+    asset_id: str,
+    universe: dict[tuple[str, str], tuple[str, str]],
+) -> Optional[tuple[str, str, str]]:
+    """
+    Resolve Yahoo symbol and risk tier for (category, asset_id).
+
+    Returns (symbol, risk_tier, canonical_asset_id). The canonical id matches universe spelling
+    (e.g. commodities 'Brent') so sentiment maps and UI stay consistent; user input may differ
+    in case (e.g. BRENT, brent).
+    """
+    key = (category, asset_id)
+    if key in universe:
+        sym, tier = universe[key]
+        return (sym, tier, asset_id)
+    if category == "stocks" and is_likely_ticker(asset_id):
+        canon = asset_id.upper()
+        return (canon, "moderate", canon)
+    aid_norm = asset_id.strip().lower()
+    for (cat, u_aid), (sym, tier) in universe.items():
+        if cat == category and u_aid.lower() == aid_norm:
+            return (sym, tier, u_aid)
+    return None
+
+
 def _resolve_symbol_risk(
     category: str,
     asset_id: str,
     universe: dict[tuple[str, str], tuple[str, str]],
 ) -> Optional[tuple[str, str]]:
-    key = (category, asset_id)
-    if key in universe:
-        return universe[key]
-    if category == "stocks" and is_likely_ticker(asset_id):
-        return (asset_id, "moderate")
-    return None
+    r = _resolve_universe_entry(category, asset_id, universe)
+    if not r:
+        return None
+    return (r[0], r[1])
 
 
 def _trade_ideas_from_analysis(by_asset_sentiment: Optional[dict]) -> set[tuple[str, str]]:
@@ -672,6 +696,40 @@ def _sector_regime_adjustment(sector_regime: SectorRegime, direction: str) -> in
 # Candidate builder
 # ---------------------------------------------------------------------------
 
+def _stretch_levels_for_min_rr(
+    price: float,
+    stop_loss: float,
+    take_profit: float,
+    direction: str,
+    min_rr: float,
+) -> tuple[float, float]:
+    """
+    If R:R is below min_rr, move take_profit outward (keep stop) until ratio is met.
+    Used for ad-hoc / trade-builder builds where S/R-aware SL/TP can otherwise
+    produce unrealistically tight targets vs risk (common on commodities futures).
+    """
+    rr = calc_risk_reward(price, stop_loss, take_profit)
+    if rr is not None and rr >= min_rr - 1e-6:
+        return stop_loss, take_profit
+    risk = abs(price - stop_loss)
+    if risk <= 0:
+        return stop_loss, take_profit
+    # Small cushion so rounding to 2dp still clears min_rr (e.g. 1.06 vs 1.0625).
+    need = min_rr * risk * 1.004
+    d = (direction or "long").lower()
+    if d == "short":
+        cur_reward = abs(price - take_profit)
+        if cur_reward >= need - 1e-9:
+            return stop_loss, take_profit
+        new_tp = price - need
+        return stop_loss, round(new_tp, 2)
+    cur_reward = abs(take_profit - price)
+    if cur_reward >= need - 1e-9:
+        return stop_loss, take_profit
+    new_tp = price + need
+    return stop_loss, round(new_tp, 2)
+
+
 def _build_candidate(
     category: str,
     asset_id: str,
@@ -681,6 +739,8 @@ def _build_candidate(
     market_ctx: Optional[MarketContext] = None,
     active_events: Optional[list[str]] = None,
     min_rr_floor: float = MIN_RISK_REWARD,
+    *,
+    ad_hoc: bool = False,
 ) -> Optional[Candidate]:
     """Build a single Candidate with ATR-based levels, direction, expiry, score, trend alignment."""
     snap = build_snapshot(symbol)
@@ -727,6 +787,9 @@ def _build_candidate(
 
     # ATR-based stop loss / take profit
     sl, tp = compute_atr_levels(price, risk_tier, snapshot=snap, direction=direction)
+    eff_min_rr = max(1.0, min_rr_floor * 0.85) if ad_hoc else min_rr_floor
+    if ad_hoc:
+        sl, tp = _stretch_levels_for_min_rr(price, sl, tp, direction, eff_min_rr)
 
     # Expiry estimation
     expiry_days = estimate_expiry_days(price, tp, snapshot=snap)
@@ -810,7 +873,8 @@ def _build_candidate(
     # Skip candidate when key indicators strongly conflict with direction (e.g. RSI OB + long, MACD bear + long)
     conflict_penalty = get_indicator_conflict_penalty(snap, direction, regime=regime_id)
     logger.debug("[ENGINE] %s: conflict_penalty=%d", asset_id, conflict_penalty)
-    if conflict_penalty >= CONFLICT_SKIP_THRESHOLD:
+    conflict_cap = 999 if ad_hoc else CONFLICT_SKIP_THRESHOLD
+    if conflict_penalty >= conflict_cap:
         logger.info(
             "[ENGINE] Skip %s (%s): indicator conflict penalty=%d (direction=%s)",
             asset_id, symbol, conflict_penalty, direction,
@@ -821,10 +885,10 @@ def _build_candidate(
     rr = calc_risk_reward(price, sl, tp)
 
     # Skip candidates with poor R:R (reward doesn't justify risk)
-    if rr is not None and rr < min_rr_floor:
+    if rr is not None and rr < eff_min_rr:
         logger.info(
             "[ENGINE] Skip %s (%s): R:R=%.2f < %.2f minimum",
-            asset_id, symbol, rr, min_rr_floor,
+            asset_id, symbol, rr, eff_min_rr,
         )
         return None
 
@@ -1138,6 +1202,76 @@ def build_daily_candidates(
         risk_budget_1r,
     )
     return out
+
+
+def build_trade_builder_candidate(
+    asset_id: str,
+    category: str,
+    *,
+    by_asset_sentiment: Optional[dict] = None,
+    preferred_risk: str = "moderate",
+    active_events: Optional[list[str]] = None,
+) -> tuple[Optional[Candidate], Optional[str]]:
+    """
+    Build a single Candidate for the trade-builder "start from asset" flow.
+    Uses slightly relaxed conflict / R:R gates (ad_hoc) so users still get a plan when batch filters would drop the row.
+    Returns (candidate, error_message); on success error_message is None.
+    """
+    cat = (category or "").strip().lower()
+    if cat not in BATCH_CATEGORIES:
+        return None, f"category must be one of: {', '.join(BATCH_CATEGORIES)}"
+
+    aid = (asset_id or "").strip()
+    if not aid:
+        return None, "asset_id is required"
+    if cat == "stocks":
+        aid = aid.upper()
+
+    clear_cache()
+    market_ctx = build_market_context(include_sectors=True)
+    universe = _universe_lookup()
+    resolved = _resolve_universe_entry(cat, aid, universe)
+    if not resolved:
+        return None, (
+            f"Could not resolve '{aid}' for category '{cat}'. "
+            "For stocks use a valid US ticker. For commodities/indices/other, pick a symbol from the bot universe "
+            "(see the Analysis page asset lists), or try Stocks + your equity ticker."
+        )
+
+    symbol, risk_tier, canonical_aid = resolved
+    max_risk_level = RISK_TIER_ORDER.get(preferred_risk, RISK_TIER_ORDER["moderate"])
+    if RISK_TIER_ORDER.get(risk_tier, 99) > max_risk_level:
+        return None, (
+            f"This asset's risk tier ({risk_tier}) is above your preferred risk setting ({preferred_risk}). "
+            "Lower preferred risk on the Dashboard or choose another symbol."
+        )
+
+    min_rr_floor = MIN_RISK_REWARD
+    if cat == "commodities":
+        from app.core.preferences import get_commodity_engine_gates
+
+        cg = get_commodity_engine_gates()
+        min_rr_floor = float(cg["commodity_min_risk_reward"])
+
+    cand = _build_candidate(
+        cat,
+        canonical_aid,
+        symbol,
+        risk_tier,
+        by_asset_sentiment,
+        market_ctx,
+        active_events,
+        min_rr_floor=min_rr_floor,
+        ad_hoc=True,
+    )
+    if not cand:
+        return None, (
+            "Could not build a plan: no usable Yahoo chart data, indicator conflict too high, "
+            "or risk/reward still below your minimum after level adjustment. "
+            "The Analysis page only tags headlines with names like Brent — the builder needs live OHLCV for the mapped symbol (Brent → BZ=F). "
+            "Try again, another symbol/category, lower commodity min R:R on the Dashboard, or refresh data from the Dashboard."
+        )
+    return cand, None
 
 
 # For external access to the latest market context

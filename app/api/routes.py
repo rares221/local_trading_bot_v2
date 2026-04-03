@@ -3,8 +3,10 @@ API routes: analysis, recommendations, feedback (Took it/Skipped), active trades
 All user-facing responses include disclaimer per TRADING_APP_PLAN.
 """
 import asyncio
+import logging
 from datetime import datetime, timezone, date
 from typing import Any
+from uuid import uuid4
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import BaseModel
@@ -13,8 +15,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.models.recommendation import Recommendation, ActiveTrade, ActiveTradeLevel
-from app.models.market_analysis import MarketAnalysis
 from app.models.daily_briefing import DailyBriefing
+
+logger = logging.getLogger(__name__)
 
 DISCLAIMER = (
     "This analysis is for educational and research purposes only. Not financial advice. "
@@ -421,6 +424,120 @@ async def mark_took_it(
 class TradeBuilderExplainRequest(BaseModel):
     recommendation_id: str
     strategy: str = "vanilla"
+
+
+class TradeBuilderFromAssetRequest(BaseModel):
+    """
+    Create a pending recommendation for trade builder from a specific symbol (even if it is not on today's list).
+
+    By default the server uses **live prices/indicators** plus the **latest stored analysis** payload
+    (sentiment + event tags) if any — same inputs the daily batch uses, but only for this one asset.
+    That does **not** rerun ingestion or the recommendation batch.
+
+    If ``run_full_pipeline`` is true, the app runs **ingestion + sentiment** and **analysis** jobs first
+    (same as the first two stages of Dashboard → Run full pipeline), then builds from the refreshed payload.
+    It still does **not** rerun the daily batch; use the Dashboard action if you want today's full list regenerated.
+    """
+    asset_id: str
+    category: str = "stocks"
+    run_full_pipeline: bool = False
+
+
+@router.post("/trade-builder/from-asset")
+async def trade_builder_from_asset(
+    body: TradeBuilderFromAssetRequest,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Create a pending Recommendation from asset + category; open trade builder with returned ``recommendation_id``."""
+    from functools import partial
+
+    from app.core.preferences import get_preferred_risk
+    from app.jobs.scheduler import job_ingest_and_sentiment, job_run_analysis
+    from app.services.analysis import get_latest_analysis as fetch_latest_analysis
+    from app.services.recommendations.engine import build_trade_builder_candidate
+    from app.services.research import build_research_context, generate_rationale
+
+    if body.run_full_pipeline:
+        await job_ingest_and_sentiment()
+        await job_run_analysis()
+
+    analysis = await fetch_latest_analysis(db)
+    payload = (analysis.payload or {}) if analysis else {}
+    by_asset_sentiment = payload.get("by_asset_sentiment")
+    active_events = payload.get("active_events")
+
+    preferred = get_preferred_risk()
+    _build = partial(
+        build_trade_builder_candidate,
+        body.asset_id.strip(),
+        (body.category or "stocks").strip(),
+        by_asset_sentiment=by_asset_sentiment,
+        preferred_risk=preferred,
+        active_events=active_events if isinstance(active_events, list) else None,
+    )
+    cand, err = await asyncio.to_thread(_build)
+    if err or not cand:
+        msg = err or "Could not build plan"
+        logger.warning(
+            "trade_builder_from_asset failed: %s (asset_id=%r category=%r)",
+            msg,
+            body.asset_id.strip(),
+            (body.category or "stocks").strip(),
+        )
+        raise HTTPException(status_code=400, detail=msg)
+
+    _reg_note = getattr(cand, "market_regime_note", None)
+    _vol = cand.volatility_notes
+    if _reg_note and _vol:
+        _combined_notes = f"{_reg_note}; {_vol}"
+    elif _reg_note:
+        _combined_notes = _reg_note
+    else:
+        _combined_notes = _vol
+
+    rationale_text = None
+    try:
+        ctx = await build_research_context(db, cand.asset_id, cand.asset_category)
+        ctx["buy_in_price"] = cand.buy_in_price
+        ctx["direction"] = cand.direction
+        rationale_text = await generate_rationale(ctx)
+    except Exception:
+        pass
+
+    now = datetime.now(timezone.utc)
+    batch_id = date.today().isoformat()
+    rec = Recommendation(
+        id=str(uuid4()),
+        created_at=now,
+        batch_id=batch_id,
+        asset_category=cand.asset_category,
+        asset_id=cand.asset_id,
+        buy_in_price=cand.buy_in_price,
+        stop_loss=cand.stop_loss,
+        take_profit=cand.take_profit,
+        expiry_date=cand.expiry_date,
+        rationale_ref=analysis.id if analysis else None,
+        rationale_text=rationale_text,
+        risk_tier=cand.risk_tier,
+        direction=cand.direction or "long",
+        confidence_score=cand.confidence_score,
+        risk_reward=cand.risk_reward,
+        volatility_notes=_combined_notes,
+        status="pending",
+        suggested_risk_pct=getattr(cand, "suggested_risk_pct", None),
+        min_confidence_gate=getattr(cand, "min_confidence_gate", None),
+        shadow_b_threshold=getattr(cand, "shadow_b_threshold", None),
+        shadow_b_pass=getattr(cand, "shadow_b_pass", None),
+    )
+    db.add(rec)
+    await db.commit()
+    return _with_disclaimer(
+        {
+            "ok": True,
+            "recommendation_id": rec.id,
+            "used_latest_analysis": analysis is not None,
+        }
+    )
 
 
 @router.get("/trade-builder/strategies")
