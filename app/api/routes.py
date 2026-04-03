@@ -224,6 +224,7 @@ def _rec_to_item(r: Recommendation) -> dict:
         "min_confidence_gate": getattr(r, "min_confidence_gate", None),
         "shadow_b_threshold": getattr(r, "shadow_b_threshold", None),
         "shadow_b_pass": getattr(r, "shadow_b_pass", None),
+        "instrument_type": getattr(r, "instrument_type", None),
     }
     return item
 

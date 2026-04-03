@@ -121,6 +121,7 @@ def _migrate_engine_v2_v3(sync_conn) -> None:
         ("min_confidence_gate", "INTEGER",   ""),
         ("shadow_b_threshold", "INTEGER",    ""),
         ("shadow_b_pass",     "BOOLEAN",     ""),
+        ("instrument_type",   "VARCHAR(16)", ""),
     ])
     # active_trades: trade lifecycle (v3) + signal flip tracking + outcome logging
     _ensure_columns(sync_conn, "active_trades", [

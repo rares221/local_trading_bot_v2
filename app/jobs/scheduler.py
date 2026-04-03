@@ -18,6 +18,16 @@ from app.core.database import async_session_factory
 from app.models.feed_item import FeedItem
 from app.models.recommendation import Recommendation, ActiveTrade, ActiveTradeLevel
 from app.models.market_analysis import MarketAnalysis
+
+
+def _infer_instrument_type(asset_category: str) -> str:
+    """Infer instrument type from asset category. cfd | invest."""
+    cat = (asset_category or "").lower()
+    if cat in ("indices", "index", "forex", "commodities", "oil", "commodity"):
+        return "cfd"
+    if cat == "stocks":
+        return "invest"
+    return "cfd"
 from app.services.ingestion import fetch_all_feeds, save_feed_items
 from app.services.sentiment import score_sentiment, tag_assets, detect_tickers
 from app.services.analysis import run_analysis, get_latest_analysis
@@ -185,6 +195,7 @@ async def job_daily_batch() -> None:
                     min_confidence_gate=getattr(c, "min_confidence_gate", None),
                     shadow_b_threshold=getattr(c, "shadow_b_threshold", None),
                     shadow_b_pass=getattr(c, "shadow_b_pass", None),
+                    instrument_type=_infer_instrument_type(c.asset_category),
                 )
                 session.add(rec)
             progress.update(97, "batch", f"Saving {len(candidates)} recommendations…")

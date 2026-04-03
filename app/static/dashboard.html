@@ -488,6 +488,35 @@
             </label>
           </div>
 
+          <!-- Commodity gates -->
+          <div class="pref-row">
+            <div class="pref-label-wrap">
+              <span class="pref-label">Commodity confidence offset</span>
+              <button type="button" class="help-btn" aria-label="About commodity confidence offset">
+                <span data-icon="info" style="width:14px;height:14px;"></span>
+                <span class="help-tooltip">Only applies to commodities. Added to the regime minimum confidence threshold. Negative = easier to pass (looser gate); positive = stricter. Equities and indices use the standard thresholds above.</span>
+              </button>
+            </div>
+            <div class="pref-input-wrap">
+              <input type="number" id="commodity-conf-offset" class="input pref-input" min="-30" max="20" step="1" value="-5">
+              <span class="pref-unit">pts</span>
+            </div>
+          </div>
+
+          <div class="pref-row">
+            <div class="pref-label-wrap">
+              <span class="pref-label">Commodity min R:R</span>
+              <button type="button" class="help-btn" aria-label="About commodity minimum risk-reward">
+                <span data-icon="info" style="width:14px;height:14px;"></span>
+                <span class="help-tooltip">Minimum risk-to-reward ratio required for commodity recommendations. Equities and indices use a fixed floor of 1.5.</span>
+              </button>
+            </div>
+            <div class="pref-input-wrap">
+              <input type="number" id="commodity-min-rr" class="input pref-input" min="1.05" max="2.5" step="0.05" value="1.25">
+              <span class="pref-unit">R:R</span>
+            </div>
+          </div>
+
           <!-- B delta (visible when shadow enabled) -->
           <div class="pref-sub-row" id="shadow-delta-row" style="display:none;">
             <div class="pref-label-wrap">
@@ -885,8 +914,8 @@
         confCautiousInput.value = d.confidence_thresholds.cautious ?? 35;
         confRiskOffInput.value = d.confidence_thresholds.risk_off ?? 40;
       }
-      if (d.commodity_confidence_offset != null) commodityConfOffInput.value = d.commodity_confidence_offset;
-      if (d.commodity_min_risk_reward != null) commodityMinRrInput.value = d.commodity_min_risk_reward;
+      if (d.commodity_confidence_offset != null && commodityConfOffInput) commodityConfOffInput.value = d.commodity_confidence_offset;
+      if (d.commodity_min_risk_reward != null && commodityMinRrInput) commodityMinRrInput.value = d.commodity_min_risk_reward;
     }).catch(()=>{});
     // Suggested confidence thresholds per risk stance
     const suggestedThresholds = {
@@ -959,7 +988,7 @@
     confCautiousInput.addEventListener('change', () => saveConfidenceThreshold('cautious', confCautiousInput));
     confRiskOffInput.addEventListener('change', () => saveConfidenceThreshold('risk_off', confRiskOffInput));
 
-    commodityConfOffInput.addEventListener('change', () => {
+    if (commodityConfOffInput) commodityConfOffInput.addEventListener('change', () => {
       const val = parseInt(commodityConfOffInput.value, 10);
       if (isNaN(val) || val < -30 || val > 20) {
         showToast('Commodity confidence offset must be -30 to 20', false);
@@ -971,7 +1000,7 @@
       }).then(r=>r.json()).then(d => showToast(d.message || 'Saved.', true))
         .catch(e => showToast('Failed: ' + e.message, false));
     });
-    commodityMinRrInput.addEventListener('change', () => {
+    if (commodityMinRrInput) commodityMinRrInput.addEventListener('change', () => {
       const val = parseFloat(commodityMinRrInput.value);
       if (isNaN(val) || val < 1.05 || val > 2.5) {
         showToast('Commodity min R:R must be 1.05–2.5', false);
