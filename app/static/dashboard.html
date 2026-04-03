@@ -3,13 +3,60 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Dashboard — Trading Bot</title>
+  <title>Configuration — Trading Bot</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/css/common.css">
   <script src="/static/js/icons.js"></script>
   <style>
+    /* ── Segmented tab control ── */
+    .config-tabs {
+      display: flex;
+      gap: 3px;
+      padding: 4px;
+      background: var(--secondary);
+      border: 1px solid var(--border);
+      border-radius: calc(var(--radius) + 2px);
+      margin-bottom: var(--space-3);
+      overflow-x: auto;
+      flex-shrink: 0;
+    }
+    .config-tab-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 14px;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--muted-foreground);
+      background: none;
+      border: none;
+      border-radius: var(--radius);
+      cursor: pointer;
+      white-space: nowrap;
+      transition: color .15s, background .15s, box-shadow .15s;
+      font-family: inherit;
+    }
+    .config-tab-btn:hover { color: var(--foreground); }
+    .config-tab-btn:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+    .config-tab-btn.active {
+      color: var(--foreground);
+      background: var(--card);
+      box-shadow: var(--shadow);
+      font-weight: 600;
+    }
+    .config-panel[hidden] { display: none !important; }
+
+    /* 2-col grid inside a tab panel */
+    .config-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: var(--space-3);
+      margin-bottom: var(--space-3);
+    }
+    @media (max-width: 700px) { .config-grid { grid-template-columns: 1fr; } }
+
     .metric-box {
       padding: var(--space-2); border: 1px solid var(--border);
       border-radius: var(--radius); background: var(--secondary);
@@ -30,7 +77,7 @@
 </head>
 <body>
   <nav class="nav">
-    <a href="/dashboard" class="active"><span data-icon="layout-dashboard"></span> Dashboard</a>
+    <a href="/dashboard" class="active"><span data-icon="sliders-horizontal"></span> Configuration</a>
     <a href="/recommendations"><span data-icon="list-checks"></span> Recommendations</a>
     <a href="/research"><span data-icon="search"></span> Research</a>
     <a href="/analysis"><span data-icon="bar-chart-2"></span> Analysis</a>
@@ -41,19 +88,35 @@
   </nav>
 
   <main class="app app--wide">
-    <h1 class="page-title">Dashboard</h1>
-    <p class="page-desc">Control center for your trading pipeline. Run the pipeline to ingest news, analyse sentiment, and generate today's recommendations.</p>
+    <h1 class="page-title">Configuration</h1>
+    <p class="page-desc">Configure your trading pipeline, manage settings, and monitor market conditions.</p>
 
     <div id="toast" class="alert" role="alert" style="display:none;"></div>
 
-    <div class="dashboard-grid">
+    <!-- ── Tab bar ── -->
+    <div class="config-tabs" role="tablist" id="config-tabs">
+      <button class="config-tab-btn active" role="tab" data-panel="settings" aria-selected="true">
+        <span data-icon="shield"></span> Settings
+      </button>
+      <button class="config-tab-btn" role="tab" data-panel="pipeline" aria-selected="false">
+        <span data-icon="zap"></span> Pipeline
+      </button>
+      <button class="config-tab-btn" role="tab" data-panel="market" aria-selected="false">
+        <span data-icon="activity"></span> Market
+      </button>
+      <button class="config-tab-btn" role="tab" data-panel="calibration" aria-selected="false">
+        <span data-icon="sliders-horizontal"></span> Calibration
+      </button>
+      <button class="config-tab-btn" role="tab" data-panel="docs" aria-selected="false">
+        <span data-icon="book-open"></span> Docs
+      </button>
+    </div>
 
-      <!-- ═══════════════════════════════════════════════════════════════════════
-           SETTINGS SECTION (Cards with input fields)
-           ═══════════════════════════════════════════════════════════════════════ -->
-
-      <!-- Risk preference -->
-      <section class="card">
+    <!-- ══════════════════════ TAB: SETTINGS ══════════════════════ -->
+    <div class="config-panel" id="panel-settings" role="tabpanel">
+      <div class="config-grid">
+        <!-- Risk preference -->
+        <section class="card">
         <h2 class="section-title"><span data-icon="shield"></span> Risk preference</h2>
         <p class="meta">Only assets at or below this risk level will be recommended. Takes effect on the next batch.</p>
         <div class="form-group">
@@ -134,8 +197,10 @@
         </button>
       </section>
 
+      </div><!-- /.config-grid -->
+
       <!-- Webhook Notifications -->
-      <section class="card" style="grid-column: 1 / -1;" id="notifications-section">
+      <section class="card" id="notifications-section">
         <h2 class="section-title"><span data-icon="bell"></span> Webhook Notifications</h2>
         <p class="meta mb-2">Receive alerts via Discord, Slack, or any webhook-compatible service when batches are ready or market regime changes.</p>
         <div class="flex gap-3 mb-2" style="flex-wrap:wrap;align-items:flex-end;">
@@ -181,12 +246,13 @@
         </div>
       </section>
 
-      <!-- ═══════════════════════════════════════════════════════════════════════
-           ACTIONS SECTION (Pipeline buttons)
-           ═══════════════════════════════════════════════════════════════════════ -->
+    </div><!-- /#panel-settings -->
 
-      <!-- Pipeline actions -->
-      <section class="card">
+    <!-- ══════════════════════ TAB: PIPELINE ══════════════════════ -->
+    <div class="config-panel" id="panel-pipeline" role="tabpanel" hidden>
+      <div class="config-grid">
+        <!-- Pipeline actions -->
+        <section class="card">
         <h2 class="section-title"><span data-icon="zap"></span> Pipeline actions</h2>
         <div class="flex-col gap-2">
           <div>
@@ -220,12 +286,8 @@
         </div>
       </section>
 
-      <!-- ═══════════════════════════════════════════════════════════════════════
-           INFO SECTION (Read-only market data)
-           ═══════════════════════════════════════════════════════════════════════ -->
-
-      <!-- Regime status -->
-      <section class="card" id="regime-section">
+        <!-- Regime status -->
+        <section class="card" id="regime-section">
         <h2 class="section-title"><span data-icon="gauge"></span> Market Regime Status</h2>
         <p class="meta mb-2">
           <strong>What is a market regime?</strong> The bot analyzes SPX trend and VIX level to classify market conditions into three regimes:
@@ -254,8 +316,14 @@
         </div>
       </section>
 
-      <!-- Sector Regimes -->
-      <section class="card" id="sector-section">
+      </div><!-- /.config-grid -->
+    </div><!-- /#panel-pipeline -->
+
+    <!-- ══════════════════════ TAB: MARKET ══════════════════════ -->
+    <div class="config-panel" id="panel-market" role="tabpanel" hidden>
+      <div class="config-grid">
+        <!-- Sector Regimes -->
+        <section class="card" id="sector-section">
         <h2 class="section-title"><span data-icon="bar-chart-2"></span> Sector Regimes</h2>
         <p class="meta mb-2">Each sector has its own trend based on sector ETF performance. Outperforming sectors (positive relative strength) are highlighted.</p>
         <div id="sector-grid" class="flex gap-2" style="flex-wrap:wrap;">
@@ -263,16 +331,21 @@
         </div>
       </section>
 
-      <!-- Correlation Matrix -->
-      <section class="card" id="correlation-section">
+        <!-- Correlation Matrix -->
+        <section class="card" id="correlation-section">
         <h2 class="section-title"><span data-icon="activity"></span> Cross-Asset Correlations</h2>
         <p class="meta mb-2">20-day rolling correlations between key assets. Divergences from expected relationships may signal regime shifts.</p>
         <div id="correlation-signals" class="mb-2"></div>
         <div id="correlation-matrix" style="overflow-x:auto;"></div>
       </section>
 
+      </div><!-- /.config-grid -->
+    </div><!-- /#panel-market -->
+
+    <!-- ══════════════════════ TAB: CALIBRATION ══════════════════════ -->
+    <div class="config-panel" id="panel-calibration" role="tabpanel" hidden>
       <!-- Calibration stats -->
-      <section class="card" style="grid-column: 1 / -1;" id="calibration-section">
+      <section class="card" id="calibration-section">
         <h2 class="section-title"><span data-icon="sliders-horizontal"></span> Calibration &amp; Performance</h2>
         <p class="meta mb-2">Empirical hit rates per confidence bucket, Brier score, and Expected Calibration Error from closed trades. Fitted Platt <strong>A/B</strong> is saved to <code>data/platt_calibration.json</code> and reloaded when the app starts.</p>
         <div id="calibration-content" style="display:none;">
@@ -332,8 +405,12 @@
         <p class="meta" id="calibration-empty" style="display:none;">No closed trades yet. Calibration stats will appear once trades reach TP, SL, or expiry.</p>
       </section>
 
+    </div><!-- /#panel-calibration -->
+
+    <!-- ══════════════════════ TAB: DOCS ══════════════════════ -->
+    <div class="config-panel" id="panel-docs" role="tabpanel" hidden>
       <!-- Help & Glossary -->
-      <section class="card" style="grid-column: 1 / -1;">
+      <section class="card">
         <h2 class="section-title"><span data-icon="info"></span> Key Concepts</h2>
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:var(--space-3);">
           <div>
@@ -375,7 +452,7 @@
       </section>
 
       <!-- Quick navigation -->
-      <section class="card" style="grid-column: 1 / -1;">
+      <section class="card">
         <h2 class="section-title"><span data-icon="map"></span> Quick navigation</h2>
         <div class="btn-group" style="flex-wrap:wrap;">
           <a href="/recommendations" class="btn btn--secondary"><span data-icon="list-checks"></span> Recommendations</a>
@@ -387,7 +464,7 @@
           <a href="/docs" target="_blank" rel="noopener" class="btn btn--secondary"><span data-icon="file-text"></span> API docs</a>
         </div>
       </section>
-    </div>
+    </div><!-- /#panel-docs -->
 
     <p class="disclaimer">Educational and research purposes only. Not financial advice.</p>
   </main>
@@ -827,6 +904,32 @@
       label.textContent = 'Test';
       btn.disabled = false;
     });
+
+    /* ── Tab switching ── */
+    (function() {
+      const tabs    = document.querySelectorAll('.config-tab-btn');
+      const panels  = document.querySelectorAll('.config-panel');
+      const HASH_KEY = 'cfg-tab';
+
+      function activate(panelId) {
+        tabs.forEach(t => {
+          const on = t.dataset.panel === panelId;
+          t.classList.toggle('active', on);
+          t.setAttribute('aria-selected', on);
+        });
+        panels.forEach(p => {
+          p.hidden = p.id !== 'panel-' + panelId;
+        });
+        history.replaceState(null, '', '#' + panelId);
+      }
+
+      tabs.forEach(t => t.addEventListener('click', () => activate(t.dataset.panel)));
+
+      // Restore from URL hash on load
+      const hash = location.hash.replace('#', '');
+      const valid = Array.from(tabs).map(t => t.dataset.panel);
+      activate(valid.includes(hash) ? hash : 'settings');
+    })();
   </script>
 </body>
 </html>
