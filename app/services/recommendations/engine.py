@@ -680,6 +680,7 @@ def _build_candidate(
     by_asset_sentiment: Optional[dict],
     market_ctx: Optional[MarketContext] = None,
     active_events: Optional[list[str]] = None,
+    min_rr_floor: float = MIN_RISK_REWARD,
 ) -> Optional[Candidate]:
     """Build a single Candidate with ATR-based levels, direction, expiry, score, trend alignment."""
     snap = build_snapshot(symbol)
@@ -820,10 +821,10 @@ def _build_candidate(
     rr = calc_risk_reward(price, sl, tp)
 
     # Skip candidates with poor R:R (reward doesn't justify risk)
-    if rr is not None and rr < MIN_RISK_REWARD:
+    if rr is not None and rr < min_rr_floor:
         logger.info(
             "[ENGINE] Skip %s (%s): R:R=%.2f < %.2f minimum",
-            asset_id, symbol, rr, MIN_RISK_REWARD,
+            asset_id, symbol, rr, min_rr_floor,
         )
         return None
 
@@ -875,6 +876,7 @@ def _candidates_for_pairs(
     exclude_taken: Optional[set[tuple[str, str]]] = None,
     market_ctx: Optional[MarketContext] = None,
     active_events: Optional[list[str]] = None,
+    min_rr_floor: float = MIN_RISK_REWARD,
 ) -> list[Candidate]:
     out: list[Candidate] = []
     seen: set[str] = set()
@@ -889,7 +891,10 @@ def _candidates_for_pairs(
         symbol, risk_tier = resolved
         if RISK_TIER_ORDER.get(risk_tier, 99) > max_risk_level:
             continue
-        cand = _build_candidate(category, asset_id, symbol, risk_tier, by_asset_sentiment, market_ctx, active_events)
+        cand = _build_candidate(
+            category, asset_id, symbol, risk_tier, by_asset_sentiment,
+            market_ctx, active_events, min_rr_floor=min_rr_floor,
+        )
         if cand:
             out.append(cand)
     return out
@@ -921,7 +926,22 @@ def build_daily_candidates_for_category(
     min_confidence = 35  # default gate (lowered from 40)
     if market_ctx:
         min_confidence = market_ctx.min_confidence_threshold()
-    logger.info("[ENGINE][%s] min_confidence=%d (regime=%s)", category, min_confidence, market_ctx.regime.regime if market_ctx else None)
+    min_rr_floor = MIN_RISK_REWARD
+    if category == "commodities":
+        from app.core.preferences import get_commodity_engine_gates
+
+        cg = get_commodity_engine_gates()
+        min_confidence = max(
+            0, min(100, min_confidence + int(cg["commodity_confidence_offset"])),
+        )
+        min_rr_floor = float(cg["commodity_min_risk_reward"])
+    logger.info(
+        "[ENGINE][%s] min_confidence=%d min_rr_floor=%.2f (regime=%s)",
+        category,
+        min_confidence,
+        min_rr_floor,
+        market_ctx.regime.regime if market_ctx else None,
+    )
 
     max_risk_level = RISK_TIER_ORDER.get(preferred_risk, RISK_TIER_ORDER["moderate"])
     universe = _universe_lookup()
@@ -932,6 +952,7 @@ def build_daily_candidates_for_category(
         category, idea_pairs, universe, max_risk_level,
         by_asset_sentiment=by_asset_sentiment, exclude_taken=excluded,
         market_ctx=market_ctx, active_events=active_events,
+        min_rr_floor=min_rr_floor,
     )
 
     # Confidence gate: drop low-conviction candidates
@@ -959,7 +980,10 @@ def build_daily_candidates_for_category(
                 continue
             if RISK_TIER_ORDER.get(risk_tier, 99) > max_risk_level:
                 continue
-            cand = _build_candidate(category, asset_id, symbol, risk_tier, by_asset_sentiment, market_ctx, active_events)
+            cand = _build_candidate(
+                category, asset_id, symbol, risk_tier, by_asset_sentiment,
+                market_ctx, active_events, min_rr_floor=min_rr_floor,
+            )
             if not cand:
                 logger.debug("[ENGINE][%s] %s (%s): no candidate built (no price or skipped)", category, asset_id, symbol)
             elif cand.confidence_score < backfill_min_conf:

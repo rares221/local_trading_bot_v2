@@ -217,3 +217,59 @@ def set_shadow_mode(
         )
     _save_prefs(data)
     return get_shadow_mode_config()
+
+
+# Commodity-specific gates: futures/spot names often sit below equity-style confidence + R:R bars.
+_DEFAULT_COMMODITY_CONF_OFFSET = -5
+_MIN_COMMODITY_CONF_OFFSET = -30
+_MAX_COMMODITY_CONF_OFFSET = 20
+
+_DEFAULT_COMMODITY_MIN_RR = 1.25
+_MIN_COMMODITY_RR = 1.05
+_MAX_COMMODITY_RR = 2.5
+
+
+def get_commodity_engine_gates() -> dict[str, int | float]:
+    """
+    Return gates used only for category ``commodities``:
+    - commodity_confidence_offset: added to the regime min confidence (negative = looser).
+    - commodity_min_risk_reward: minimum R:R before a commodity idea is skipped.
+    """
+    data = _load_prefs()
+    off = data.get("commodity_confidence_offset", _DEFAULT_COMMODITY_CONF_OFFSET)
+    try:
+        off_i = int(off)
+    except (TypeError, ValueError):
+        off_i = _DEFAULT_COMMODITY_CONF_OFFSET
+    off_i = max(_MIN_COMMODITY_CONF_OFFSET, min(_MAX_COMMODITY_CONF_OFFSET, off_i))
+
+    raw_rr = data.get("commodity_min_risk_reward", _DEFAULT_COMMODITY_MIN_RR)
+    try:
+        rr = float(raw_rr)
+    except (TypeError, ValueError):
+        rr = _DEFAULT_COMMODITY_MIN_RR
+    rr = max(_MIN_COMMODITY_RR, min(_MAX_COMMODITY_RR, rr))
+
+    return {
+        "commodity_confidence_offset": off_i,
+        "commodity_min_risk_reward": rr,
+    }
+
+
+def set_commodity_engine_gates(
+    confidence_offset: int | None = None,
+    min_risk_reward: float | None = None,
+) -> dict[str, int | float]:
+    """Persist commodity-only engine gates. Offset clamped [-30, 20]; R:R clamped [1.05, 2.5]."""
+    data = _load_prefs()
+    if confidence_offset is not None:
+        data["commodity_confidence_offset"] = max(
+            _MIN_COMMODITY_CONF_OFFSET,
+            min(_MAX_COMMODITY_CONF_OFFSET, int(confidence_offset)),
+        )
+    if min_risk_reward is not None:
+        data["commodity_min_risk_reward"] = max(
+            _MIN_COMMODITY_RR, min(_MAX_COMMODITY_RR, float(min_risk_reward)),
+        )
+    _save_prefs(data)
+    return get_commodity_engine_gates()

@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import logging
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -11,6 +12,30 @@ from app.api.routes import router
 from app.jobs.scheduler import start_scheduler
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+
+def _setup_app_logging() -> None:
+    """
+    Uvicorn configures its own loggers; app code uses logging.getLogger(__name__).
+    Without a handler on those loggers (or DEBUG root), [ENGINE] INFO lines never hit the terminal.
+    """
+    fmt = logging.Formatter("%(levelname)s [%(name)s] %(message)s")
+    handler = logging.StreamHandler()
+    handler.setLevel(logging.INFO)
+    handler.setFormatter(fmt)
+    for name in (
+        "app.services.recommendations.engine",
+        "app.jobs.scheduler",
+        "app.services.technicals",
+    ):
+        log = logging.getLogger(name)
+        log.setLevel(logging.INFO)
+        if not any(type(h) is logging.StreamHandler for h in log.handlers):
+            log.addHandler(handler)
+        log.propagate = False
+
+
+_setup_app_logging()
 
 
 @asynccontextmanager

@@ -918,8 +918,10 @@ async def get_preferences() -> dict[str, Any]:
         get_sentiment_half_life,
         get_confidence_thresholds,
         get_shadow_mode_config,
+        get_commodity_engine_gates,
     )
     sm = get_shadow_mode_config()
+    cg = get_commodity_engine_gates()
     out = {
         "preferred_risk": get_preferred_risk(),
         "risk_budget_1r": get_risk_budget_1r(),
@@ -927,6 +929,8 @@ async def get_preferences() -> dict[str, Any]:
         "confidence_thresholds": get_confidence_thresholds(),
         "shadow_mode_enabled": sm["enabled"],
         "shadow_confidence_delta": sm["confidence_delta_stored"],
+        "commodity_confidence_offset": cg["commodity_confidence_offset"],
+        "commodity_min_risk_reward": cg["commodity_min_risk_reward"],
     }
     out.update(get_research_llm_config())
     return _with_disclaimer(out)
@@ -944,6 +948,8 @@ class PreferencesUpdate(BaseModel):
     confidence_threshold_risk_off: int | None = None
     shadow_mode_enabled: bool | None = None
     shadow_confidence_delta: int | None = None
+    commodity_confidence_offset: int | None = None
+    commodity_min_risk_reward: float | None = None
 
 
 @router.patch("/preferences")
@@ -953,6 +959,7 @@ async def update_preferences(body: PreferencesUpdate) -> dict[str, Any]:
         set_preferred_risk, set_research_llm_config, get_preferred_risk, get_research_llm_config,
         set_risk_budget_1r, get_risk_budget_1r, set_sentiment_half_life, get_sentiment_half_life,
         set_confidence_thresholds, get_confidence_thresholds, set_shadow_mode, get_shadow_mode_config,
+        set_commodity_engine_gates, get_commodity_engine_gates,
     )
     try:
         if body.preferred_risk is not None:
@@ -978,7 +985,13 @@ async def update_preferences(body: PreferencesUpdate) -> dict[str, Any]:
                 enabled=body.shadow_mode_enabled,
                 confidence_delta=body.shadow_confidence_delta,
             )
+        if body.commodity_confidence_offset is not None or body.commodity_min_risk_reward is not None:
+            set_commodity_engine_gates(
+                confidence_offset=body.commodity_confidence_offset,
+                min_risk_reward=body.commodity_min_risk_reward,
+            )
         sm = get_shadow_mode_config()
+        cg = get_commodity_engine_gates()
         out = {
             "preferred_risk": get_preferred_risk(),
             "risk_budget_1r": get_risk_budget_1r(),
@@ -986,6 +999,8 @@ async def update_preferences(body: PreferencesUpdate) -> dict[str, Any]:
             "confidence_thresholds": get_confidence_thresholds(),
             "shadow_mode_enabled": sm["enabled"],
             "shadow_confidence_delta": sm["confidence_delta_stored"],
+            "commodity_confidence_offset": cg["commodity_confidence_offset"],
+            "commodity_min_risk_reward": cg["commodity_min_risk_reward"],
         }
         out.update(get_research_llm_config())
         out["message"] = "Preferences saved."

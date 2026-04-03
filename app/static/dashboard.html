@@ -874,6 +874,8 @@
     const confRiskOnInput = document.getElementById('conf-risk-on');
     const confCautiousInput = document.getElementById('conf-cautious');
     const confRiskOffInput = document.getElementById('conf-risk-off');
+    const commodityConfOffInput = document.getElementById('commodity-conf-offset');
+    const commodityMinRrInput = document.getElementById('commodity-min-rr');
     fetch('/api/preferences').then(r=>r.json()).then(d => {
       if (d.preferred_risk) riskSel.value = d.preferred_risk;
       if (d.risk_budget_1r != null) riskBudgetInput.value = d.risk_budget_1r;
@@ -883,6 +885,8 @@
         confCautiousInput.value = d.confidence_thresholds.cautious ?? 35;
         confRiskOffInput.value = d.confidence_thresholds.risk_off ?? 40;
       }
+      if (d.commodity_confidence_offset != null) commodityConfOffInput.value = d.commodity_confidence_offset;
+      if (d.commodity_min_risk_reward != null) commodityMinRrInput.value = d.commodity_min_risk_reward;
     }).catch(()=>{});
     // Suggested confidence thresholds per risk stance
     const suggestedThresholds = {
@@ -954,6 +958,31 @@
     confRiskOnInput.addEventListener('change', () => saveConfidenceThreshold('risk_on', confRiskOnInput));
     confCautiousInput.addEventListener('change', () => saveConfidenceThreshold('cautious', confCautiousInput));
     confRiskOffInput.addEventListener('change', () => saveConfidenceThreshold('risk_off', confRiskOffInput));
+
+    commodityConfOffInput.addEventListener('change', () => {
+      const val = parseInt(commodityConfOffInput.value, 10);
+      if (isNaN(val) || val < -30 || val > 20) {
+        showToast('Commodity confidence offset must be -30 to 20', false);
+        return;
+      }
+      fetch('/api/preferences', {
+        method:'PATCH', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ commodity_confidence_offset: val })
+      }).then(r=>r.json()).then(d => showToast(d.message || 'Saved.', true))
+        .catch(e => showToast('Failed: ' + e.message, false));
+    });
+    commodityMinRrInput.addEventListener('change', () => {
+      const val = parseFloat(commodityMinRrInput.value);
+      if (isNaN(val) || val < 1.05 || val > 2.5) {
+        showToast('Commodity min R:R must be 1.05–2.5', false);
+        return;
+      }
+      fetch('/api/preferences', {
+        method:'PATCH', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ commodity_min_risk_reward: val })
+      }).then(r=>r.json()).then(d => showToast(d.message || 'Saved.', true))
+        .catch(e => showToast('Failed: ' + e.message, false));
+    });
 
     /* A/B shadow mode */
     const shadowEnabled = document.getElementById('shadow-mode-enabled');
