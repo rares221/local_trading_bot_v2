@@ -755,7 +755,15 @@
     }
 
     /* ── Table helpers ── */
-    const THEAD = '<tr><th>Asset</th><th>Dir</th><th class="num">Entry</th><th class="num">Current</th><th class="num">SL</th><th class="num">TP</th><th class="num">R:R</th><th>Conf</th><th>Risk</th><th class="num">Size</th><th>Expiry</th><th>Actions</th></tr>';
+    const THEAD = '<tr><th>Asset</th><th>Dir</th><th class="num">Entry</th><th class="num">Current</th><th class="num">SL</th><th class="num">TP</th><th class="num">R:R</th><th title="Raw + cal when fitted">Conf</th><th title="Shadow profile B">B</th><th>Risk</th><th class="num">Size %</th><th>Expiry</th><th>Actions</th></tr>';
+
+    function closeAllAssetDropdowns() {
+      document.querySelectorAll('.asset-dropdown').forEach(d => {
+        d.setAttribute('hidden', '');
+        d.classList.remove('open');
+      });
+      document.querySelectorAll('.asset-btn[aria-expanded="true"]').forEach(b => b.setAttribute('aria-expanded', 'false'));
+    }
 
     function buildRow(rec) {
       const tr = document.createElement('tr');
@@ -781,17 +789,19 @@
       }
 
       const notesHtml = escapeAttr(rec.volatility_notes || '—');
-      const dropdownId = 'drop-' + rec.id;
+      const dropdownId = 'drop-' + rec.id.replace(/[^a-zA-Z0-9_-]/g, '');
 
       tr.innerHTML =
-        '<td class="col-asset font-semibold">' +
+        '<td class="col-asset">' +
           '<div class="asset-dropdown-wrap">' +
-            '<button class="asset-btn" data-dropdown="' + dropdownId + '">' +
-              rec.asset_id + (indicators ? '<span class="indicator-badges">' + indicators + '</span>' : '') +
+            '<button type="button" class="asset-btn font-semibold" data-dropdown="' + dropdownId + '" aria-expanded="false" aria-controls="' + dropdownId + '" aria-haspopup="true" title="Show status and context notes">' +
+              '<span class="asset-chevron" aria-hidden="true"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></span>' +
+              '<span>' + escapeAttr(rec.asset_id) + '</span>' +
+              (indicators ? '<span class="indicator-badges">' + indicators + '</span>' : '') +
             '</button>' +
-            '<div class="asset-dropdown" id="' + dropdownId + '">' +
-              '<div class="asset-dropdown-row"><span class="asset-dropdown-label">Status</span>' + statusBadge(rec.status) + '</div>' +
-              '<div class="asset-dropdown-row asset-dropdown-notes"><span class="asset-dropdown-label">Notes</span><span>' + notesHtml + '</span></div>' +
+            '<div class="asset-dropdown" id="' + dropdownId + '" hidden role="region" aria-label="Context for ' + escapeAttr(rec.asset_id) + '">' +
+              '<div class="asset-dropdown-row"><span class="asset-dropdown-label">Status</span><span>' + statusBadge(rec.status) + '</span></div>' +
+              '<div class="asset-dropdown-row asset-dropdown-notes"><span class="asset-dropdown-label">Notes</span><span class="asset-dropdown-notes-text">' + notesHtml + '</span></div>' +
             '</div>' +
           '</div>' +
         '</td>' +
@@ -810,11 +820,18 @@
       const assetBtn = tr.querySelector('.asset-btn');
       if (assetBtn) {
         assetBtn.addEventListener('click', (e) => {
+          e.preventDefault();
           e.stopPropagation();
-          const dd = document.getElementById(assetBtn.dataset.dropdown);
-          const isOpen = dd.classList.contains('open');
-          document.querySelectorAll('.asset-dropdown.open').forEach(d => d.classList.remove('open'));
-          if (!isOpen) dd.classList.add('open');
+          const panelId = assetBtn.getAttribute('data-dropdown');
+          const dd = panelId ? document.getElementById(panelId) : null;
+          if (!dd) return;
+          const isOpen = !dd.hasAttribute('hidden');
+          closeAllAssetDropdowns();
+          if (!isOpen) {
+            dd.removeAttribute('hidden');
+            dd.classList.add('open');
+            assetBtn.setAttribute('aria-expanded', 'true');
+          }
         });
       }
 
@@ -836,7 +853,7 @@
       head.innerHTML = THEAD;
       body.innerHTML = '';
       if (!items || items.length === 0) {
-        body.innerHTML = '<tr><td colspan="12" class="table-empty">No recommendations in this category</td></tr>';
+        body.innerHTML = '<tr><td colspan="13" class="table-empty">No recommendations in this category</td></tr>';
         return;
       }
       items.forEach(rec => body.appendChild(buildRow(rec)));
@@ -910,9 +927,11 @@
     }
     load();
 
-    // Close asset dropdowns when clicking outside
-    document.addEventListener('click', () => {
-      document.querySelectorAll('.asset-dropdown.open').forEach(d => d.classList.remove('open'));
+    // Close asset dropdowns when clicking outside (not on button — it uses stopPropagation)
+    document.addEventListener('click', (e) => {
+      if (e.target.closest('.asset-dropdown')) return;
+      if (e.target.closest('.asset-btn')) return;
+      closeAllAssetDropdowns();
     });
   </script>
 </body>

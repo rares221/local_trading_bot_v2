@@ -243,27 +243,101 @@ td .btn-sm { margin: 0 2px; }
   vertical-align: middle;
   white-space: nowrap;
 }
-.table--recommendations .col-asset { white-space: nowrap; }
+/* Asset cell: allow compact row; button label stays on one line */
+.table--recommendations td.col-asset {
+  white-space: normal;
+  vertical-align: middle;
+}
+.table--recommendations .col-asset .asset-btn {
+  white-space: nowrap;
+}
 
-/* Asset dropdown */
-.asset-dropdown-wrap { position: relative; display: inline-block; }
+/* Asset dropdown (hidden until .open; position out of table flow) */
+.asset-dropdown-wrap {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+}
 .asset-btn {
-  background: none; border: none; padding: 0; cursor: pointer;
-  font-weight: 600; font-size: inherit; color: inherit; text-align: left;
-  display: flex; align-items: center; gap: 4px;
+  background: transparent;
+  border: none;
+  padding: 2px 6px;
+  margin: 0;
+  border-radius: var(--radius);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  color: inherit;
+  text-align: left;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
 }
-.asset-btn:hover { text-decoration: underline; }
+.asset-btn:hover,
+.asset-btn:focus-visible {
+  background: var(--secondary);
+  outline: none;
+}
+.asset-btn .asset-chevron {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  opacity: 0.45;
+  transition: transform 0.15s ease;
+}
+.asset-btn[aria-expanded="true"] .asset-chevron {
+  transform: rotate(180deg);
+  opacity: 0.75;
+}
+/* Closed by default via [hidden] (JS); avoids display:none being overridden by cascade */
+.asset-dropdown[hidden] {
+  display: none !important;
+}
 .asset-dropdown {
-  position: absolute; top: calc(100% + 4px); left: 0; z-index: 50;
-  background: var(--background); border: 1px solid var(--border);
-  border-radius: var(--radius); box-shadow: 0 4px 16px rgba(0,0,0,.12);
-  padding: 10px 12px; min-width: 260px; width: max-content; max-width: 520px;
-  flex-direction: column; gap: 8px; display: none;
+  position: absolute;
+  left: 0;
+  top: calc(100% + 4px);
+  z-index: 100;
+  display: block;
+  min-width: min(400px, calc(100vw - 32px));
+  max-width: min(520px, calc(100vw - 24px));
+  max-height: min(320px, 50vh);
+  overflow: hidden auto;
+  padding: 10px 12px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.12);
+  font-size: 11px;
+  font-weight: 400;
+  text-align: left;
+  white-space: normal;
 }
-.asset-dropdown.open { display: flex; }
-.asset-dropdown-row { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; }
-.asset-dropdown-label { font-weight: 600; color: var(--muted-foreground); min-width: 44px; flex-shrink: 0; padding-top: 1px; }
-.asset-dropdown-notes span { color: var(--foreground); line-height: 1.5; white-space: normal; word-break: break-word; }
+.asset-dropdown-row {
+  display: grid;
+  grid-template-columns: 52px 1fr;
+  gap: 8px 10px;
+  align-items: start;
+  margin-bottom: 8px;
+}
+.asset-dropdown-row:last-child {
+  margin-bottom: 0;
+}
+.asset-dropdown-label {
+  color: var(--muted-foreground);
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  padding-top: 2px;
+}
+.asset-dropdown-notes .asset-dropdown-notes-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.45;
+  color: var(--foreground);
+}
 .table--recommendations .col-actions { white-space: nowrap; }
 .table--recommendations .col-actions .btn-group-rec {
   display: flex;
