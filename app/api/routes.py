@@ -823,6 +823,32 @@ async def get_correlation_matrix() -> dict[str, Any]:
     })
 
 
+@router.get("/market/correlations/analysis")
+async def get_correlation_llm_analysis() -> dict[str, Any]:
+    """
+    LLM interpretation of current cross-asset divergences.
+    Returns a short 2-3 sentence analysis or null if LLM unavailable / no divergences.
+    """
+    from app.services.market_context import check_cross_asset_signals
+    from app.services.research.llm import generate_correlation_analysis
+
+    signals = await asyncio.to_thread(check_cross_asset_signals)
+    diverging = [
+        {
+            "asset_a": cs.asset_a, "a_direction": cs.a_direction,
+            "asset_b": cs.asset_b, "b_direction": cs.b_direction,
+            "expected_relationship": cs.expected_relationship,
+        }
+        for cs in signals if cs.diverging
+    ]
+
+    if not diverging:
+        return {"analysis": None, "reason": "no_divergences"}
+
+    analysis = await generate_correlation_analysis(diverging)
+    return {"analysis": analysis, "signal_count": len(diverging)}
+
+
 # --- Macro Calendar ---
 
 @router.get("/macro-calendar")
