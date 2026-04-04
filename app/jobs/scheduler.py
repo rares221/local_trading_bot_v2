@@ -18,6 +18,16 @@ from app.core.database import async_session_factory
 from app.models.feed_item import FeedItem
 from app.models.recommendation import Recommendation, ActiveTrade, ActiveTradeLevel
 from app.models.market_analysis import MarketAnalysis
+
+
+def _infer_instrument_type(asset_category: str) -> str:
+    """Infer instrument type from asset category. cfd | invest."""
+    cat = (asset_category or "").lower()
+    if cat in ("indices", "index", "forex", "commodities", "oil", "commodity"):
+        return "cfd"
+    if cat == "stocks":
+        return "invest"
+    return "cfd"
 from app.services.ingestion import fetch_all_feeds, save_feed_items
 from app.services.sentiment import score_sentiment, tag_assets, detect_tickers
 from app.services.analysis import run_analysis, get_latest_analysis
@@ -37,27 +47,51 @@ from app.services.regime_monitor import (
 async def job_ingest_and_sentiment() -> None:
     """Fetch RSS feeds, save items, run sentiment and asset tagging."""
     from app.services.ticker_resolver import reset_run_counter
+    import app.services.pipeline_progress as progress
     reset_run_counter()
+    progress.update(2, "ingest", "Fetching RSS feeds…")
     async with async_session_factory() as session:
-        items = fetch_all_feeds()
+        items = await asyncio.to_thread(fetch_all_feeds)
+        progress.update(8, "ingest", f"Saving {len(items)} feed items…")
         saved = await save_feed_items(session, items)
         q = select(FeedItem).where(FeedItem.is_processed == False).limit(500)
         result = await session.execute(q)
-        for it in result.scalars().all():
-            text = f"{it.title or ''} {it.description or ''}"
-            it.sentiment_score = score_sentiment(text)
-            keyword_tags = tag_assets(text) or []
-            dynamic_tickers = detect_tickers(text) or []
-            it.asset_tags = list(dict.fromkeys(keyword_tags + dynamic_tickers)) or None
-            it.is_processed = True
+        unprocessed = result.scalars().all()
+        total = len(unprocessed)
+        progress.update(12, "ingest", f"Scoring sentiment for {total} items…")
+
+        def _score_all(items_):
+            for i, it in enumerate(items_):
+                text = f"{it.title or ''} {it.description or ''}"
+                it.sentiment_score = score_sentiment(text)
+                keyword_tags = tag_assets(text) or []
+                dynamic_tickers = detect_tickers(text) or []
+                it.asset_tags = list(dict.fromkeys(keyword_tags + dynamic_tickers)) or None
+                it.is_processed = True
+                if total > 0 and i % max(1, total // 5) == 0:
+                    pct = 12 + int((i / total) * 13)
+                    progress.update(pct, "ingest", f"Scoring sentiment… {i}/{total}")
+
+        await asyncio.to_thread(_score_all, unprocessed)
         await session.commit()
+        progress.update(25, "ingest", "Ingestion complete")
+        progress.log_stage(
+            "Ingest & Sentiment",
+            "ok",
+            f"Fetched {len(items)} feed items, scored {total} new items",
+        )
 
 
 async def job_run_analysis() -> None:
     """Build market analysis from feed items."""
+    import app.services.pipeline_progress as progress
+    progress.update(27, "analysis", "Aggregating sentiment data…")
     async with async_session_factory() as session:
+        progress.update(32, "analysis", "Fetching price snapshots…")
         await run_analysis(session)
         await session.commit()
+    progress.update(50, "analysis", "Analysis complete")
+    progress.log_stage("Market Analysis", "ok", "Sentiment aggregated, price snapshots fetched, divergence detected")
 
 
 async def job_daily_batch() -> None:
@@ -65,6 +99,7 @@ async def job_daily_batch() -> None:
     Produce today's batch: up to 5 recommendations per category (stocks, commodities, other, indices),
     i.e. up to ~20 total, with ATR SL/TP, direction, expiry, global correlation and risk-budget filters.
     """
+    import app.services.pipeline_progress as progress
     batch_id = date.today().isoformat()
     print(f"[BATCH] Starting daily batch for {batch_id}")
     try:
@@ -75,7 +110,9 @@ async def job_daily_batch() -> None:
             result = await session.execute(q)
             if result.scalars().first():
                 print("[BATCH] Pending recs already exist for today — skipping")
+                progress.update(100, "done", "Batch already exists for today")
                 return
+            progress.update(52, "batch", "Loading market analysis…")
             analysis = await get_latest_analysis(session)
             if not analysis:
                 print("[BATCH] No analysis found — run the full pipeline first")
@@ -91,6 +128,7 @@ async def job_daily_batch() -> None:
             by_asset_sentiment = payload.get("by_asset_sentiment") or None
             active_events = payload.get("active_events") or None
             print(f"[BATCH] Sentiment tags: {len(by_asset_sentiment) if by_asset_sentiment else 0}, excluded taken: {len(exclude_taken)}")
+            progress.update(55, "batch", "Building candidate recommendations…")
             # Run heavy sync work off the asyncio loop so HTTP (e.g. /api/recommendations) stays responsive.
             _build = partial(
                 build_daily_candidates,
@@ -107,10 +145,16 @@ async def job_daily_batch() -> None:
                 print(f"  [{c.asset_category}] {c.asset_id} dir={c.direction} conf={c.confidence_score} rr={c.risk_reward}")
             if not candidates:
                 print("[BATCH] No candidates passed filters — nothing to save")
+                progress.log_stage("Recommendations", "warn", "No candidates passed filters — batch skipped")
                 return
             now = datetime.now(timezone.utc)
+            total_candidates = len(candidates)
+            llm_failures = []
+            progress.update(60, "batch", f"Generating rationales for {total_candidates} candidates…")
             from app.services.research import build_research_context, generate_rationale
-            for c in candidates:
+            for i, c in enumerate(candidates):
+                llm_pct = 60 + int((i / total_candidates) * 36)
+                progress.update(llm_pct, "batch", f"LLM rationale {i + 1}/{total_candidates} — {c.asset_id}")
                 rationale_text = None
                 try:
                     ctx = await build_research_context(session, c.asset_id, c.asset_category)
@@ -119,6 +163,7 @@ async def job_daily_batch() -> None:
                     rationale_text = await generate_rationale(ctx)
                 except Exception as exc:
                     print(f"  [BATCH] LLM rationale failed for {c.asset_id}: {exc}")
+                    llm_failures.append(f"{c.asset_id}: {exc}")
                 # Persist regime / divergence / event hints with technical notes (Candidate.market_regime_note is not a DB column)
                 _reg_note = getattr(c, "market_regime_note", None)
                 _vol = c.volatility_notes
@@ -150,18 +195,31 @@ async def job_daily_batch() -> None:
                     min_confidence_gate=getattr(c, "min_confidence_gate", None),
                     shadow_b_threshold=getattr(c, "shadow_b_threshold", None),
                     shadow_b_pass=getattr(c, "shadow_b_pass", None),
+                    instrument_type=_infer_instrument_type(c.asset_category),
                 )
                 session.add(rec)
+            progress.update(97, "batch", f"Saving {len(candidates)} recommendations…")
             await session.commit()
             print(f"[BATCH] Saved {len(candidates)} recommendations")
-            
+
+            # Build category breakdown for log
+            cats = {}
+            for c in candidates:
+                cat = c.asset_category or "other"
+                cats[cat] = cats.get(cat, 0) + 1
+            cat_str = ", ".join(f"{v} {k}" for k, v in sorted(cats.items()))
+            batch_status = "warn" if llm_failures else "ok"
+            progress.log_stage(
+                "Recommendations",
+                batch_status,
+                f"Saved {len(candidates)} recommendations ({cat_str}); "
+                f"{total_candidates - len(llm_failures)}/{total_candidates} rationales generated",
+                warnings=llm_failures,
+            )
+
             # Send notification
             try:
                 from app.services.notifications import send_notification, EVENT_BATCH_READY
-                cats = {}
-                for c in candidates:
-                    cat = c.asset_category or "other"
-                    cats[cat] = cats.get(cat, 0) + 1
                 await send_notification(EVENT_BATCH_READY, {
                     "count": len(candidates),
                     "categories": cats,
@@ -173,6 +231,7 @@ async def job_daily_batch() -> None:
         print(f"[BATCH] ERROR: {exc}")
         import traceback
         traceback.print_exc()
+        progress.finish(error=str(exc))
 
 
 async def job_update_active_trades() -> None:

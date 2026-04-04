@@ -213,6 +213,69 @@ async def _call_ollama(
     return None
 
 
+_CORRELATION_SYSTEM_PROMPT = (
+    "You are a concise market analyst. You will be given a list of unusual cross-asset "
+    "correlations detected in the market today. In 2-3 sentences, explain what these "
+    "divergences collectively suggest about current market conditions and what a trader "
+    "should watch for. Be specific and direct. No disclaimers. "
+    "Do NOT use markdown — no headers, no bullet points, no bold. Plain text only."
+)
+
+
+async def generate_correlation_analysis(diverging_signals: list[dict[str, Any]]) -> str | None:
+    """
+    Generate a short LLM interpretation of diverging cross-asset correlation signals.
+    Returns 2-3 sentences or None if LLM is unavailable.
+    """
+    from app.core.config import settings
+    from app.core.preferences import get_research_llm_config
+
+    if not diverging_signals:
+        return None
+
+    cfg = get_research_llm_config()
+    provider_id = (cfg.get("research_llm_provider") or "openai").strip().lower()
+    provider = get_provider_by_id(provider_id)
+    if not provider:
+        provider_id = "openai"
+        provider = get_provider_by_id("openai")
+
+    api_key = _get_api_key_for_provider(provider_id)
+    if not is_available(provider_id, api_key):
+        return None
+
+    model = (cfg.get("research_llm_model") or "").strip() or provider.default_model
+    if not model:
+        return None
+
+    ticker_name = {
+        "^GSPC": "S&P 500", "GC=F": "Gold", "^VIX": "VIX",
+        "DX-Y.NYB": "USD Index", "CL=F": "Oil", "^TNX": "10Y Yield",
+    }
+    lines = []
+    for s in diverging_signals:
+        a = ticker_name.get(s["asset_a"], s["asset_a"])
+        b = ticker_name.get(s["asset_b"], s["asset_b"])
+        lines.append(f"- {a} is {s['a_direction']}, {b} is {s['b_direction']} (normally {s['expected_relationship']})")
+    user = "Unusual cross-asset correlations today:\n" + "\n".join(lines)
+
+    ollama_base_url = (cfg.get("ollama_base_url") or "").strip() or (settings.ollama_base_url or "http://localhost:11434")
+
+    try:
+        if provider_id == "openai":
+            return await _call_openai(model, _CORRELATION_SYSTEM_PROMPT, user, api_key or "")
+        if provider_id == "anthropic":
+            return await _call_anthropic(model, _CORRELATION_SYSTEM_PROMPT, user, api_key or "")
+        if provider_id == "ollama":
+            return await _call_ollama(model, _CORRELATION_SYSTEM_PROMPT, user, ollama_base_url)
+        if provider_id == "openrouter":
+            return await _call_openrouter(model, _CORRELATION_SYSTEM_PROMPT, user, api_key or "")
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("Correlation LLM call failed (%s/%s): %s", provider_id, model, exc)
+    return None
+
+
 async def generate_rationale(context: dict[str, Any]) -> str | None:
     """
     One-shot LLM call using the configured provider (from preferences or config).
