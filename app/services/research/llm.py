@@ -12,6 +12,16 @@ from app.services.research.providers import (
 )
 
 
+STRATEGY_EXPLAIN_SYSTEM = (
+    "You are an experienced trading coach. Explain the user's chosen execution strategy "
+    "(scale-out / targets) in clear, plain language. "
+    "Use 1–2 short paragraphs or a few bullets. Cover: each exit level and position share, "
+    "combined risk if stopped before TPs, one pro and one con vs a single full TP. "
+    "Use the numbers from the user message. No long disclaimers. "
+    "Target about 100–180 words."
+)
+
+
 SYSTEM_PROMPT = (
     "You are a concise trading research assistant. In 2–4 sentences only, "
     "explain why this SPECIFIC trade direction (the Direction field provided) might make sense and the main risk. "
@@ -76,7 +86,9 @@ def _get_api_key_for_provider(provider_id: str) -> str | None:
     return None
 
 
-async def _call_openai(model: str, system: str, user: str, api_key: str) -> str | None:
+async def _call_openai(
+    model: str, system: str, user: str, api_key: str, *, max_tokens: int = 200
+) -> str | None:
     from openai import AsyncOpenAI
     client = AsyncOpenAI(api_key=api_key)
     response = await client.chat.completions.create(
@@ -85,14 +97,16 @@ async def _call_openai(model: str, system: str, user: str, api_key: str) -> str 
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
-        max_tokens=200,
+        max_tokens=max_tokens,
     )
     if response.choices and response.choices[0].message.content:
         return response.choices[0].message.content.strip()
     return None
 
 
-async def _call_openrouter(model: str, system: str, user: str, api_key: str) -> str | None:
+async def _call_openrouter(
+    model: str, system: str, user: str, api_key: str, *, max_tokens: int = 200
+) -> str | None:
     from openai import AsyncOpenAI
     client = AsyncOpenAI(api_key=api_key, base_url="https://openrouter.ai/api/v1")
     response = await client.chat.completions.create(
@@ -101,19 +115,21 @@ async def _call_openrouter(model: str, system: str, user: str, api_key: str) -> 
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
-        max_tokens=200,
+        max_tokens=max_tokens,
     )
     if response.choices and response.choices[0].message.content:
         return response.choices[0].message.content.strip()
     return None
 
 
-async def _call_anthropic(model: str, system: str, user: str, api_key: str) -> str | None:
+async def _call_anthropic(
+    model: str, system: str, user: str, api_key: str, *, max_tokens: int = 200
+) -> str | None:
     import anthropic
     client = anthropic.AsyncAnthropic(api_key=api_key)
     msg = await client.messages.create(
         model=model,
-        max_tokens=200,
+        max_tokens=max_tokens,
         system=system,
         messages=[{"role": "user", "content": user}],
     )
@@ -122,24 +138,78 @@ async def _call_anthropic(model: str, system: str, user: str, api_key: str) -> s
     return None
 
 
-async def _call_ollama(model: str, system: str, user: str, base_url: str) -> str | None:
+def _ollama_extract_assistant_text(data: dict[str, Any]) -> str | None:
+    """Normalize Ollama /api/chat `message.content` (str or multimodal list)."""
+    msg = data.get("message")
+    if not isinstance(msg, dict):
+        return None
+    content = msg.get("content")
+    if isinstance(content, str):
+        text = content.strip()
+        return text or None
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                if block.get("type") == "text" and isinstance(block.get("text"), str):
+                    parts.append(block["text"])
+                elif isinstance(block.get("content"), str):
+                    parts.append(block["content"])
+        joined = "".join(parts).strip()
+        return joined or None
+    return None
+
+
+async def _call_ollama(
+    model: str,
+    system: str,
+    user: str,
+    base_url: str,
+    *,
+    num_predict: int | None = None,
+    timeout: float = 60.0,
+) -> str | None:
     import httpx
-    # Ollama chat API: system + user as a single prompt or separate messages
-    payload = {
+
+    messages: list[dict[str, str]] = []
+    if system and str(system).strip():
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": user})
+
+    payload: dict[str, Any] = {
         "model": model,
         "stream": False,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
+        "messages": messages,
     }
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    if num_predict is not None:
+        payload["options"] = {"num_predict": num_predict}
+    async with httpx.AsyncClient(timeout=timeout) as client:
         r = await client.post(f"{base_url.rstrip('/')}/api/chat", json=payload)
-        r.raise_for_status()
-        data = r.json()
-    msg = data.get("message")
-    if msg and isinstance(msg.get("content"), str):
-        return msg["content"].strip()
+        try:
+            r.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            detail = ""
+            try:
+                detail = (e.response.text or "")[:800]
+            except Exception:
+                pass
+            raise RuntimeError(
+                f"Ollama HTTP {e.response.status_code}: {detail or e.response.reason_phrase}"
+            ) from e
+        try:
+            data = r.json()
+        except Exception as exc:
+            raise RuntimeError(f"Ollama response not JSON: {(r.text or '')[:400]}") from exc
+
+    err = data.get("error")
+    if err:
+        raise RuntimeError(str(err) if not isinstance(err, dict) else str(err.get("message", err)))
+
+    text = _ollama_extract_assistant_text(data)
+    if text:
+        return text
     return None
 
 
@@ -235,14 +305,85 @@ async def generate_rationale(context: dict[str, Any]) -> str | None:
 
     try:
         if provider_id == "openai":
-            return await _call_openai(model, system, user, api_key or "")
+            return await _call_openai(model, system, user, api_key or "", max_tokens=200)
         if provider_id == "anthropic":
-            return await _call_anthropic(model, system, user, api_key or "")
+            return await _call_anthropic(model, system, user, api_key or "", max_tokens=200)
         if provider_id == "ollama":
             return await _call_ollama(model, system, user, ollama_base_url)
         if provider_id == "openrouter":
-            return await _call_openrouter(model, system, user, api_key or "")
+            return await _call_openrouter(model, system, user, api_key or "", max_tokens=200)
     except Exception as exc:
         import logging
         logging.getLogger(__name__).warning("LLM call failed (%s/%s): %s", provider_id, model, exc)
+    return None
+
+
+async def generate_strategy_explanation(user_message: str) -> str | None:
+    """
+    Longer LLM explanation for trade-builder strategy selection.
+    Same provider/model as research; returns None if unavailable or on failure.
+    """
+    from app.core.config import settings
+    from app.core.preferences import get_research_llm_config
+
+    cfg = get_research_llm_config()
+    provider_id = (cfg.get("research_llm_provider") or "openai").strip().lower()
+    provider = get_provider_by_id(provider_id)
+    if not provider:
+        provider_id = "openai"
+        provider = get_provider_by_id("openai")
+
+    api_key = _get_api_key_for_provider(provider_id)
+    if not is_available(provider_id, api_key):
+        return None
+
+    model = (cfg.get("research_llm_model") or "").strip() or provider.default_model
+    if not model:
+        return None
+
+    ollama_base_url = (cfg.get("ollama_base_url") or "").strip() or (
+        settings.ollama_base_url or "http://localhost:11434"
+    )
+    max_tok = 480
+
+    try:
+        if provider_id == "openai":
+            return await _call_openai(
+                model, STRATEGY_EXPLAIN_SYSTEM, user_message, api_key or "", max_tokens=max_tok
+            )
+        if provider_id == "anthropic":
+            return await _call_anthropic(
+                model, STRATEGY_EXPLAIN_SYSTEM, user_message, api_key or "", max_tokens=max_tok
+            )
+        if provider_id == "ollama":
+            # Small local models (e.g. gemma3:1b) often fail or return empty with a separate
+            # system message; one combined user turn is more reliable.
+            combined = (
+                f"{STRATEGY_EXPLAIN_SYSTEM.strip()}\n\n---\n\n{user_message.strip()}"
+            )
+            ollama_predict = min(max_tok, 384)
+            return await _call_ollama(
+                model,
+                "",
+                combined,
+                ollama_base_url,
+                num_predict=ollama_predict,
+                timeout=120.0,
+            )
+        if provider_id == "openrouter":
+            return await _call_openrouter(
+                model, STRATEGY_EXPLAIN_SYSTEM, user_message, api_key or "", max_tokens=max_tok
+            )
+    except Exception as exc:
+        import logging
+
+        log = logging.getLogger(__name__)
+        log.warning(
+            "Strategy LLM call failed (%s/%s): %s: %r",
+            provider_id,
+            model,
+            exc.__class__.__name__,
+            exc,
+            exc_info=log.isEnabledFor(logging.DEBUG),
+        )
     return None
