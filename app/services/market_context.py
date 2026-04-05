@@ -15,6 +15,71 @@ from app.services.technicals import fetch_ohlcv, get_cached_price
 
 logger = logging.getLogger(__name__)
 
+# Dollar index (Yahoo): ICE futures proxy; UUP = ETF fallback if primary fails.
+DXY_YAHOO_PRIMARY = "DX-Y.NYB"
+DXY_YAHOO_FALLBACK = "UUP"
+
+# ---------------------------------------------------------------------------
+# USD / DXY macro (complements SPX+VIX regime; drives FX + metals nudges)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class DxyMacro:
+    """US dollar strength snapshot for macro context and light confidence nudges."""
+
+    available: bool = False
+    symbol: str = ""
+    price: Optional[float] = None
+    trend: str = "neutral"  # bullish = USD strengthening vs recent mean (price > SMA50)
+    change_5d_pct: Optional[float] = None
+    change_20d_pct: Optional[float] = None
+    summary: str = ""
+
+
+def detect_dxy_macro() -> DxyMacro:
+    """Load DXY or UUP; trend from spot vs 50-day mean."""
+    for sym in (DXY_YAHOO_PRIMARY, DXY_YAHOO_FALLBACK):
+        df = fetch_ohlcv(sym, period="130d")
+        if df is None or len(df) < 55 or "Close" not in df.columns:
+            continue
+        close = df["Close"]
+        cur = float(close.iloc[-1])
+        sma50 = float(close.rolling(50).mean().iloc[-1])
+        if cur > sma50 * 1.002:
+            trend = "bullish"
+        elif cur < sma50 * 0.998:
+            trend = "bearish"
+        else:
+            trend = "neutral"
+
+        ch5 = ch20 = None
+        if len(close) >= 5:
+            ch5 = round((cur / float(close.iloc[-5]) - 1.0) * 100.0, 2)
+        if len(close) >= 20:
+            ch20 = round((cur / float(close.iloc[-20]) - 1.0) * 100.0, 2)
+
+        label = "DXY" if sym == DXY_YAHOO_PRIMARY else "USD (UUP)"
+        parts = [f"{label} {trend}", f"{cur:.2f}"]
+        if ch5 is not None:
+            parts.append(f"5d {ch5:+.1f}%")
+        if ch20 is not None:
+            parts.append(f"20d {ch20:+.1f}%")
+        summary = " | ".join(parts)
+
+        return DxyMacro(
+            available=True,
+            symbol=sym,
+            price=round(cur, 2),
+            trend=trend,
+            change_5d_pct=ch5,
+            change_20d_pct=ch20,
+            summary=summary,
+        )
+
+    return DxyMacro()
+
+
 # ---------------------------------------------------------------------------
 # Market regime detection (SPX + VIX based)
 # ---------------------------------------------------------------------------
@@ -416,6 +481,7 @@ class MarketContext:
     correlation_signals: list[CorrelationSignal] = field(default_factory=list)
     sector_regimes: dict[str, SectorRegime] = field(default_factory=dict)
     has_divergence_warning: bool = False
+    dxy: DxyMacro = field(default_factory=DxyMacro)
 
     @property
     def should_reduce_exposure(self) -> bool:
@@ -431,20 +497,25 @@ class MarketContext:
             return "short"
         return "neutral"
 
+    def regime_adjustment(self) -> int:
+        """SPX/VIX bucket only: risk_on +5, cautious 0, risk_off -10."""
+        if self.regime.regime == "risk_on":
+            return 5
+        if self.regime.regime == "risk_off":
+            return -10
+        return 0
+
+    def divergence_adjustment(self) -> int:
+        """Extra haircut when cross-asset pairs are diverging (-5 or 0)."""
+        return -5 if self.has_divergence_warning else 0
+
     def confidence_adjustment(self) -> int:
         """
         Adjustment to confidence score based on market context.
         risk_on: +5, cautious: 0, risk_off: -10.
         Divergence warnings: additional -5.
         """
-        adj = 0
-        if self.regime.regime == "risk_on":
-            adj += 5
-        elif self.regime.regime == "risk_off":
-            adj -= 10
-        if self.has_divergence_warning:
-            adj -= 5
-        return adj
+        return self.regime_adjustment() + self.divergence_adjustment()
 
     def min_confidence_threshold(self) -> int:
         """
@@ -473,18 +544,70 @@ class MarketContext:
 
     def describe(self) -> str:
         parts = [self.regime.description]
+        if self.dxy.available and self.dxy.summary:
+            parts.append(self.dxy.summary)
         for cs in self.correlation_signals:
             if cs.diverging:
                 parts.append(f"WARNING: {cs.pair_name} divergence ({cs.asset_a} {cs.a_direction}, {cs.asset_b} {cs.b_direction})")
         return " | ".join(parts)
 
+    def dxy_confidence_delta(self, category: str, asset_id: str, direction: str) -> int:
+        """
+        Small confidence nudge from USD strength vs asset (FX + commodities).
+        Does not replace SPX/VIX regime; scales with policy elsewhere.
+        """
+        if not self.dxy.available:
+            return 0
+        tr = self.dxy.trend
+        if tr == "neutral":
+            return 0
+        d = (direction or "long").lower()
+        aid = (asset_id or "").strip().upper().replace(" ", "")
+
+        # FX majors (category other)
+        if category == "other":
+            if aid in ("EURUSD", "GBPUSD"):
+                if tr == "bullish":
+                    return -3 if d == "long" else 2
+                return 2 if d == "long" else -3
+            if aid == "USDJPY":
+                if tr == "bullish":
+                    return 2 if d == "long" else -3
+                return -3 if d == "long" else 2
+
+        # Precious metals & oil (dollar bid often a headwind for longs)
+        if category == "commodities":
+            metals = {"XAUUSD", "GOLD", "SILVER", "GC=F", "SI=F"}
+            oilish = {"WTI", "BRENT", "CL=F", "BZ=F"}
+            if aid in metals:
+                if tr == "bullish":
+                    return -4 if d == "long" else 2
+                return 3 if d == "long" else -2
+            if aid in oilish:
+                if tr == "bullish":
+                    return -2 if d == "long" else 1
+                return 2 if d == "long" else -1
+
+        return 0
+
+    def dxy_note_for_asset(self, category: str, asset_id: str, direction: str) -> str:
+        """One-line hint when ``dxy_confidence_delta`` is non-zero."""
+        if self.dxy_confidence_delta(category, asset_id, direction) == 0:
+            return ""
+        if not self.dxy.available:
+            return ""
+        tr = self.dxy.trend
+        return f"USD macro ({tr}): confidence nudge vs {direction} {asset_id}"
+
 
 def build_market_context(include_sectors: bool = True) -> MarketContext:
-    """Build full market context: regime + correlations + sector regimes. Called once per batch."""
+    """Build full market context: regime + DXY + correlations + sector regimes. Called once per batch."""
     regime = detect_market_regime()
+    dxy = detect_dxy_macro()
+
     corr_signals = check_cross_asset_signals()
     has_div = any(cs.diverging for cs in corr_signals)
-    
+
     sector_regimes = {}
     if include_sectors:
         sector_regimes = detect_all_sector_regimes()
@@ -494,6 +617,7 @@ def build_market_context(include_sectors: bool = True) -> MarketContext:
         correlation_signals=corr_signals,
         sector_regimes=sector_regimes,
         has_divergence_warning=has_div,
+        dxy=dxy,
     )
 
 
