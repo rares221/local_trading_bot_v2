@@ -86,7 +86,7 @@ a { color: var(--primary); }
 
 /* Layout */
 .app { max-width: 720px; margin: 0 auto; padding: var(--space-3) var(--space-2) var(--space-6); }
-.app--wide { max-width: 100%; }
+.app--wide { max-width: 100%; width: 100%; }
 /* Recommendations: full viewport width so tables expand with browser */
 .app--recommendations {
   max-width: 100%;
