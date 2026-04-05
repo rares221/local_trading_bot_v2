@@ -15,107 +15,118 @@
 
     /* ── Card shell ── */
     .trade-card {
-      background: var(--card); border: 1px solid var(--border);
-      border-left: 4px solid var(--border);
-      border-radius: var(--radius); box-shadow: var(--shadow);
+      background: #111827;
+      border: 1px solid rgba(255,255,255,.07);
+      border-left: 4px solid rgba(255,255,255,.12);
+      border-radius: var(--radius);
+      box-shadow: 0 2px 8px rgba(0,0,0,.35);
       overflow: hidden;
     }
     .trade-card--open    { border-left-color: #10b981; }
     .trade-card--warning { border-left-color: #f59e0b; }
     .trade-card--danger  { border-left-color: #ef4444; }
-    .trade-card--closed  { border-left-color: var(--border); opacity: .72; }
+    .trade-card--closed  { border-left-color: rgba(255,255,255,.12); opacity: .55; }
 
     /* ── Header ── */
     .trade-header {
       display: flex; align-items: center; justify-content: space-between;
       flex-wrap: wrap; gap: var(--space-1);
       padding: 14px var(--space-3);
-      border-bottom: 1px solid var(--border);
-      background: var(--secondary);
+      border-bottom: 1px solid rgba(255,255,255,.07);
+      background: #0f172a;
     }
     .trade-header-left { display: flex; align-items: center; gap: 10px; }
-    .trade-asset { font-size: 1.25rem; font-weight: 700; letter-spacing: -.025em; }
+    .trade-asset { font-size: 1.25rem; font-weight: 700; letter-spacing: -.025em; color: #f8fafc; }
     .trade-header-badges { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-    .badge-sep { width: 1px; height: 16px; background: var(--border); flex-shrink: 0; }
+    .badge-sep { width: 1px; height: 16px; background: rgba(255,255,255,.12); flex-shrink: 0; }
 
     /* ── Levels 3-column grid ── */
     .trade-levels {
       display: grid; grid-template-columns: 1fr 1fr 1fr;
-      border-bottom: 1px solid var(--border);
+      border-bottom: 1px solid rgba(255,255,255,.07);
     }
     .level-cell {
-      padding: 16px var(--space-2);
-      border-right: 1px solid var(--border);
+      padding: 18px var(--space-2);
+      border-right: 1px solid rgba(255,255,255,.07);
       display: flex; flex-direction: column; gap: 4px;
     }
     .level-cell:last-child { border-right: none; }
     .level-label {
       font-size: 11px; font-weight: 600; text-transform: uppercase;
-      letter-spacing: .06em; color: var(--muted-foreground);
+      letter-spacing: .06em; color: rgba(248,250,252,.35);
     }
     .level-main {
       font-size: 1.3rem; font-weight: 700;
       font-variant-numeric: tabular-nums; font-family: var(--font-mono);
-      color: var(--foreground);
+      color: #f8fafc;
     }
     /* When original level is superseded */
     .level-pair { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
     .level-original {
       font-size: 1rem; font-weight: 500; font-family: var(--font-mono);
       font-variant-numeric: tabular-nums;
-      color: var(--muted-foreground); text-decoration: line-through;
+      color: rgba(248,250,252,.3); text-decoration: line-through;
     }
-    .level-arrow { font-size: 11px; color: var(--muted-foreground); }
+    .level-arrow { font-size: 11px; color: rgba(248,250,252,.3); }
     .level-suggested {
       font-size: 1.1rem; font-weight: 700; font-family: var(--font-mono);
       font-variant-numeric: tabular-nums;
     }
     .level-suggested--up   { color: #10b981; }
     .level-suggested--down { color: #ef4444; }
-    .level-hint { font-size: 12px; color: var(--muted-foreground); }
+    .level-hint { font-size: 12px; color: rgba(248,250,252,.45); }
 
     /* ── Range bar ── */
     .trade-range {
-      padding: 10px var(--space-3) 12px;
-      border-bottom: 1px solid var(--border);
-      display: flex; flex-direction: column; gap: 5px;
+      padding: 10px var(--space-3) 14px;
+      border-bottom: 1px solid rgba(255,255,255,.07);
+      display: flex; flex-direction: column; gap: 6px;
+      background: rgba(0,0,0,.15);
     }
     .range-labels {
       display: flex; justify-content: space-between;
       font-size: 10px; font-family: var(--font-mono); font-variant-numeric: tabular-nums;
     }
-    .range-label-sl    { color: #ef4444; }
-    .range-label-tp    { color: #10b981; }
-    .range-label-entry { color: var(--muted-foreground); }
+    .range-label-sl    { color: #f87171; }
+    .range-label-tp    { color: #34d399; }
+    .range-label-entry { color: rgba(248,250,252,.4); }
     .range-bar-wrap {
-      position: relative; height: 6px;
-      background: linear-gradient(to right, rgba(239,68,68,.25), rgba(16,185,129,.25));
-      border-radius: 3px;
+      position: relative; height: 7px;
+      background: linear-gradient(to right, rgba(239,68,68,.35), rgba(16,185,129,.35));
+      border-radius: 4px;
     }
     .range-bar-entry {
       position: absolute; top: -5px;
-      width: 3px; height: 16px;
-      background: var(--foreground); border-radius: 2px;
+      width: 3px; height: 17px;
+      background: #f8fafc; border-radius: 2px;
       transform: translateX(-50%);
-      box-shadow: 0 0 0 2px var(--card);
+      box-shadow: 0 0 0 2px #111827;
     }
 
     /* ── Footer ── */
     .trade-footer {
       padding: 10px var(--space-3);
       display: flex; align-items: center; gap: var(--space-1); flex-wrap: wrap;
+      background: rgba(0,0,0,.1);
     }
     .trade-footer-spacer { flex: 1; }
 
     /* ── History panel ── */
     .history-panel {
       padding: var(--space-2) var(--space-3) var(--space-3);
-      border-top: 1px solid var(--border); background: var(--secondary);
+      border-top: 1px solid rgba(255,255,255,.07);
+      background: #0c1220;
     }
     .history-panel table {
       font-size: 13px;
-      background: var(--card); border-radius: var(--radius); overflow: hidden;
+      background: #111827; border-radius: var(--radius); overflow: hidden;
+      color: rgba(248,250,252,.75);
     }
+    .history-panel th {
+      background: #0f172a; color: rgba(248,250,252,.4);
+      border-bottom-color: rgba(255,255,255,.07);
+    }
+    .history-panel td { border-bottom-color: rgba(255,255,255,.05); }
 
     /* ── History layout: table + chart side by side ── */
     .history-layout {
@@ -169,6 +180,57 @@
       .level-cell { border-right: none; border-bottom: 1px solid var(--border); }
       .level-cell:last-child { border-bottom: none; }
     }
+
+    /* ── Active Trades Hero ── */
+    .at-hero {
+      position: relative; overflow: hidden;
+      background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 55%, #312e81 100%);
+      border-radius: var(--radius); border: 1px solid rgba(99,102,241,.3);
+      padding: 36px 40px 28px; margin-bottom: var(--space-3);
+    }
+    .at-hero::before {
+      content: ''; position: absolute; inset: 0; pointer-events: none;
+      background-image: radial-gradient(circle at 1px 1px, rgba(255,255,255,.04) 1px, transparent 0);
+      background-size: 28px 28px;
+    }
+    .at-hero::after {
+      content: ''; position: absolute; top: -80px; right: -80px; pointer-events: none;
+      width: 320px; height: 320px; border-radius: 50%;
+      background: radial-gradient(circle, rgba(99,102,241,.15) 0%, transparent 70%);
+    }
+    .at-hero > * { position: relative; z-index: 1; }
+    .at-hero-title {
+      font-size: 1.75rem; font-weight: 700; letter-spacing: -.04em;
+      color: #f8fafc; margin-bottom: 4px;
+    }
+    .at-hero-sub {
+      font-size: 14px; color: rgba(248,250,252,.45); margin-bottom: 22px;
+    }
+    .at-hero-actions { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+    .at-refresh-btn {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 10px 22px; border-radius: 8px;
+      background: #6366f1; color: #fff;
+      border: none; font-size: 14px; font-weight: 600;
+      cursor: pointer; transition: background .15s;
+    }
+    .at-refresh-btn:hover:not(:disabled) { background: #4f46e5; }
+    .at-refresh-btn:disabled { opacity: .6; cursor: not-allowed; }
+    .at-refresh-hint { font-size: 13px; color: rgba(248,250,252,.4); }
+    .at-stats-row {
+      display: flex; align-items: center; gap: 28px; flex-wrap: wrap;
+      margin-top: 20px; padding-top: 18px;
+      border-top: 1px solid rgba(255,255,255,.08);
+    }
+    .at-stat { display: flex; flex-direction: column; gap: 2px; }
+    .at-stat-value {
+      font-size: 1.15rem; font-weight: 700; color: #f8fafc;
+      font-variant-numeric: tabular-nums;
+    }
+    .at-stat-label {
+      font-size: 10px; text-transform: uppercase; letter-spacing: .07em;
+      color: rgba(248,250,252,.35);
+    }
   </style>
 </head>
 <body>
@@ -185,15 +247,30 @@
   </nav>
 
   <main class="app app--wide">
-    <h1 class="page-title">Active Trades</h1>
-    <p class="page-desc">Trades you marked as "Took it". Original levels are locked from the initial recommendation. Suggested levels recalculate from the latest market data every ~2 hours.</p>
-
-    <div class="flex items-center gap-2 mb-3">
-      <button type="button" id="refresh-btn" class="btn btn--primary">
-        <span data-icon="refresh-cw"></span>
-        <span class="btn-label">Update &amp; refresh</span>
-      </button>
-      <span class="text-sm text-muted">Recalculates SL/TP from latest prices, evaluates signal alignment, then reloads.</span>
+    <div class="at-hero">
+      <div class="at-hero-title">Active Trades</div>
+      <div class="at-hero-sub">Live positions &middot; suggested levels refresh every ~2 hours &middot; signal alignment monitoring</div>
+      <div class="at-hero-actions">
+        <button type="button" id="refresh-btn" class="at-refresh-btn">
+          <span data-icon="refresh-cw"></span>
+          <span id="at-btn-label">Update &amp; refresh</span>
+        </button>
+        <span class="at-refresh-hint">Recalculates SL/TP from latest prices, evaluates signal alignment, then reloads.</span>
+      </div>
+      <div class="at-stats-row" id="at-stats" style="display:none;">
+        <div class="at-stat">
+          <span class="at-stat-value" id="at-stat-open">—</span>
+          <span class="at-stat-label">Open positions</span>
+        </div>
+        <div class="at-stat">
+          <span class="at-stat-value" id="at-stat-warn">—</span>
+          <span class="at-stat-label">Weakening</span>
+        </div>
+        <div class="at-stat">
+          <span class="at-stat-value" id="at-stat-danger">—</span>
+          <span class="at-stat-label">Danger</span>
+        </div>
+      </div>
     </div>
 
     <div id="regime-alert" style="display:none;" class="alert alert--warning mb-3">
@@ -574,7 +651,7 @@
       const loading = document.getElementById('loading');
       const btn     = document.getElementById('refresh-btn');
       btn.disabled  = true;
-      btn.querySelector('.btn-label').innerHTML = '<span class="spinner"></span> ' + (updateFirst ? 'Updating levels&hellip;' : 'Loading&hellip;');
+      document.getElementById('at-btn-label').innerHTML = '<span class="spinner"></span> ' + (updateFirst ? 'Updating levels&hellip;' : 'Loading&hellip;');
       if (updateFirst) {
         try { await fetch('/api/actions/update-active-trades', { method: 'POST' }); } catch (e) { /* proceed anyway */ }
       }
@@ -591,13 +668,22 @@
         if (items.length === 0) {
           content.innerHTML = '<div class="empty-state"><p>No active trades yet.</p><p class="text-sm text-muted">Mark recommendations as "Took it" on the <a href="/recommendations">Recommendations</a> page.</p></div>';
           content.style.display = 'block'; loading.style.display = 'none';
-          btn.disabled = false; btn.querySelector('.btn-label').textContent = 'Update & refresh';
+          btn.disabled = false; document.getElementById('at-btn-label').textContent = 'Update & refresh';
           return;
         }
         let html = '<div class="trade-cards">';
         items.forEach((t, idx) => { html += buildCard(t, idx); });
         html += '</div>';
         content.innerHTML = html;
+
+        // Populate hero stats
+        const openCount   = items.filter(t => !t.trade_phase || !t.trade_phase.startsWith('closed')).length;
+        const warnCount   = items.filter(t => (t.signal_flip_count || 0) >= 1 && (t.signal_flip_count || 0) < 3).length;
+        const dangerCount = items.filter(t => (t.signal_flip_count || 0) >= 3).length;
+        document.getElementById('at-stat-open').textContent   = openCount;
+        document.getElementById('at-stat-warn').textContent   = warnCount;
+        document.getElementById('at-stat-danger').textContent = dangerCount;
+        document.getElementById('at-stats').style.display     = 'flex';
 
         content.querySelectorAll('button[data-idx]').forEach(b => {
           b.addEventListener('click', function() {
@@ -620,7 +706,7 @@
         content.innerHTML = `<div class="alert alert--error">Failed: ${esc(e.message)}</div>`;
       }
       content.style.display = 'block'; loading.style.display = 'none';
-      btn.disabled = false; btn.querySelector('.btn-label').textContent = 'Update & refresh';
+      btn.disabled = false; document.getElementById('at-btn-label').textContent = 'Update & refresh';
     }
 
     document.getElementById('refresh-btn').addEventListener('click', () => load(true));
