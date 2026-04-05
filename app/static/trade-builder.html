@@ -10,6 +10,139 @@
   <link rel="stylesheet" href="/static/css/common.css">
   <script src="/static/js/icons.js"></script>
   <style>
+    /* ── Search Hero ── */
+    .sb-hero {
+      position: relative; overflow: hidden;
+      background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 55%, #312e81 100%);
+      border-radius: var(--radius); border: 1px solid rgba(99,102,241,.3);
+      padding: 40px 40px 32px;
+    }
+    .sb-hero::before {
+      content: ''; position: absolute; inset: 0; pointer-events: none;
+      background-image: radial-gradient(circle at 1px 1px, rgba(255,255,255,.04) 1px, transparent 0);
+      background-size: 28px 28px;
+    }
+    .sb-hero::after {
+      content: ''; position: absolute; top: -80px; right: -80px; pointer-events: none;
+      width: 320px; height: 320px; border-radius: 50%;
+      background: radial-gradient(circle, rgba(99,102,241,.15) 0%, transparent 70%);
+    }
+    .sb-hero > * { position: relative; z-index: 1; }
+    .sb-hero-title {
+      font-size: 26px; font-weight: 800; color: #f8fafc;
+      margin: 0 0 5px; letter-spacing: -.03em; line-height: 1.2;
+    }
+    .sb-hero-sub {
+      font-size: 13px; color: rgba(248,250,252,.45); margin: 0 0 28px;
+    }
+    .sb-search-wrap {
+      display: flex; align-items: center; gap: 0;
+      background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.14);
+      border-radius: 12px; overflow: hidden;
+      transition: border-color .2s, box-shadow .2s;
+    }
+    .sb-search-wrap:focus-within {
+      border-color: rgba(129,140,248,.65);
+      box-shadow: 0 0 0 3px rgba(99,102,241,.15);
+    }
+    .sb-search-icon {
+      padding: 0 14px; color: rgba(248,250,252,.35);
+      display: flex; align-items: center; flex-shrink: 0;
+    }
+    .sb-search-input {
+      flex: 1; background: none; border: none; outline: none;
+      padding: 16px 8px; font-size: 17px; font-weight: 500;
+      color: #f8fafc; font-family: inherit; min-width: 0;
+    }
+    .sb-search-input::placeholder { color: rgba(248,250,252,.28); font-weight: 400; }
+    .sb-build-btn {
+      flex-shrink: 0; margin: 6px; padding: 11px 22px;
+      background: #6366f1; color: #fff; border: none; border-radius: 8px;
+      font-size: 14px; font-weight: 700; cursor: pointer;
+      display: flex; align-items: center; gap: 7px;
+      transition: background .15s, transform .1s; white-space: nowrap;
+      font-family: inherit; letter-spacing: -.01em;
+    }
+    .sb-build-btn:hover:not(:disabled) { background: #4f46e5; }
+    .sb-build-btn:active:not(:disabled) { transform: scale(.97); }
+    .sb-build-btn:disabled { opacity: .55; cursor: not-allowed; }
+    .sb-cat-row {
+      display: flex; align-items: center; gap: 8px;
+      margin-top: 9px; min-height: 22px; padding-left: 2px;
+    }
+    .sb-cat-label { font-size: 11px; color: rgba(248,250,252,.35); }
+    .sb-cat-badge {
+      font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em;
+      padding: 2px 8px; border-radius: 99px;
+      background: rgba(99,102,241,.25); color: #a5b4fc;
+    }
+    .sb-cat-override-hint { font-size: 11px; color: rgba(248,250,252,.25); }
+    .sb-quick-label {
+      font-size: 10px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .07em; color: rgba(248,250,252,.3);
+      align-self: center; flex-shrink: 0;
+    }
+    .sb-quick-picks { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 20px; align-items: center; }
+    .sb-pick-btn {
+      padding: 5px 14px; border-radius: 99px;
+      background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.1);
+      color: rgba(248,250,252,.65); font-size: 13px; font-weight: 600;
+      cursor: pointer; font-family: inherit;
+      transition: background .15s, border-color .15s, color .15s;
+      font-variant-numeric: tabular-nums;
+    }
+    .sb-pick-btn:hover {
+      background: rgba(99,102,241,.22); border-color: rgba(99,102,241,.45); color: #f8fafc;
+    }
+    .sb-footer-row {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-top: 20px; flex-wrap: wrap; gap: 12px;
+    }
+    .sb-advanced-toggle {
+      background: none; border: none; color: rgba(248,250,252,.4);
+      font-size: 12px; cursor: pointer; display: flex; align-items: center; gap: 5px;
+      font-family: inherit; padding: 0; transition: color .15s;
+    }
+    .sb-advanced-toggle:hover { color: rgba(248,250,252,.75); }
+    .sb-pick-from-list {
+      color: rgba(248,250,252,.4); font-size: 13px; text-decoration: none;
+      display: flex; align-items: center; gap: 5px; transition: color .15s;
+    }
+    .sb-pick-from-list:hover { color: rgba(248,250,252,.75); }
+    .sb-advanced-panel {
+      display: none; margin-top: 18px; padding-top: 18px;
+      border-top: 1px solid rgba(255,255,255,.09);
+    }
+    .sb-advanced-panel.open { display: block; }
+    .sb-adv-label {
+      font-size: 10px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .07em; color: rgba(248,250,252,.3); margin-bottom: 12px;
+    }
+    .sb-adv-row { display: flex; align-items: flex-start; gap: 28px; flex-wrap: wrap; }
+    .sb-adv-field { display: flex; flex-direction: column; gap: 5px; }
+    .sb-adv-field-label { font-size: 11px; color: rgba(248,250,252,.4); font-weight: 600; }
+    .sb-cat-select {
+      background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.14);
+      border-radius: var(--radius); color: rgba(248,250,252,.8);
+      padding: 7px 12px; font-size: 13px; font-family: inherit; outline: none; cursor: pointer;
+    }
+    .sb-cat-select:focus { border-color: rgba(129,140,248,.6); }
+    .sb-cat-select option { background: #1e293b; color: #f8fafc; }
+    .sb-refresh-label {
+      display: flex; align-items: flex-start; gap: 9px;
+      font-size: 13px; color: rgba(248,250,252,.6); cursor: pointer; line-height: 1.4;
+    }
+    .sb-refresh-label input[type="checkbox"] { margin-top: 2px; flex-shrink: 0; cursor: pointer; }
+    .sb-adv-hint {
+      font-size: 11px; color: rgba(248,250,252,.25); margin-top: 10px; line-height: 1.5;
+    }
+    @media (max-width: 600px) {
+      .sb-hero { padding: 28px 20px 24px; }
+      .sb-hero-title { font-size: 20px; }
+      .sb-search-input { font-size: 15px; padding: 13px 6px; }
+      .sb-build-btn { padding: 9px 16px; font-size: 13px; }
+    }
+
     .trade-card {
       background: var(--card); border: 1px solid var(--border);
       border-left: 4px solid #3b82f6; border-radius: var(--radius);
@@ -329,19 +462,6 @@
       .trade-levels { grid-template-columns: 1fr; }
       .level-cell { border-right: none; border-bottom: 1px solid var(--border); }
     }
-    .tb-refresh-guide {
-      display: block;
-      margin-bottom: var(--space-3);
-      font-size: 14px;
-      line-height: 1.55;
-    }
-    .tb-refresh-guide ul {
-      margin: 8px 0 0;
-      padding-left: 1.15rem;
-    }
-    .tb-refresh-guide li { margin-bottom: 6px; }
-    .tb-refresh-guide li:last-child { margin-bottom: 0; }
-    .tb-refresh-guide .tb-h { font-weight: 600; color: var(--foreground); }
   </style>
 </head>
 <body>
@@ -358,52 +478,83 @@
   </nav>
 
   <main class="app app--wide">
-    <h1 class="page-title">Trade builder</h1>
-    <p class="page-desc">Review the system idea, pick an execution strategy, read the explanation, then confirm. Open from <a href="/recommendations">Recommendations</a> (<strong>Took it</strong>), or start below with any symbol the bot can price (live data + latest analysis sentiment when available). Trades are only created after you confirm.</p>
+    <div id="err" class="alert alert--error mb-3" style="display:none;"></div>
 
-    <div id="err" class="alert alert--error" style="display:none;"></div>
+    <div id="start-panel" style="display:none; margin-bottom: var(--space-3);">
+      <div class="sb-hero">
+        <div class="sb-hero-title">Build a Trade Plan</div>
+        <div class="sb-hero-sub">Live prices &middot; technicals &middot; multi-strategy execution &middot; R-multiple scenarios</div>
 
-    <div id="start-panel" class="card mb-3" style="display:none;">
-      <h2 class="section-title"><span data-icon="search"></span> Start from a symbol</h2>
-      <p class="text-sm text-muted mb-3">Same engine as <strong>Took it</strong> from the list: live price and technicals for every build. Sentiment and event hints come from the <strong>latest saved analysis</strong> when the pipeline has been run (<a href="/dashboard">Dashboard</a>).</p>
-
-      <div class="alert alert--info tb-refresh-guide">
-        <div class="flex gap-2" style="align-items:flex-start; margin-bottom:6px;">
-          <span data-icon="info" class="text-muted" style="flex-shrink:0; margin-top:2px;"></span>
-          <strong>“Refresh news &amp; analysis” — need it or not?</strong>
+        <!-- Main search input -->
+        <div class="sb-search-wrap">
+          <span class="sb-search-icon">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+          </span>
+          <input type="text" id="sf-asset" class="sb-search-input"
+                 placeholder="Symbol or asset — AAPL, Brent, BTC, NDX…"
+                 autocomplete="off" spellcheck="false">
+          <button type="button" class="sb-build-btn" id="sf-submit">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+            Build
+          </button>
         </div>
-        <ul>
-          <li><span class="tb-h">Not on today&rsquo;s recommendation list?</span> That alone is <strong>not</strong> a reason to enable the refresh. Off-list symbols still build from live data; the list only means that asset wasn&rsquo;t in the last batch ranking.</li>
-          <li><span class="tb-h">Leave the box off (usual case):</span> Fast. Uses whatever analysis is already in the database plus current prices.</li>
-          <li><span class="tb-h">Turn it on only if:</span> You want to pull new headlines and re-run the analysis job <em>before</em> this build (can take several minutes; it refreshes the global feed, not only your symbol). Examples: you haven&rsquo;t run the pipeline yet, or your stored analysis is clearly outdated.</li>
-          <li class="text-sm text-muted" style="list-style:none; margin-left:-1.15rem; margin-top:8px;">Neither option regenerates the full daily recommendations list — use <strong>Dashboard → Run full pipeline</strong> when you want that.</li>
-        </ul>
-      </div>
 
-      <div class="form-group">
-        <label for="sf-category">Category</label>
-        <select id="sf-category" class="input" style="max-width:min(100%, 360px);">
-          <option value="stocks">Stocks</option>
-          <option value="commodities">Commodities</option>
-          <option value="indices">Indices</option>
-          <option value="other">Other</option>
-        </select>
-      </div>
-      <div class="form-group">
-        <label for="sf-asset">Symbol / asset id</label>
-        <input type="text" id="sf-asset" class="input" placeholder="e.g. AAPL" style="max-width:min(100%, 360px);" autocomplete="off">
-      </div>
-      <div class="form-group mb-3">
-        <span class="text-sm font-semibold" style="display:block; margin-bottom:6px;">Optional pre-step</span>
-        <label class="flex gap-2" style="align-items:flex-start; cursor:pointer;">
-          <input type="checkbox" id="sf-refresh" style="margin-top:4px;">
-          <span class="text-sm">Refresh news &amp; analysis before building (ingestion + analysis jobs; slow)</span>
-        </label>
-        <p class="text-sm text-muted mt-1 mb-0">See the blue note above — most users leave this unchecked.</p>
-      </div>
-      <div class="flex gap-2 flex-wrap">
-        <button type="button" class="btn btn--primary" id="sf-submit"><span data-icon="sliders-horizontal"></span> Build plan</button>
-        <a href="/recommendations" class="btn btn--secondary">Pick from today&rsquo;s list</a>
+        <!-- Auto-detected category indicator -->
+        <div class="sb-cat-row" id="sb-cat-row" style="visibility:hidden;">
+          <span class="sb-cat-label">Detected category:</span>
+          <span class="sb-cat-badge" id="sb-cat-badge">stocks</span>
+          <span class="sb-cat-override-hint">— override in Advanced</span>
+        </div>
+
+        <!-- Quick picks -->
+        <div class="sb-quick-picks">
+          <span class="sb-quick-label">Quick</span>
+          <button type="button" class="sb-pick-btn" data-symbol="AAPL"  data-cat="stocks">AAPL</button>
+          <button type="button" class="sb-pick-btn" data-symbol="MSFT"  data-cat="stocks">MSFT</button>
+          <button type="button" class="sb-pick-btn" data-symbol="Gold"  data-cat="commodities">Gold</button>
+          <button type="button" class="sb-pick-btn" data-symbol="Brent" data-cat="commodities">Brent</button>
+          <button type="button" class="sb-pick-btn" data-symbol="BTC"   data-cat="other">BTC</button>
+          <button type="button" class="sb-pick-btn" data-symbol="NDX"   data-cat="indices">NDX</button>
+        </div>
+
+        <!-- Footer: Advanced toggle + pick from list -->
+        <div class="sb-footer-row">
+          <button type="button" class="sb-advanced-toggle" id="sb-adv-toggle">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 0-14.14 0M4.93 19.07a10 10 0 0 0 14.14 0M12 2v2M12 20v2M2 12h2M20 12h2"/></svg>
+            Advanced
+            <span id="sb-adv-arrow" style="font-size:10px;">▾</span>
+          </button>
+          <a href="/recommendations" class="sb-pick-from-list">
+            Pick from today&rsquo;s recommendations &rarr;
+          </a>
+        </div>
+
+        <!-- Advanced panel (collapsed by default) -->
+        <div class="sb-advanced-panel" id="sb-advanced">
+          <div class="sb-adv-label">Advanced options</div>
+          <div class="sb-adv-row">
+            <div class="sb-adv-field">
+              <span class="sb-adv-field-label">Category override</span>
+              <select id="sf-category" class="sb-cat-select">
+                <option value="auto">Auto-detect</option>
+                <option value="stocks">Stocks</option>
+                <option value="commodities">Commodities</option>
+                <option value="indices">Indices</option>
+                <option value="other">Other (crypto…)</option>
+              </select>
+            </div>
+            <div class="sb-adv-field" style="justify-content:flex-end; padding-top:18px;">
+              <label class="sb-refresh-label">
+                <input type="checkbox" id="sf-refresh">
+                Refresh news &amp; analysis before building
+              </label>
+            </div>
+          </div>
+          <div class="sb-adv-hint">
+            <strong style="color:rgba(248,250,252,.45);">Refresh</strong> re-runs ingestion + analysis jobs before the build (slow, several minutes).
+            Leave off unless your saved analysis is clearly outdated. Does <em>not</em> regenerate the full recommendations list — use Dashboard &rarr; Run full pipeline for that.
+          </div>
+        </div>
       </div>
     </div>
 
@@ -1209,15 +1360,70 @@
       }
     }
 
-    document.getElementById('sf-submit').addEventListener('click', async () => {
-      const cat = (document.getElementById('sf-category').value || 'stocks').trim();
+    // ── Start panel: auto-detect, quick picks, advanced toggle ──────────
+    var CAT_PATTERNS = {
+      commodities: ['brent','oil','gold','silver','wti','crude','natural gas','wheat','corn','copper','platinum','palladium','gas','cocoa','coffee','sugar','cotton'],
+      indices:     ['ndx','spx','spy','qqq','dji','dow','nikkei','dax','ftse','sensex','vix','russell','rut','cac','ibex','asx','hang seng','wig'],
+      other:       ['btc','eth','bitcoin','ethereum','sol','ada','xrp','bnb','doge','ltc','link','dot','avax','matic','crypto'],
+    };
+    function detectCategory(symbol) {
+      const s = (symbol || '').toLowerCase().trim();
+      for (const [cat, patterns] of Object.entries(CAT_PATTERNS)) {
+        if (patterns.some(p => s.includes(p))) return cat;
+      }
+      return 'stocks';
+    }
+    function resolveCategory() {
+      const override = document.getElementById('sf-category').value;
+      if (override && override !== 'auto') return override;
+      return detectCategory(document.getElementById('sf-asset').value);
+    }
+    function updateCatBadge() {
       const asset = (document.getElementById('sf-asset').value || '').trim();
+      const row = document.getElementById('sb-cat-row');
+      const badge = document.getElementById('sb-cat-badge');
+      if (!asset) { row.style.visibility = 'hidden'; return; }
+      const cat = resolveCategory();
+      badge.textContent = cat;
+      row.style.visibility = 'visible';
+    }
+    document.getElementById('sf-asset').addEventListener('input', updateCatBadge);
+    document.getElementById('sf-category').addEventListener('change', updateCatBadge);
+
+    // Advanced toggle
+    document.getElementById('sb-adv-toggle').addEventListener('click', function() {
+      const panel = document.getElementById('sb-advanced');
+      const arrow = document.getElementById('sb-adv-arrow');
+      const open = panel.classList.toggle('open');
+      arrow.textContent = open ? '▴' : '▾';
+    });
+
+    // Quick picks
+    document.querySelectorAll('.sb-pick-btn').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        const sym = btn.dataset.symbol;
+        const cat = btn.dataset.cat;
+        document.getElementById('sf-asset').value = sym;
+        document.getElementById('sf-category').value = cat;
+        updateCatBadge();
+        triggerBuild();
+      });
+    });
+
+    // Enter key in search input
+    document.getElementById('sf-asset').addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') triggerBuild();
+    });
+
+    async function triggerBuild() {
+      const asset = (document.getElementById('sf-asset').value || '').trim();
+      const cat = resolveCategory();
       const refresh = document.getElementById('sf-refresh').checked;
       const btn = document.getElementById('sf-submit');
       const errEl = document.getElementById('err');
       if (!asset) {
         errEl.style.display = 'block';
-        errEl.textContent = 'Enter a symbol or asset id.';
+        errEl.textContent = 'Enter a symbol or asset ID.';
         return;
       }
       errEl.style.display = 'none';
@@ -1230,11 +1436,7 @@
         const r = await fetch('/api/trade-builder/from-asset', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            asset_id: asset,
-            category: cat,
-            run_full_pipeline: refresh,
-          }),
+          body: JSON.stringify({ asset_id: asset, category: cat, run_full_pipeline: refresh }),
         });
         const data = await r.json();
         if (!r.ok) {
@@ -1252,7 +1454,9 @@
         btn.disabled = false;
         btn.innerHTML = prevHtml;
       }
-    });
+    }
+
+    document.getElementById('sf-submit').addEventListener('click', triggerBuild);
 
     document.getElementById('btn-confirm').addEventListener('click', async () => {
       if (!rec) return;
