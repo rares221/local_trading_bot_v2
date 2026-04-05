@@ -43,6 +43,14 @@ _DEFAULT_BLOCKLIST = frozenset({
     # Institutions / acronyms often tagged but not Yahoo tickers
     "ECB", "BOE", "PBOC", "IMF", "OECD", "NATO", "WTO", "WHO", "UN", "IRS", "FBI", "DOJ",
     "FED", "BOJ", "SNB", "RBA", "RBNZ",
+    # Sports / leagues (headlines, not tickers)
+    "NFL", "NHL", "NBA", "MLS", "FIFA", "UEFA", "NCAA", "NIL",
+    # Macro / policy / gov tokens mistaken for symbols
+    "NFP", "USMCA", "USDA", "USGS", "USTR", "NSE", "TASI", "SIFMA",
+    # Common headline words / jargon (all-caps RSS)
+    "WORLD", "SPACE", "SPAC", "SPDR", "RISK", "SWING", "TRACE", "WILL", "WONT", "WOULD",
+    "PLACE", "ZONES", "WPSR", "TBPN", "VAT", "RFK", "RTHK", "RWA", "SUV", "TMGH",
+    "POC", "POI", "PRZ", "SEN", "SFO", "XIV",
 })
 
 

@@ -2,13 +2,49 @@
 Recommendation engine v3: ATR + S/R SL/TP, long/short direction, expiry estimation,
 technical signal scoring, market regime awareness, multi-TF trend alignment,
 confidence gating, cross-asset correlation. Best N per category (regime-dependent).
+
+Per–asset-class tuning (commodities / FX / crypto / VIX vs equities) lives in
+``asset_class_policy.py`` (Option A policy layer).
+
+Structured skip forensics: grep ``[ENGINE_SKIP]``; each batch ends with ``[ENGINE_DIGEST]``.
+Both include ``pipeline_run_id`` (UUID) for a single ``build_daily_candidates`` invocation.
 """
+import json
 import logging
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any, Optional, Sequence
+from uuid import uuid4
 
 logger = logging.getLogger(__name__)
+
+# Set only during ``build_daily_candidates`` so skips aggregate into one digest line.
+_ENGINE_BATCH_LOG: ContextVar[Optional[dict[str, Any]]] = ContextVar(
+    "ENGINE_BATCH_LOG", default=None
+)
+
+
+def _log_engine_skip(reason: str, **fields: Any) -> None:
+    """Single-line JSON for grep / dashboards; counts toward ``[ENGINE_DIGEST]`` when in a batch."""
+    payload: dict[str, Any] = {"reason": reason}
+    for k, v in fields.items():
+        if v is not None:
+            payload[k] = v
+    ctx = _ENGINE_BATCH_LOG.get()
+    if ctx is not None:
+        payload["batch_date"] = ctx["batch_date"]
+        prid = ctx.get("pipeline_run_id")
+        if prid:
+            payload["pipeline_run_id"] = prid
+        skips: dict[str, int] = ctx["skips"]
+        skips[reason] = skips.get(reason, 0) + 1
+        cat = fields.get("category")
+        if isinstance(cat, str) and cat:
+            by_cat: dict[str, dict[str, int]] = ctx["skips_by_cat"]
+            bc = by_cat.setdefault(cat, {})
+            bc[reason] = bc.get(reason, 0) + 1
+    logger.info("[ENGINE_SKIP] %s", json.dumps(payload, default=str, separators=(",", ":")))
 
 from app.services.sentiment.ticker_detection import get_blocklist, is_likely_ticker
 from app.services.technicals import (
@@ -35,6 +71,10 @@ from app.services.market_context import (
     SectorRegime,
 )
 from app.services.macro_calendar import MACRO_DAY_CONFIDENCE_PENALTY, is_high_impact_day
+from app.services.recommendations.asset_class_policy import (
+    AssetClassPolicy,
+    get_asset_class_policy,
+)
 
 RISK_TIER_ORDER = {"conservative": 0, "moderate": 1, "aggressive": 2}
 
@@ -55,10 +95,22 @@ MAX_RECOMMENDATIONS_PER_CATEGORY = 5
 # Max depth when ranking within each category (backfill + ideas); must be >= MAX_RECOMMENDATIONS_PER_CATEGORY.
 POOL_PER_CATEGORY = 15
 
+# Headline tags that pass ``is_likely_ticker`` but are not in ``SENTIMENT_TAG_TO_ASSETS``:
+# require at least this many weighted mentions before we add a discovery stock idea, and cap per batch.
+MIN_STOCK_TAG_MENTIONS_FOR_DISCOVERY = 2
+MAX_DISCOVERY_STOCK_IDEAS_PER_BATCH = 48
+
+# Sentiment tag stays the pipeline key (e.g. TSMC); Yahoo fetch uses the mapped symbol.
+_DISCOVERY_STOCK_YAHOO_SYMBOL: dict[str, str] = {
+    "TSMC": "TSM",
+    "FB": "META",
+}
+
 BATCH_CATEGORIES: tuple[str, ...] = ("stocks", "commodities", "other", "indices")
 
 SENTIMENT_TAG_TO_ASSETS: dict[str, list[tuple[str, str]]] = {
     "oil": [("commodities", "WTI"), ("commodities", "Brent"), ("stocks", "XOM"), ("stocks", "CVX")],
+    "OIL": [("commodities", "WTI"), ("commodities", "Brent"), ("stocks", "XOM"), ("stocks", "CVX")],
     "gold": [("commodities", "XAUUSD"), ("stocks", "NEM")],
     "gas": [("commodities", "Henry Hub")],
     "XOM": [("stocks", "XOM")],
@@ -94,6 +146,8 @@ SENTIMENT_TAG_TO_ASSETS: dict[str, list[tuple[str, str]]] = {
     "RUT": [("indices", "RUT")],
     "Russell": [("indices", "RUT")],
     "VIX": [("indices", "VIX")],
+    "NIFTY": [("indices", "Nifty")],
+    "Nifty": [("indices", "Nifty")],
 }
 
 ASSETS_BY_CATEGORY = {
@@ -136,10 +190,59 @@ ASSETS_BY_CATEGORY = {
         ("Kospi", "^KS11", "moderate"),
         ("Sensex", "^BSESN", "moderate"),
         ("ASX", "^AXJO", "moderate"),
+        ("Nifty", "^NSEI", "moderate"),
         # Volatility
         ("VIX", "^VIX", "aggressive"),
     ],
 }
+
+
+def _effective_min_confidence(
+    category: str,
+    asset_id: str,
+    market_ctx: Optional[MarketContext],
+) -> int:
+    """Regime floor + asset-class offset + dashboard prefs (commodities + optional equity/other)."""
+    base = market_ctx.min_confidence_threshold() if market_ctx else 35
+    pol = get_asset_class_policy(category, asset_id)
+    m = base + pol.min_confidence_offset
+    if market_ctx and market_ctx.regime.regime == "risk_off":
+        m -= pol.risk_off_gate_relief
+    if category == "commodities":
+        from app.core.preferences import get_commodity_engine_gates
+
+        m += int(get_commodity_engine_gates()["commodity_confidence_offset"])
+    else:
+        from app.core.preferences import get_non_commodity_engine_gates
+
+        nc = get_non_commodity_engine_gates()
+        if category in ("stocks", "indices") and pol.key != "indices_vix":
+            m += int(nc["equity_confidence_offset"])
+        elif category == "other":
+            m += int(nc["other_confidence_offset"])
+    return max(0, min(100, m))
+
+
+def _min_rr_floor_for_build(category: str, pol: AssetClassPolicy) -> float:
+    """R:R floor for candidate build; commodities use commodity prefs; optional equity/other overrides."""
+    if category == "commodities":
+        from app.core.preferences import get_commodity_engine_gates
+
+        return float(get_commodity_engine_gates()["commodity_min_risk_reward"])
+    from app.core.preferences import get_non_commodity_engine_gates
+
+    nc = get_non_commodity_engine_gates()
+    if category in ("stocks", "indices") and pol.key != "indices_vix":
+        err = nc.get("equity_min_risk_reward")
+        if err is not None:
+            return float(err)
+    if category == "other":
+        orr = nc.get("other_min_risk_reward")
+        if orr is not None:
+            return float(orr)
+    if pol.min_risk_reward is not None:
+        return float(pol.min_risk_reward)
+    return MIN_RISK_REWARD
 
 
 def _universe_lookup() -> dict[tuple[str, str], tuple[str, str]]:
@@ -167,8 +270,9 @@ def _resolve_universe_entry(
         sym, tier = universe[key]
         return (sym, tier, asset_id)
     if category == "stocks" and is_likely_ticker(asset_id):
-        canon = asset_id.upper()
-        return (canon, "moderate", canon)
+        aid = asset_id.upper()
+        yahoo = _DISCOVERY_STOCK_YAHOO_SYMBOL.get(aid, aid)
+        return (yahoo, "moderate", aid)
     aid_norm = asset_id.strip().lower()
     for (cat, u_aid), (sym, tier) in universe.items():
         if cat == category and u_aid.lower() == aid_norm:
@@ -191,12 +295,21 @@ def _trade_ideas_from_analysis(by_asset_sentiment: Optional[dict]) -> set[tuple[
     if not by_asset_sentiment:
         return set()
     ideas: set[tuple[str, str]] = set()
+    discovery: list[tuple[str, int]] = []
     for tag in by_asset_sentiment:
         if tag in SENTIMENT_TAG_TO_ASSETS:
             for pair in SENTIMENT_TAG_TO_ASSETS[tag]:
                 ideas.add(pair)
-        elif is_likely_ticker(tag):
-            ideas.add(("stocks", tag))
+            continue
+        if not is_likely_ticker(tag):
+            continue
+        cnt = int((by_asset_sentiment.get(tag) or {}).get("count") or 0)
+        if cnt < MIN_STOCK_TAG_MENTIONS_FOR_DISCOVERY:
+            continue
+        discovery.append((tag, cnt))
+    discovery.sort(key=lambda t: (-t[1], t[0]))
+    for tag, _ in discovery[:MAX_DISCOVERY_STOCK_IDEAS_PER_BATCH]:
+        ideas.add(("stocks", tag))
     return ideas
 
 
@@ -741,10 +854,20 @@ def _build_candidate(
     min_rr_floor: float = MIN_RISK_REWARD,
     *,
     ad_hoc: bool = False,
+    policy: Optional[AssetClassPolicy] = None,
 ) -> Optional[Candidate]:
     """Build a single Candidate with ATR-based levels, direction, expiry, score, trend alignment."""
+    pol = policy or get_asset_class_policy(category, asset_id)
     snap = build_snapshot(symbol)
     if not snap or snap.price <= 0:
+        _log_engine_skip(
+            "no_snapshot",
+            category=category,
+            asset_id=asset_id,
+            symbol=symbol,
+            policy=pol.key,
+            ad_hoc=ad_hoc,
+        )
         return None
 
     price = round(snap.price, 2)
@@ -754,7 +877,12 @@ def _build_candidate(
     sentiment_avg = pair[0] if pair else None
     sentiment_count = pair[1] if pair else 0
     regime_id = market_ctx.regime.regime if market_ctx else None
-    direction = determine_direction(sentiment_avg, snap, regime=regime_id)
+    direction = determine_direction(
+        sentiment_avg,
+        snap,
+        regime=regime_id,
+        asset_direction_style=pol.direction_style,
+    )
 
     # Multi-timeframe trend alignment check
     alignment = check_trend_alignment(symbol)
@@ -780,16 +908,24 @@ def _build_candidate(
             sector_regime = market_ctx.sector_regimes[sector]
             logger.debug("[ENGINE] %s: sector=%s, sector_regime=%s", asset_id, sector, sector_regime.regime)
         
-        # In risk_off, don't go long on stocks/indices unless very strong signal
-        if market_ctx.regime.regime == "risk_off" and direction == "long":
-            if category in ("stocks", "indices"):
-                direction = "short"  # flip to match regime
+        # In risk_off, flip long → short for equity-like books when policy allows (excludes e.g. VIX).
+        if (
+            market_ctx.regime.regime == "risk_off"
+            and direction == "long"
+            and pol.apply_risk_off_long_flip
+            and category in ("stocks", "indices")
+        ):
+            direction = "short"
 
     # ATR-based stop loss / take profit
     sl, tp = compute_atr_levels(price, risk_tier, snapshot=snap, direction=direction)
     eff_min_rr = max(1.0, min_rr_floor * 0.85) if ad_hoc else min_rr_floor
     if ad_hoc:
         sl, tp = _stretch_levels_for_min_rr(price, sl, tp, direction, eff_min_rr)
+    elif category == "commodities":
+        rr_probe = calc_risk_reward(price, sl, tp)
+        if rr_probe is not None and rr_probe < eff_min_rr:
+            sl, tp = _stretch_levels_for_min_rr(price, sl, tp, direction, eff_min_rr)
 
     # Expiry estimation
     expiry_days = estimate_expiry_days(price, tp, snapshot=snap)
@@ -797,28 +933,51 @@ def _build_candidate(
 
     # Ranking score
     score = compute_technical_score(sentiment_avg, sentiment_count, snap)
-    # Trend alignment bonus/penalty
+    # Trend alignment bonus/penalty (scaled by asset class)
     if trend_aligned:
-        score += 0.5
+        score += pol.mtf_aligned_score_bonus
     elif alignment.alignment_score != 0:
         aligned_dir = "long" if alignment.alignment_score > 0 else "short"
         if aligned_dir != direction:
-            score -= 0.3
+            score -= pol.mtf_misalign_score_penalty
 
     # Confidence score (0–100) with market context adjustment; regime-specific thresholds
-    base_confidence = compute_confidence(sentiment_avg, sentiment_count, snap, direction, regime=regime_id)
+    base_confidence = compute_confidence(
+        sentiment_avg,
+        sentiment_count,
+        snap,
+        direction,
+        regime=regime_id,
+        sentiment_signal_scale=pol.sentiment_signal_scale,
+        indicator_conflict_multiplier=pol.indicator_conflict_multiplier,
+    )
     confidence = base_confidence
     logger.debug(
         "[ENGINE] %s (%s): base_conf=%d, sent_avg=%s, sent_cnt=%d, dir=%s",
         asset_id, symbol, base_confidence, sentiment_avg, sentiment_count, direction,
     )
     if trend_aligned:
-        confidence = min(100, confidence + 8)
+        confidence = min(100, confidence + pol.mtf_aligned_confidence_bonus)
     if market_ctx:
-        adj = market_ctx.confidence_adjustment()
-        confidence = max(0, min(100, confidence + adj))
-        if adj != 0:
-            logger.debug("[ENGINE] %s: regime conf adj=%d → %d", asset_id, adj, confidence)
+        ra = market_ctx.regime_adjustment()
+        da = market_ctx.divergence_adjustment()
+        scaled = int(
+            round(
+                ra * pol.equity_regime_adjustment_scale
+                + da * pol.cross_asset_divergence_scale
+            )
+        )
+        confidence = max(0, min(100, confidence + scaled))
+        if scaled != 0:
+            logger.debug(
+                "[ENGINE] %s: scaled regime/div conf adj=%d (raw ra=%d da=%d, policy=%s) → %d",
+                asset_id,
+                scaled,
+                ra,
+                da,
+                pol.key,
+                confidence,
+            )
         
         # Sector-specific regime adjustment
         if sector_regime:
@@ -837,20 +996,43 @@ def _build_candidate(
                 else:
                     regime_note = sector_note
         
-        # Cross-asset correlation divergence penalty
+        # Cross-asset correlation divergence penalty (scaled by asset class)
         if market_ctx.has_divergence_warning:
-            div_penalty = _correlation_divergence_penalty(market_ctx, category, asset_id)
+            div_raw = _correlation_divergence_penalty(market_ctx, category, asset_id)
+            div_penalty = int(round(div_raw * pol.correlation_divergence_penalty_scale))
             if div_penalty > 0:
                 confidence = max(0, confidence - div_penalty)
                 score -= div_penalty / 20
-                logger.debug("[ENGINE] %s: correlation divergence penalty=%d → conf=%d", asset_id, div_penalty, confidence)
+                logger.debug(
+                    "[ENGINE] %s: correlation div penalty=%d (raw=%d, policy=%s) → conf=%d",
+                    asset_id,
+                    div_penalty,
+                    div_raw,
+                    pol.key,
+                    confidence,
+                )
                 div_pairs = [cs.pair_name for cs in market_ctx.correlation_signals if cs.diverging]
                 div_note = f"Correlation divergence ({', '.join(div_pairs)})"
                 if regime_note:
                     regime_note = f"{regime_note}; {div_note}"
                 else:
                     regime_note = div_note
-    
+
+        # USD / DXY macro nudge (FX + selected commodities; no per–asset-class engine split)
+        dxy_delta = market_ctx.dxy_confidence_delta(category, asset_id, direction)
+        if dxy_delta != 0:
+            confidence = max(0, min(100, confidence + dxy_delta))
+            logger.debug(
+                "[ENGINE] %s: dxy adj=%d (trend=%s) → conf=%d",
+                asset_id,
+                dxy_delta,
+                market_ctx.dxy.trend,
+                confidence,
+            )
+            dxy_note = market_ctx.dxy_note_for_asset(category, asset_id, direction)
+            if dxy_note:
+                regime_note = f"{regime_note}; {dxy_note}" if regime_note else dxy_note
+
     # Sentiment–price divergence: reduce confidence when sentiment and price move in opposite directions
     if _has_sentiment_divergence(category, asset_id, by_asset_sentiment):
         confidence = max(0, confidence - 10)
@@ -870,14 +1052,34 @@ def _build_candidate(
         else:
             regime_note = "High-impact event"
 
+    if (
+        pol.news_boost_min_mentions > 0
+        and sentiment_count >= pol.news_boost_min_mentions
+        and sentiment_avg is not None
+        and abs(sentiment_avg) >= pol.news_boost_min_abs_sentiment
+    ):
+        confidence = min(100, confidence + pol.news_boost_points)
+
     # Skip candidate when key indicators strongly conflict with direction (e.g. RSI OB + long, MACD bear + long)
-    conflict_penalty = get_indicator_conflict_penalty(snap, direction, regime=regime_id)
+    conflict_penalty = get_indicator_conflict_penalty(
+        snap,
+        direction,
+        regime=regime_id,
+        penalty_scale=pol.indicator_conflict_multiplier,
+    )
     logger.debug("[ENGINE] %s: conflict_penalty=%d", asset_id, conflict_penalty)
-    conflict_cap = 999 if ad_hoc else CONFLICT_SKIP_THRESHOLD
+    conflict_cap = 999 if ad_hoc else pol.conflict_skip_threshold
     if conflict_penalty >= conflict_cap:
-        logger.info(
-            "[ENGINE] Skip %s (%s): indicator conflict penalty=%d (direction=%s)",
-            asset_id, symbol, conflict_penalty, direction,
+        _log_engine_skip(
+            "indicator_conflict",
+            category=category,
+            asset_id=asset_id,
+            symbol=symbol,
+            policy=pol.key,
+            direction=direction,
+            conflict_penalty=conflict_penalty,
+            conflict_cap=conflict_cap,
+            ad_hoc=ad_hoc,
         )
         return None
 
@@ -886,9 +1088,16 @@ def _build_candidate(
 
     # Skip candidates with poor R:R (reward doesn't justify risk)
     if rr is not None and rr < eff_min_rr:
-        logger.info(
-            "[ENGINE] Skip %s (%s): R:R=%.2f < %.2f minimum",
-            asset_id, symbol, rr, eff_min_rr,
+        _log_engine_skip(
+            "risk_reward",
+            category=category,
+            asset_id=asset_id,
+            symbol=symbol,
+            policy=pol.key,
+            direction=direction,
+            risk_reward=round(rr, 4),
+            min_risk_reward=eff_min_rr,
+            ad_hoc=ad_hoc,
         )
         return None
 
@@ -900,7 +1109,7 @@ def _build_candidate(
         vol_notes = f"{vol_notes}; {align_label}; {ema_label}"
     # Survivors only: show how close this row was to being dropped for indicator conflict
     if conflict_penalty > 0:
-        suffix = f"indicator conflict penalty: {conflict_penalty} (skip if ≥{CONFLICT_SKIP_THRESHOLD})"
+        suffix = f"indicator conflict penalty: {conflict_penalty} (skip if ≥{pol.conflict_skip_threshold})"
         vol_notes = f"{vol_notes}; {suffix}" if vol_notes else suffix
 
     # Determine if sector is aligned with trade direction
@@ -940,7 +1149,6 @@ def _candidates_for_pairs(
     exclude_taken: Optional[set[tuple[str, str]]] = None,
     market_ctx: Optional[MarketContext] = None,
     active_events: Optional[list[str]] = None,
-    min_rr_floor: float = MIN_RISK_REWARD,
 ) -> list[Candidate]:
     out: list[Candidate] = []
     seen: set[str] = set()
@@ -955,9 +1163,18 @@ def _candidates_for_pairs(
         symbol, risk_tier = resolved
         if RISK_TIER_ORDER.get(risk_tier, 99) > max_risk_level:
             continue
+        pol = get_asset_class_policy(category, asset_id)
+        min_rr = _min_rr_floor_for_build(category, pol)
         cand = _build_candidate(
-            category, asset_id, symbol, risk_tier, by_asset_sentiment,
-            market_ctx, active_events, min_rr_floor=min_rr_floor,
+            category,
+            asset_id,
+            symbol,
+            risk_tier,
+            by_asset_sentiment,
+            market_ctx,
+            active_events,
+            min_rr_floor=min_rr,
+            policy=pol,
         )
         if cand:
             out.append(cand)
@@ -987,24 +1204,11 @@ def build_daily_candidates_for_category(
     if market_ctx:
         effective_max = min(max_count, market_ctx.max_recommendations_per_category())
 
-    min_confidence = 35  # default gate (lowered from 40)
-    if market_ctx:
-        min_confidence = market_ctx.min_confidence_threshold()
-    min_rr_floor = MIN_RISK_REWARD
-    if category == "commodities":
-        from app.core.preferences import get_commodity_engine_gates
-
-        cg = get_commodity_engine_gates()
-        min_confidence = max(
-            0, min(100, min_confidence + int(cg["commodity_confidence_offset"])),
-        )
-        min_rr_floor = float(cg["commodity_min_risk_reward"])
+    regime_base_min = market_ctx.min_confidence_threshold() if market_ctx else 35
     logger.info(
-        "[ENGINE][%s] min_confidence=%d min_rr_floor=%.2f (regime=%s)",
+        "[ENGINE][%s] regime_base_min_confidence=%d; per-asset gate adds policy offset (+ commodity prefs)",
         category,
-        min_confidence,
-        min_rr_floor,
-        market_ctx.regime.regime if market_ctx else None,
+        regime_base_min,
     )
 
     max_risk_level = RISK_TIER_ORDER.get(preferred_risk, RISK_TIER_ORDER["moderate"])
@@ -1013,14 +1217,32 @@ def build_daily_candidates_for_category(
 
     idea_pairs = sorted(_trade_ideas_from_analysis(by_asset_sentiment))
     idea_candidates = _candidates_for_pairs(
-        category, idea_pairs, universe, max_risk_level,
-        by_asset_sentiment=by_asset_sentiment, exclude_taken=excluded,
-        market_ctx=market_ctx, active_events=active_events,
-        min_rr_floor=min_rr_floor,
+        category,
+        idea_pairs,
+        universe,
+        max_risk_level,
+        by_asset_sentiment=by_asset_sentiment,
+        exclude_taken=excluded,
+        market_ctx=market_ctx,
+        active_events=active_events,
     )
 
-    # Confidence gate: drop low-conviction candidates
-    idea_candidates = [c for c in idea_candidates if c.confidence_score >= min_confidence]
+    # Confidence gate: drop low-conviction candidates (threshold varies by asset class)
+    _gated_ideas: list[Candidate] = []
+    for c in idea_candidates:
+        eff_min = _effective_min_confidence(category, c.asset_id, market_ctx)
+        if c.confidence_score >= eff_min:
+            _gated_ideas.append(c)
+        else:
+            _log_engine_skip(
+                "confidence_gate_idea",
+                category=category,
+                asset_id=c.asset_id,
+                policy=get_asset_class_policy(category, c.asset_id).key,
+                confidence=c.confidence_score,
+                min_confidence=eff_min,
+            )
+    idea_candidates = _gated_ideas
 
     # Rank: confidence-weighted score. Trend-aligned candidates get priority.
     def _rank_key(c: Candidate) -> tuple:
@@ -1032,10 +1254,9 @@ def build_daily_candidates_for_category(
     chosen_ids = {c.asset_id for c in idea_candidates[:effective_max]}
     result = idea_candidates[:effective_max]
 
-    logger.info("[ENGINE][%s] idea_candidates after gate (min_conf=%d): %d", category, min_confidence, len(idea_candidates))
+    logger.info("[ENGINE][%s] idea_candidates after per-asset gate: %d", category, len(idea_candidates))
     # Backfill from universe — use a lower confidence floor since these are
     # curated tradeable assets where technicals alone carry enough signal.
-    backfill_min_conf = max(15, min_confidence - 20)  # lowered from max(20, min-15)
     if len(result) < effective_max:
         items = ASSETS_BY_CATEGORY.get(category, [])
         rest: list[Candidate] = []
@@ -1044,14 +1265,34 @@ def build_daily_candidates_for_category(
                 continue
             if RISK_TIER_ORDER.get(risk_tier, 99) > max_risk_level:
                 continue
+            pol = get_asset_class_policy(category, asset_id)
+            min_rr = _min_rr_floor_for_build(category, pol)
             cand = _build_candidate(
-                category, asset_id, symbol, risk_tier, by_asset_sentiment,
-                market_ctx, active_events, min_rr_floor=min_rr_floor,
+                category,
+                asset_id,
+                symbol,
+                risk_tier,
+                by_asset_sentiment,
+                market_ctx,
+                active_events,
+                min_rr_floor=min_rr,
+                policy=pol,
             )
+            eff_min = _effective_min_confidence(category, asset_id, market_ctx)
+            backfill_min_conf = max(15, eff_min - 20)
             if not cand:
-                logger.debug("[ENGINE][%s] %s (%s): no candidate built (no price or skipped)", category, asset_id, symbol)
-            elif cand.confidence_score < backfill_min_conf:
-                logger.debug("[ENGINE][%s] %s: conf=%d < %d — skipped", category, asset_id, cand.confidence_score, backfill_min_conf)
+                # Failure reason already logged inside _build_candidate (no_snapshot / conflict / R:R).
+                continue
+            if cand.confidence_score < backfill_min_conf:
+                _log_engine_skip(
+                    "confidence_gate_backfill",
+                    category=category,
+                    asset_id=asset_id,
+                    symbol=symbol,
+                    policy=pol.key,
+                    confidence=cand.confidence_score,
+                    min_confidence=backfill_min_conf,
+                )
             else:
                 rest.append(cand)
         rest.sort(key=lambda c: (-c._score, hash((tie_seed or "", c.asset_id)) % 10000))
@@ -1094,113 +1335,152 @@ def build_daily_candidates(
 
     cap = max_per_category if max_per_category is not None else MAX_RECOMMENDATIONS_PER_CATEGORY
     cap = max(1, int(cap))
+    pipeline_run_id = str(uuid4())
     logger.info(
-        "[ENGINE] Batch: up to %d per category × %d categories (regime=%s)",
+        "[ENGINE] Batch run_id=%s: up to %d per category × %d categories (regime=%s)",
+        pipeline_run_id,
         cap,
         len(BATCH_CATEGORIES),
         market_ctx.regime.regime,
     )
 
     out: list[Candidate] = []
-    seen_asset_key: set[tuple[str, str]] = set()
-    total_risk_pct = 0.0
+    batch_ctx: dict[str, Any] = {
+        "batch_date": date.today().isoformat(),
+        "pipeline_run_id": pipeline_run_id,
+        "skips": {},
+        "skips_by_cat": {},
+    }
+    _tok_batch_log = _ENGINE_BATCH_LOG.set(batch_ctx)
+    try:
+        seen_asset_key: set[tuple[str, str]] = set()
+        total_risk_pct = 0.0
 
-    def _try_add(c: Candidate) -> bool:
-        nonlocal total_risk_pct
-        key = (c.asset_category, c.asset_id)
-        if key in seen_asset_key:
-            return False
-        symbol_new = get_yf_symbol(c.asset_category, c.asset_id)
-        if symbol_new and out:
-            max_corr: Optional[float] = None
-            for c_old in out:
-                symbol_old = get_yf_symbol(c_old.asset_category, c_old.asset_id)
-                if not symbol_old or symbol_old == symbol_new:
-                    continue
-                corr = get_return_correlation(symbol_old, symbol_new)
-                if corr is not None:
-                    max_corr = corr if max_corr is None else max(max_corr, corr)
-            if max_corr is not None and max_corr >= CORRELATION_THRESHOLD:
-                logger.info(
-                    "[ENGINE] Skip %s (%s): correlation %.2f with existing recs (threshold %.2f)",
-                    c.asset_id, symbol_new, max_corr, CORRELATION_THRESHOLD,
+        def _try_add(c: Candidate) -> bool:
+            nonlocal total_risk_pct
+            key = (c.asset_category, c.asset_id)
+            if key in seen_asset_key:
+                return False
+            symbol_new = get_yf_symbol(c.asset_category, c.asset_id)
+            if symbol_new and out:
+                max_corr: Optional[float] = None
+                for c_old in out:
+                    symbol_old = get_yf_symbol(c_old.asset_category, c_old.asset_id)
+                    if not symbol_old or symbol_old == symbol_new:
+                        continue
+                    corr = get_return_correlation(symbol_old, symbol_new)
+                    if corr is not None:
+                        max_corr = corr if max_corr is None else max(max_corr, corr)
+                if max_corr is not None and max_corr >= CORRELATION_THRESHOLD:
+                    _log_engine_skip(
+                        "batch_correlation",
+                        category=c.asset_category,
+                        asset_id=c.asset_id,
+                        symbol=symbol_new,
+                        policy=get_asset_class_policy(c.asset_category, c.asset_id).key,
+                        max_correlation=round(max_corr, 4),
+                        correlation_threshold=CORRELATION_THRESHOLD,
+                    )
+                    return False
+            candidate_risk = c.suggested_risk_pct or 0.0
+            if total_risk_pct + candidate_risk > risk_budget_1r:
+                _log_engine_skip(
+                    "batch_risk_budget",
+                    category=c.asset_category,
+                    asset_id=c.asset_id,
+                    symbol=symbol_new,
+                    policy=get_asset_class_policy(c.asset_category, c.asset_id).key,
+                    suggested_risk_pct=round(candidate_risk, 4),
+                    risk_used_pct=round(total_risk_pct, 4),
+                    risk_budget_pct=risk_budget_1r,
                 )
                 return False
-        candidate_risk = c.suggested_risk_pct or 0.0
-        if total_risk_pct + candidate_risk > risk_budget_1r:
-            logger.info(
-                "[ENGINE] Skip %s (%s): risk budget %.2f%% + %.2f%% > %.2f%% (budget)",
-                c.asset_id, symbol_new, total_risk_pct, candidate_risk, risk_budget_1r,
+            seen_asset_key.add(key)
+            out.append(c)
+            total_risk_pct += candidate_risk
+            return True
+
+        for category in BATCH_CATEGORIES:
+            ranked = build_daily_candidates_for_category(
+                category,
+                max_count=max(pool_per_category, cap),
+                by_asset_sentiment=by_asset_sentiment,
+                preferred_risk=preferred_risk,
+                tie_seed=tie_seed,
+                exclude_taken=exclude_taken,
+                market_ctx=market_ctx,
+                active_events=active_events,
             )
-            return False
-        seen_asset_key.add(key)
-        out.append(c)
-        total_risk_pct += candidate_risk
-        return True
+            taken = 0
+            for c in ranked:
+                if taken >= cap:
+                    break
+                if _try_add(c):
+                    taken += 1
+            logger.info("[ENGINE][%s] added %d / target %d to batch", category, taken, cap)
 
-    for category in BATCH_CATEGORIES:
-        ranked = build_daily_candidates_for_category(
-            category,
-            max_count=max(pool_per_category, cap),
-            by_asset_sentiment=by_asset_sentiment,
-            preferred_risk=preferred_risk,
-            tie_seed=tie_seed,
-            exclude_taken=exclude_taken,
-            market_ctx=market_ctx,
-            active_events=active_events,
-        )
-        taken = 0
-        for c in ranked:
-            if taken >= cap:
-                break
-            if _try_add(c):
-                taken += 1
-        logger.info("[ENGINE][%s] added %d / target %d to batch", category, taken, cap)
+        if is_high_impact_day(date.today(), window_days=1):
+            for c in out:
+                current = c.confidence_score or 0
+                c.confidence_score = max(0, current - MACRO_DAY_CONFIDENCE_PENALTY)
+            logger.info(
+                "[ENGINE] High-impact macro day: applied confidence penalty %d to %d candidates",
+                MACRO_DAY_CONFIDENCE_PENALTY,
+                len(out),
+            )
 
-    if is_high_impact_day(date.today(), window_days=1):
-        for c in out:
-            current = c.confidence_score or 0
-            c.confidence_score = max(0, current - MACRO_DAY_CONFIDENCE_PENALTY)
+        # Shadow profile B: alternate min-confidence gate (does not change who is in the batch)
+        from app.core.preferences import get_shadow_mode_config
+
+        sm = get_shadow_mode_config()
+        if sm.get("enabled"):
+            min_live = market_ctx.min_confidence_threshold()
+            delta = int(sm.get("confidence_delta", 0))
+            min_b = max(0, min(100, min_live + delta))
+            for c in out:
+                conf = c.confidence_score or 0
+                c.min_confidence_gate = min_live
+                c.shadow_b_threshold = min_b
+                c.shadow_b_pass = conf >= min_b
+            n_pass_b = sum(1 for c in out if c.shadow_b_pass)
+            logger.info(
+                "[ENGINE] Shadow mode B: live_min=%d delta=%d → B_threshold=%d | %d/%d rows would pass B",
+                min_live,
+                delta,
+                min_b,
+                n_pass_b,
+                len(out),
+            )
+        else:
+            for c in out:
+                c.min_confidence_gate = None
+                c.shadow_b_threshold = None
+                c.shadow_b_pass = None
+
         logger.info(
-            "[ENGINE] High-impact macro day: applied confidence penalty %d to %d candidates",
-            MACRO_DAY_CONFIDENCE_PENALTY, len(out),
-        )
-
-    # Shadow profile B: alternate min-confidence gate (does not change who is in the batch)
-    from app.core.preferences import get_shadow_mode_config
-
-    sm = get_shadow_mode_config()
-    if sm.get("enabled"):
-        min_live = market_ctx.min_confidence_threshold()
-        delta = int(sm.get("confidence_delta", 0))
-        min_b = max(0, min(100, min_live + delta))
-        for c in out:
-            conf = c.confidence_score or 0
-            c.min_confidence_gate = min_live
-            c.shadow_b_threshold = min_b
-            c.shadow_b_pass = conf >= min_b
-        n_pass_b = sum(1 for c in out if c.shadow_b_pass)
-        logger.info(
-            "[ENGINE] Shadow mode B: live_min=%d delta=%d → B_threshold=%d | %d/%d rows would pass B",
-            min_live,
-            delta,
-            min_b,
-            n_pass_b,
+            "[ENGINE] Final batch: %d candidates (≤%d per category), total risk budget used: %.2f%% / %.2f%%",
             len(out),
+            cap,
+            total_risk_pct,
+            risk_budget_1r,
         )
-    else:
-        for c in out:
-            c.min_confidence_gate = None
-            c.shadow_b_threshold = None
-            c.shadow_b_pass = None
+    finally:
+        _ENGINE_BATCH_LOG.reset(_tok_batch_log)
+        digest = {
+            "event": "engine_batch_digest",
+            "pipeline_run_id": batch_ctx.get("pipeline_run_id"),
+            "batch_date": batch_ctx["batch_date"],
+            "regime": market_ctx.regime.regime,
+            "regime_min_confidence": market_ctx.min_confidence_threshold(),
+            "candidates_kept": len(out),
+            "skip_totals": dict(sorted(batch_ctx["skips"].items(), key=lambda x: x[0])),
+            "skip_by_category": {
+                cat: dict(sorted(reasons.items(), key=lambda x: x[0]))
+                for cat, reasons in sorted(batch_ctx["skips_by_cat"].items())
+            },
+        }
+        logger.info("[ENGINE_DIGEST] %s", json.dumps(digest, default=str, separators=(",", ":")))
 
-    logger.info(
-        "[ENGINE] Final batch: %d candidates (≤%d per category), total risk budget used: %.2f%% / %.2f%%",
-        len(out),
-        cap,
-        total_risk_pct,
-        risk_budget_1r,
-    )
     return out
 
 
@@ -1246,12 +1526,8 @@ def build_trade_builder_candidate(
             "Lower preferred risk on the Dashboard or choose another symbol."
         )
 
-    min_rr_floor = MIN_RISK_REWARD
-    if cat == "commodities":
-        from app.core.preferences import get_commodity_engine_gates
-
-        cg = get_commodity_engine_gates()
-        min_rr_floor = float(cg["commodity_min_risk_reward"])
+    pol = get_asset_class_policy(cat, canonical_aid)
+    min_rr_floor = _min_rr_floor_for_build(cat, pol)
 
     cand = _build_candidate(
         cat,
@@ -1263,6 +1539,7 @@ def build_trade_builder_candidate(
         active_events,
         min_rr_floor=min_rr_floor,
         ad_hoc=True,
+        policy=pol,
     )
     if not cand:
         return None, (

@@ -273,3 +273,118 @@ def set_commodity_engine_gates(
         )
     _save_prefs(data)
     return get_commodity_engine_gates()
+
+
+# Stocks + indices (except VIX policy): optional confidence offset and optional min R:R override.
+_DEFAULT_EQUITY_CONF_OFFSET = 0
+_MIN_EQUITY_CONF_OFFSET = -25
+_MAX_EQUITY_CONF_OFFSET = 20
+
+# FX + crypto (category ``other``)
+_DEFAULT_OTHER_CONF_OFFSET = 0
+_MIN_OTHER_CONF_OFFSET = -25
+_MAX_OTHER_CONF_OFFSET = 20
+
+_MIN_ENGINE_RR = 1.05
+_MAX_ENGINE_RR = 2.5
+
+
+def get_non_commodity_engine_gates() -> dict[str, int | float | None]:
+    """
+    Dashboard-tunable gates for non-commodity categories.
+
+    - equity_confidence_offset: added to min-confidence for stocks and indices (not VIX).
+    - equity_min_risk_reward: when set, replaces the usual policy/global R:R floor for those names.
+    - other_confidence_offset / other_min_risk_reward: same for category ``other`` (FX + crypto).
+    """
+    data = _load_prefs()
+
+    def _int_clamp(raw: Any, default: int, lo: int, hi: int) -> int:
+        try:
+            v = int(raw)
+        except (TypeError, ValueError):
+            return default
+        return max(lo, min(hi, v))
+
+    eq_off = _int_clamp(
+        data.get("equity_engine_confidence_offset", _DEFAULT_EQUITY_CONF_OFFSET),
+        _DEFAULT_EQUITY_CONF_OFFSET,
+        _MIN_EQUITY_CONF_OFFSET,
+        _MAX_EQUITY_CONF_OFFSET,
+    )
+    ot_off = _int_clamp(
+        data.get("other_engine_confidence_offset", _DEFAULT_OTHER_CONF_OFFSET),
+        _DEFAULT_OTHER_CONF_OFFSET,
+        _MIN_OTHER_CONF_OFFSET,
+        _MAX_OTHER_CONF_OFFSET,
+    )
+
+    def _optional_rr(key: str) -> float | None:
+        if key not in data:
+            return None
+        raw = data.get(key)
+        if raw is None:
+            return None
+        try:
+            rr = float(raw)
+        except (TypeError, ValueError):
+            return None
+        return max(_MIN_ENGINE_RR, min(_MAX_ENGINE_RR, rr))
+
+    return {
+        "equity_confidence_offset": eq_off,
+        "equity_min_risk_reward": _optional_rr("equity_min_risk_reward"),
+        "other_confidence_offset": ot_off,
+        "other_min_risk_reward": _optional_rr("other_min_risk_reward"),
+    }
+
+
+def apply_non_commodity_engine_patch(patch: dict[str, Any]) -> dict[str, int | float | None]:
+    """Merge allowed keys from ``patch`` (e.g. ``model_dump(exclude_unset=True)``) into preferences."""
+    data = _load_prefs()
+    if "equity_confidence_offset" in patch:
+        v = patch["equity_confidence_offset"]
+        try:
+            iv = int(v)
+        except (TypeError, ValueError):
+            iv = _DEFAULT_EQUITY_CONF_OFFSET
+        data["equity_engine_confidence_offset"] = max(
+            _MIN_EQUITY_CONF_OFFSET, min(_MAX_EQUITY_CONF_OFFSET, iv)
+        )
+    if "equity_min_risk_reward" in patch:
+        v = patch["equity_min_risk_reward"]
+        if v is None:
+            data.pop("equity_min_risk_reward", None)
+        else:
+            try:
+                rr = float(v)
+            except (TypeError, ValueError):
+                pass
+            else:
+                data["equity_min_risk_reward"] = max(
+                    _MIN_ENGINE_RR, min(_MAX_ENGINE_RR, rr)
+                )
+    if "other_confidence_offset" in patch:
+        v = patch["other_confidence_offset"]
+        try:
+            iv = int(v)
+        except (TypeError, ValueError):
+            iv = _DEFAULT_OTHER_CONF_OFFSET
+        data["other_engine_confidence_offset"] = max(
+            _MIN_OTHER_CONF_OFFSET, min(_MAX_OTHER_CONF_OFFSET, iv)
+        )
+    if "other_min_risk_reward" in patch:
+        v = patch["other_min_risk_reward"]
+        if v is None:
+            data.pop("other_min_risk_reward", None)
+        else:
+            try:
+                rr = float(v)
+            except (TypeError, ValueError):
+                pass
+            else:
+                data["other_min_risk_reward"] = max(
+                    _MIN_ENGINE_RR, min(_MAX_ENGINE_RR, rr)
+                )
+    _save_prefs(data)
+    return get_non_commodity_engine_gates()

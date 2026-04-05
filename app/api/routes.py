@@ -194,7 +194,11 @@ def _confidence_bucket(score: int | None) -> str:
 
 def _rec_to_item(r: Recommendation) -> dict:
     from app.services.calibration import apply_platt_calibration, get_platt_params
-    
+    from app.services.recommendations.asset_class_policy import (
+        engine_policy_to_dict,
+        get_asset_class_policy,
+    )
+
     score = getattr(r, "confidence_score", None)
     
     # Add calibrated confidence if Platt is fitted
@@ -228,6 +232,9 @@ def _rec_to_item(r: Recommendation) -> dict:
         "shadow_b_threshold": getattr(r, "shadow_b_threshold", None),
         "shadow_b_pass": getattr(r, "shadow_b_pass", None),
         "instrument_type": getattr(r, "instrument_type", None),
+        "engine_policy": engine_policy_to_dict(
+            get_asset_class_policy(r.asset_category or "", r.asset_id or "")
+        ),
     }
     return item
 
@@ -243,6 +250,7 @@ async def list_recommendations(
     """
     List recommendations. Optional: batch_id, status, asset_category (stocks|commodities|other).
     Use group_by=category to get { stocks: [...], commodities: [...], other: [...], indices: [...] } for the recommendation page.
+    Each item includes ``engine_policy``: per–asset-class tuning (regime scales, R:R floor, news boost, technicals style) from the live policy layer.
     When group_by=category, defaults to today's batch and deduplicates by (category, asset_id).
     Includes macro_overlay when FOMC/CPI/NFP window applies (same rule as batch confidence penalty).
     """
@@ -950,7 +958,7 @@ async def get_regime_status(db: AsyncSession = Depends(get_db)) -> dict[str, Any
     Refreshes regime from live market context so the UI is not stuck on "unknown" until
     the active-trades job runs.
     """
-    from app.services.market_context import build_market_context
+    from app.services.market_context import build_market_context, detect_dxy_macro
     from app.services.regime_monitor import (
         detect_regime_transition,
         get_current_regime_state,
@@ -997,11 +1005,22 @@ async def get_regime_status(db: AsyncSession = Depends(get_db)) -> dict[str, Any
     
     # Get trades needing review (will be empty if no recent transition)
     flagged_trades = get_trades_needing_review(trades_data, None)  # transition is tracked internally
-    
+
+    dxy = await asyncio.to_thread(detect_dxy_macro)
+
     return _with_disclaimer({
         "regime_state": regime_state,
         "flagged_trades": flagged_trades,
         "flagged_count": len(flagged_trades),
+        "dxy": {
+            "available": dxy.available,
+            "symbol": dxy.symbol or None,
+            "price": dxy.price,
+            "trend": dxy.trend,
+            "change_5d_pct": dxy.change_5d_pct,
+            "change_20d_pct": dxy.change_20d_pct,
+            "summary": dxy.summary or None,
+        },
     })
 
 
@@ -1032,6 +1051,15 @@ async def get_market_context() -> dict[str, Any]:
             for cs in ctx.correlation_signals
         ],
         "has_divergence_warning": ctx.has_divergence_warning,
+        "dxy": {
+            "available": ctx.dxy.available,
+            "symbol": ctx.dxy.symbol or None,
+            "price": ctx.dxy.price,
+            "trend": ctx.dxy.trend,
+            "change_5d_pct": ctx.dxy.change_5d_pct,
+            "change_20d_pct": ctx.dxy.change_20d_pct,
+            "summary": ctx.dxy.summary or None,
+        },
     })
 
 
@@ -1198,9 +1226,11 @@ async def get_preferences() -> dict[str, Any]:
         get_confidence_thresholds,
         get_shadow_mode_config,
         get_commodity_engine_gates,
+        get_non_commodity_engine_gates,
     )
     sm = get_shadow_mode_config()
     cg = get_commodity_engine_gates()
+    nc = get_non_commodity_engine_gates()
     out = {
         "preferred_risk": get_preferred_risk(),
         "risk_budget_1r": get_risk_budget_1r(),
@@ -1210,6 +1240,10 @@ async def get_preferences() -> dict[str, Any]:
         "shadow_confidence_delta": sm["confidence_delta_stored"],
         "commodity_confidence_offset": cg["commodity_confidence_offset"],
         "commodity_min_risk_reward": cg["commodity_min_risk_reward"],
+        "equity_confidence_offset": nc["equity_confidence_offset"],
+        "equity_min_risk_reward": nc["equity_min_risk_reward"],
+        "other_confidence_offset": nc["other_confidence_offset"],
+        "other_min_risk_reward": nc["other_min_risk_reward"],
     }
     out.update(get_research_llm_config())
     return _with_disclaimer(out)
@@ -1229,6 +1263,10 @@ class PreferencesUpdate(BaseModel):
     shadow_confidence_delta: int | None = None
     commodity_confidence_offset: int | None = None
     commodity_min_risk_reward: float | None = None
+    equity_confidence_offset: int | None = None
+    equity_min_risk_reward: float | None = None
+    other_confidence_offset: int | None = None
+    other_min_risk_reward: float | None = None
 
 
 @router.patch("/preferences")
@@ -1239,6 +1277,7 @@ async def update_preferences(body: PreferencesUpdate) -> dict[str, Any]:
         set_risk_budget_1r, get_risk_budget_1r, set_sentiment_half_life, get_sentiment_half_life,
         set_confidence_thresholds, get_confidence_thresholds, set_shadow_mode, get_shadow_mode_config,
         set_commodity_engine_gates, get_commodity_engine_gates,
+        apply_non_commodity_engine_patch, get_non_commodity_engine_gates,
     )
     try:
         if body.preferred_risk is not None:
@@ -1269,8 +1308,19 @@ async def update_preferences(body: PreferencesUpdate) -> dict[str, Any]:
                 confidence_offset=body.commodity_confidence_offset,
                 min_risk_reward=body.commodity_min_risk_reward,
             )
+        nc_keys = (
+            "equity_confidence_offset",
+            "equity_min_risk_reward",
+            "other_confidence_offset",
+            "other_min_risk_reward",
+        )
+        patch = body.model_dump(exclude_unset=True)
+        nc_patch = {k: patch[k] for k in nc_keys if k in patch}
+        if nc_patch:
+            apply_non_commodity_engine_patch(nc_patch)
         sm = get_shadow_mode_config()
         cg = get_commodity_engine_gates()
+        nc = get_non_commodity_engine_gates()
         out = {
             "preferred_risk": get_preferred_risk(),
             "risk_budget_1r": get_risk_budget_1r(),
@@ -1280,6 +1330,10 @@ async def update_preferences(body: PreferencesUpdate) -> dict[str, Any]:
             "shadow_confidence_delta": sm["confidence_delta_stored"],
             "commodity_confidence_offset": cg["commodity_confidence_offset"],
             "commodity_min_risk_reward": cg["commodity_min_risk_reward"],
+            "equity_confidence_offset": nc["equity_confidence_offset"],
+            "equity_min_risk_reward": nc["equity_min_risk_reward"],
+            "other_confidence_offset": nc["other_confidence_offset"],
+            "other_min_risk_reward": nc["other_min_risk_reward"],
         }
         out.update(get_research_llm_config())
         out["message"] = "Preferences saved."

@@ -726,6 +726,24 @@ def _regime_stoch_thresholds(regime: Optional[str] = None) -> tuple[float, float
     return (55.0, 45.0, 80.0, 20.0)
 
 
+def _style_adjust_direction_weights(
+    sent_w: float,
+    tech_w: float,
+    regime: Optional[str],
+    asset_direction_style: Optional[str],
+) -> tuple[float, float]:
+    """Shift weight toward headlines for macro-linked assets (oil, FX, crypto, indices)."""
+    if asset_direction_style == "macro_linked":
+        bump = 0.15 if regime == "risk_off" else 0.10
+        sent_w = min(0.50, sent_w + bump)
+        tech_w = 1.0 - sent_w
+    elif asset_direction_style == "index_macro":
+        bump = 0.12 if regime == "risk_off" else 0.06
+        sent_w = min(0.44, sent_w + bump)
+        tech_w = 1.0 - sent_w
+    return sent_w, tech_w
+
+
 # ---------------------------------------------------------------------------
 # Direction determination (enhanced with ADX, Stochastic, OBV)
 # ---------------------------------------------------------------------------
@@ -734,6 +752,7 @@ def determine_direction(
     sentiment_avg: Optional[float],
     snapshot: Optional[TechnicalSnapshot] = None,
     regime: Optional[str] = None,
+    asset_direction_style: Optional[str] = None,
 ) -> str:
     """
     Decide long vs short. Weights are regime-dependent: risk_on → more technical/trend;
@@ -741,6 +760,7 @@ def determine_direction(
     Technicals: RSI, MACD, Bollinger, ADX (+DI vs -DI), Stochastic, OBV.
     """
     sent_w, tech_w = _regime_direction_weights(regime)
+    sent_w, tech_w = _style_adjust_direction_weights(sent_w, tech_w, regime, asset_direction_style)
     score = 0.0
 
     if sentiment_avg is not None:
@@ -824,6 +844,7 @@ def get_indicator_conflict_penalty(
     snapshot: Optional[TechnicalSnapshot],
     direction: str,
     regime: Optional[str] = None,
+    penalty_scale: float = 1.0,
 ) -> int:
     """
     Returns a penalty (0–25) when key indicators disagree with the chosen direction.
@@ -874,7 +895,8 @@ def get_indicator_conflict_penalty(
         elif not is_long and snapshot.near_lower_band:
             penalty += 5
 
-    return min(25, penalty)
+    scaled = int(round(penalty * max(0.0, min(1.5, penalty_scale))))
+    return min(25, scaled)
 
 
 # ---------------------------------------------------------------------------
@@ -887,6 +909,8 @@ def compute_confidence(
     snapshot: Optional[TechnicalSnapshot] = None,
     direction: str = "long",
     regime: Optional[str] = None,
+    sentiment_signal_scale: float = 1.0,
+    indicator_conflict_multiplier: float = 1.0,
 ) -> int:
     """
     Confidence score 0–100. Measures how many indicators agree with the direction
@@ -900,16 +924,18 @@ def compute_confidence(
     rsi_bull, rsi_bear, rsi_ob, rsi_os = _regime_rsi_thresholds(regime)
     st_bull, st_bear, st_ob, st_os = _regime_stoch_thresholds(regime)
 
+    ss = max(0.5, min(1.6, sentiment_signal_scale))
+
     # Sentiment alignment (15 pts)
     max_points += 15
     if sentiment_avg is not None:
         if (is_long and sentiment_avg > 0) or (not is_long and sentiment_avg < 0):
-            points += min(15, abs(sentiment_avg) * 15)
+            points += min(15.0, abs(sentiment_avg) * 15.0 * ss)
 
     # Mention volume (10 pts) — more mentions = more confidence
     max_points += 10
     if sentiment_count > 0:
-        points += min(10, math.log1p(sentiment_count) * 3)
+        points += min(10.0, math.log1p(sentiment_count) * 3.0 * ss)
 
     if not snapshot:
         return max(0, min(100, int(points / max_points * 100))) if max_points > 0 else 0
@@ -997,7 +1023,9 @@ def compute_confidence(
             points += 5
 
     # Indicator conflict penalty: reduce score when key indicators disagree with direction
-    conflict_penalty = get_indicator_conflict_penalty(snapshot, direction, regime)
+    conflict_penalty = get_indicator_conflict_penalty(
+        snapshot, direction, regime, penalty_scale=indicator_conflict_multiplier
+    )
     points = max(0.0, points - conflict_penalty)
 
     return max(0, min(100, int(points / max_points * 100))) if max_points > 0 else 0

@@ -131,6 +131,48 @@
     }
     .regime-stat-lbl { font-size: 11px; color: var(--muted-foreground); text-transform: uppercase; letter-spacing: .04em; }
     .regime-stat-sep { width: 1px; height: 20px; background: var(--border); }
+    .regime-dxy {
+      margin-top: 4px;
+      padding-top: 12px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .regime-dxy-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .regime-dxy-label {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--muted-foreground);
+      text-transform: uppercase;
+      letter-spacing: .04em;
+    }
+    .regime-dxy-badge {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: var(--muted);
+      color: var(--foreground);
+    }
+    .regime-dxy-badge.bullish { background: rgba(245, 158, 11, 0.18); color: #d97706; }
+    .regime-dxy-badge.bearish { background: rgba(59, 130, 246, 0.15); color: #2563eb; }
+    .regime-dxy-badge.neutral { background: var(--muted); color: var(--muted-foreground); }
+    .regime-dxy-desc {
+      margin: 0;
+      font-size: 13px;
+      line-height: 1.45;
+      color: var(--foreground);
+    }
+    .regime-dxy-meta {
+      font-size: 11px;
+      color: var(--muted-foreground);
+    }
     /* ── Help tooltip ── */
     .help-btn {
       position: relative;
@@ -409,7 +451,7 @@
               <label for="preferred-risk" class="pref-label">Risk stance</label>
               <button type="button" class="help-btn" aria-label="About risk stance">
                 <span data-icon="info" style="width:14px;height:14px;"></span>
-                <span class="help-tooltip">Only assets at or below this risk level will be recommended. Takes effect on the next batch run.</span>
+                <span class="help-tooltip">Only assets at or below this risk level will be recommended. Changing stance also applies suggested <strong>regime confidence floors</strong> and <strong>engine gates</strong> (commodity / stocks &amp; indices / FX &amp; crypto offsets and min R:R). You can still edit those fields afterward. Takes effect on the next batch run.</span>
               </button>
             </div>
             <select id="preferred-risk" class="input pref-input">
@@ -495,7 +537,7 @@
               <span class="pref-label">Commodity confidence offset</span>
               <button type="button" class="help-btn" aria-label="About commodity confidence offset">
                 <span data-icon="info" style="width:14px;height:14px;"></span>
-                <span class="help-tooltip">Only applies to commodities. Added to the regime minimum confidence threshold. Negative = easier to pass (looser gate); positive = stricter. Equities and indices use the standard thresholds above.</span>
+                <span class="help-tooltip">Only applies to commodities. Added to the regime minimum confidence threshold. Negative = easier to pass (looser gate); positive = stricter. Stocks, indices, and FX/crypto can be tuned in the rows below.</span>
               </button>
             </div>
             <div class="pref-input-wrap">
@@ -509,11 +551,67 @@
               <span class="pref-label">Commodity min R:R</span>
               <button type="button" class="help-btn" aria-label="About commodity minimum risk-reward">
                 <span data-icon="info" style="width:14px;height:14px;"></span>
-                <span class="help-tooltip">Minimum risk-to-reward ratio required for commodity recommendations. Equities and indices use a fixed floor of 1.5.</span>
+                <span class="help-tooltip">Minimum risk-to-reward ratio required for commodity recommendations. Stocks, indices, and FX/crypto have their own optional R:R overrides below (default follows engine policy, often 1.5).</span>
               </button>
             </div>
             <div class="pref-input-wrap">
               <input type="number" id="commodity-min-rr" class="input pref-input" min="1.05" max="2.5" step="0.05" value="1.25">
+              <span class="pref-unit">R:R</span>
+            </div>
+          </div>
+
+          <!-- Stocks & indices (excl. VIX policy) -->
+          <div class="pref-row">
+            <div class="pref-label-wrap">
+              <span class="pref-label">Stocks &amp; indices confidence offset</span>
+              <button type="button" class="help-btn" aria-label="About equity index confidence offset">
+                <span data-icon="info" style="width:14px;height:14px;"></span>
+                <span class="help-tooltip">Added to the regime minimum for <strong>stocks</strong> and <strong>indices</strong> (not VIX). Negative = looser gate; positive = stricter. Default 0.</span>
+              </button>
+            </div>
+            <div class="pref-input-wrap">
+              <input type="number" id="equity-conf-offset" class="input pref-input" min="-25" max="20" step="1" value="0">
+              <span class="pref-unit">pts</span>
+            </div>
+          </div>
+          <div class="pref-row">
+            <div class="pref-label-wrap">
+              <span class="pref-label">Stocks &amp; indices min R:R (optional)</span>
+              <button type="button" class="help-btn" aria-label="About equity min R R">
+                <span data-icon="info" style="width:14px;height:14px;"></span>
+                <span class="help-tooltip">When set, overrides the usual minimum risk-reward for stocks and indices (except VIX). Leave empty to use engine defaults (policy or 1.5). Range 1.05–2.5.</span>
+              </button>
+            </div>
+            <div class="pref-input-wrap">
+              <input type="number" id="equity-min-rr" class="input pref-input" min="1.05" max="2.5" step="0.05" placeholder="default">
+              <span class="pref-unit">R:R</span>
+            </div>
+          </div>
+
+          <!-- FX & crypto -->
+          <div class="pref-row">
+            <div class="pref-label-wrap">
+              <span class="pref-label">FX &amp; crypto confidence offset</span>
+              <button type="button" class="help-btn" aria-label="About other confidence offset">
+                <span data-icon="info" style="width:14px;height:14px;"></span>
+                <span class="help-tooltip">Applies to category <strong>other</strong> (FX majors and crypto in the universe). Added to the regime minimum confidence. Default 0.</span>
+              </button>
+            </div>
+            <div class="pref-input-wrap">
+              <input type="number" id="other-conf-offset" class="input pref-input" min="-25" max="20" step="1" value="0">
+              <span class="pref-unit">pts</span>
+            </div>
+          </div>
+          <div class="pref-row">
+            <div class="pref-label-wrap">
+              <span class="pref-label">FX &amp; crypto min R:R (optional)</span>
+              <button type="button" class="help-btn" aria-label="About other min R R">
+                <span data-icon="info" style="width:14px;height:14px;"></span>
+                <span class="help-tooltip">When set, overrides minimum R:R for all <strong>other</strong> assets. Leave empty for policy defaults (e.g. 1.45 on FX).</span>
+              </button>
+            </div>
+            <div class="pref-input-wrap">
+              <input type="number" id="other-min-rr" class="input pref-input" min="1.05" max="2.5" step="0.05" placeholder="default">
               <span class="pref-unit">R:R</span>
             </div>
           </div>
@@ -681,7 +779,8 @@
                   <strong style="color:#10b981;">Risk-On</strong> — Bullish trend, low volatility. More aggressive recommendations, relaxed confidence thresholds.<br><br>
                   <strong style="color:#f59e0b;">Cautious</strong> — Mixed signals or moderate volatility. Balanced approach, standard thresholds.<br><br>
                   <strong style="color:#ef4444;">Risk-Off</strong> — Bearish or high volatility. Defensive stance, may flip longs to shorts, stricter filters.<br><br>
-                  Regime transitions trigger alerts for active trades that may need review.
+                  Regime transitions trigger alerts for active trades that may need review.<br><br>
+                  <strong>USD / DXY</strong> — Dollar strength (ICE DXY or UUP fallback) vs a 50-day baseline. Shown for macro context; the engine applies small confidence nudges for FX and some commodities when USD trend is clear.
                 </span>
               </button>
             </h2>
@@ -695,6 +794,14 @@
             <div>
               <span class="regime-badge" id="regime-current">—</span>
               <p class="regime-desc" id="regime-desc">Loading market conditions…</p>
+            </div>
+            <div class="regime-dxy" id="regime-dxy-wrap" hidden>
+              <div class="regime-dxy-row">
+                <span class="regime-dxy-label">USD / DXY</span>
+                <span class="regime-dxy-badge neutral" id="regime-dxy-trend">—</span>
+                <span class="regime-dxy-meta" id="regime-dxy-symbol"></span>
+              </div>
+              <p class="regime-dxy-desc" id="regime-dxy-desc"></p>
             </div>
           </div>
 
@@ -907,6 +1014,21 @@
     const confRiskOffInput = document.getElementById('conf-risk-off');
     const commodityConfOffInput = document.getElementById('commodity-conf-offset');
     const commodityMinRrInput = document.getElementById('commodity-min-rr');
+    const equityConfOffInput = document.getElementById('equity-conf-offset');
+    const equityMinRrInput = document.getElementById('equity-min-rr');
+    const otherConfOffInput = document.getElementById('other-conf-offset');
+    const otherMinRrInput = document.getElementById('other-min-rr');
+
+    function syncEngineGateInputsFromApi(d) {
+      if (!d) return;
+      if (commodityConfOffInput && d.commodity_confidence_offset != null) commodityConfOffInput.value = d.commodity_confidence_offset;
+      if (commodityMinRrInput && d.commodity_min_risk_reward != null) commodityMinRrInput.value = d.commodity_min_risk_reward;
+      if (equityConfOffInput && d.equity_confidence_offset != null) equityConfOffInput.value = d.equity_confidence_offset;
+      if (equityMinRrInput) equityMinRrInput.value = d.equity_min_risk_reward != null ? d.equity_min_risk_reward : '';
+      if (otherConfOffInput && d.other_confidence_offset != null) otherConfOffInput.value = d.other_confidence_offset;
+      if (otherMinRrInput) otherMinRrInput.value = d.other_min_risk_reward != null ? d.other_min_risk_reward : '';
+    }
+
     fetch('/api/preferences').then(r=>r.json()).then(d => {
       if (d.preferred_risk) riskSel.value = d.preferred_risk;
       if (d.risk_budget_1r != null) riskBudgetInput.value = d.risk_budget_1r;
@@ -916,8 +1038,7 @@
         confCautiousInput.value = d.confidence_thresholds.cautious ?? 35;
         confRiskOffInput.value = d.confidence_thresholds.risk_off ?? 40;
       }
-      if (d.commodity_confidence_offset != null && commodityConfOffInput) commodityConfOffInput.value = d.commodity_confidence_offset;
-      if (d.commodity_min_risk_reward != null && commodityMinRrInput) commodityMinRrInput.value = d.commodity_min_risk_reward;
+      syncEngineGateInputsFromApi(d);
     }).catch(()=>{});
     // Suggested confidence thresholds per risk stance
     const suggestedThresholds = {
@@ -925,26 +1046,70 @@
       moderate:     { risk_on: 30, cautious: 35, risk_off: 40 },
       aggressive:   { risk_on: 20, cautious: 25, risk_off: 30 },
     };
-    
+    /* Commodity + equity + other engine gates per stance (offsets add to min confidence; higher R:R = stricter). */
+    const suggestedEngineGates = {
+      conservative: {
+        commodity_confidence_offset: 2,
+        commodity_min_risk_reward: 1.45,
+        equity_confidence_offset: 6,
+        equity_min_risk_reward: 1.55,
+        other_confidence_offset: 4,
+        other_min_risk_reward: 1.55,
+      },
+      moderate: {
+        commodity_confidence_offset: -5,
+        commodity_min_risk_reward: 1.25,
+        equity_confidence_offset: 0,
+        equity_min_risk_reward: null,
+        other_confidence_offset: 0,
+        other_min_risk_reward: null,
+      },
+      aggressive: {
+        commodity_confidence_offset: -12,
+        commodity_min_risk_reward: 1.1,
+        equity_confidence_offset: -8,
+        equity_min_risk_reward: 1.35,
+        other_confidence_offset: -6,
+        other_min_risk_reward: 1.35,
+      },
+    };
+
     riskSel.addEventListener('change', () => {
       const stance = riskSel.value;
       const suggested = suggestedThresholds[stance] || suggestedThresholds.moderate;
-      
-      // Auto-update confidence thresholds
+      const gates = suggestedEngineGates[stance] || suggestedEngineGates.moderate;
+
       confRiskOnInput.value = suggested.risk_on;
       confCautiousInput.value = suggested.cautious;
       confRiskOffInput.value = suggested.risk_off;
-      
-      // Save all together
+
+      if (commodityConfOffInput) commodityConfOffInput.value = gates.commodity_confidence_offset;
+      if (commodityMinRrInput) commodityMinRrInput.value = gates.commodity_min_risk_reward;
+      if (equityConfOffInput) equityConfOffInput.value = gates.equity_confidence_offset;
+      if (equityMinRrInput) equityMinRrInput.value = gates.equity_min_risk_reward != null ? gates.equity_min_risk_reward : '';
+      if (otherConfOffInput) otherConfOffInput.value = gates.other_confidence_offset;
+      if (otherMinRrInput) otherMinRrInput.value = gates.other_min_risk_reward != null ? gates.other_min_risk_reward : '';
+
+      const body = {
+        preferred_risk: stance,
+        confidence_threshold_risk_on: suggested.risk_on,
+        confidence_threshold_cautious: suggested.cautious,
+        confidence_threshold_risk_off: suggested.risk_off,
+        commodity_confidence_offset: gates.commodity_confidence_offset,
+        commodity_min_risk_reward: gates.commodity_min_risk_reward,
+        equity_confidence_offset: gates.equity_confidence_offset,
+        other_confidence_offset: gates.other_confidence_offset,
+        equity_min_risk_reward: gates.equity_min_risk_reward,
+        other_min_risk_reward: gates.other_min_risk_reward,
+      };
+
       fetch('/api/preferences', {
         method:'PATCH', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({
-          preferred_risk: stance,
-          confidence_threshold_risk_on: suggested.risk_on,
-          confidence_threshold_cautious: suggested.cautious,
-          confidence_threshold_risk_off: suggested.risk_off,
-        })
-      }).then(r=>r.json()).then(d => showToast('Risk stance updated with suggested thresholds.', true))
+        body: JSON.stringify(body)
+      }).then(r=>r.json()).then(d => {
+        syncEngineGateInputsFromApi(d);
+        showToast('Risk stance updated: regime thresholds and engine gates.', true);
+      })
         .catch(e => showToast('Failed: ' + e.message, false));
     });
     riskBudgetInput.addEventListener('change', () => {
@@ -1011,6 +1176,65 @@
       fetch('/api/preferences', {
         method:'PATCH', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({ commodity_min_risk_reward: val })
+      }).then(r=>r.json()).then(d => showToast(d.message || 'Saved.', true))
+        .catch(e => showToast('Failed: ' + e.message, false));
+    });
+
+    if (equityConfOffInput) equityConfOffInput.addEventListener('change', () => {
+      const val = parseInt(equityConfOffInput.value, 10);
+      if (isNaN(val) || val < -25 || val > 20) {
+        showToast('Equity/index confidence offset must be -25 to 20', false);
+        return;
+      }
+      fetch('/api/preferences', {
+        method:'PATCH', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ equity_confidence_offset: val })
+      }).then(r=>r.json()).then(d => showToast(d.message || 'Saved.', true))
+        .catch(e => showToast('Failed: ' + e.message, false));
+    });
+    if (equityMinRrInput) equityMinRrInput.addEventListener('change', () => {
+      const raw = equityMinRrInput.value.trim();
+      const body = raw === '' ? { equity_min_risk_reward: null } : {};
+      if (raw !== '') {
+        const val = parseFloat(raw);
+        if (isNaN(val) || val < 1.05 || val > 2.5) {
+          showToast('Equity min R:R must be empty or 1.05–2.5', false);
+          return;
+        }
+        body.equity_min_risk_reward = val;
+      }
+      fetch('/api/preferences', {
+        method:'PATCH', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(body)
+      }).then(r=>r.json()).then(d => showToast(d.message || 'Saved.', true))
+        .catch(e => showToast('Failed: ' + e.message, false));
+    });
+    if (otherConfOffInput) otherConfOffInput.addEventListener('change', () => {
+      const val = parseInt(otherConfOffInput.value, 10);
+      if (isNaN(val) || val < -25 || val > 20) {
+        showToast('FX/crypto confidence offset must be -25 to 20', false);
+        return;
+      }
+      fetch('/api/preferences', {
+        method:'PATCH', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ other_confidence_offset: val })
+      }).then(r=>r.json()).then(d => showToast(d.message || 'Saved.', true))
+        .catch(e => showToast('Failed: ' + e.message, false));
+    });
+    if (otherMinRrInput) otherMinRrInput.addEventListener('change', () => {
+      const raw = otherMinRrInput.value.trim();
+      const body = raw === '' ? { other_min_risk_reward: null } : {};
+      if (raw !== '') {
+        const val = parseFloat(raw);
+        if (isNaN(val) || val < 1.05 || val > 2.5) {
+          showToast('FX/crypto min R:R must be empty or 1.05–2.5', false);
+          return;
+        }
+        body.other_min_risk_reward = val;
+      }
+      fetch('/api/preferences', {
+        method:'PATCH', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(body)
       }).then(r=>r.json()).then(d => showToast(d.message || 'Saved.', true))
         .catch(e => showToast('Failed: ' + e.message, false));
     });
@@ -1461,6 +1685,31 @@
         // Description
         document.getElementById('regime-desc').textContent = meta.desc;
 
+        // USD / DXY macro (same poll as regime card)
+        const dxy = data.dxy || {};
+        const dxyWrap = document.getElementById('regime-dxy-wrap');
+        const dxyTrendEl = document.getElementById('regime-dxy-trend');
+        const dxySymEl = document.getElementById('regime-dxy-symbol');
+        const dxyDescEl = document.getElementById('regime-dxy-desc');
+        if (dxyWrap && dxyTrendEl && dxySymEl && dxyDescEl) {
+          dxyWrap.hidden = false;
+          if (dxy.available) {
+            const tr = (dxy.trend || 'neutral').toLowerCase();
+            dxyTrendEl.textContent = tr.charAt(0).toUpperCase() + tr.slice(1);
+            dxyTrendEl.classList.remove('bullish', 'bearish', 'neutral');
+            dxyTrendEl.classList.add(tr === 'bullish' ? 'bullish' : tr === 'bearish' ? 'bearish' : 'neutral');
+            const sym = dxy.symbol || '';
+            dxySymEl.textContent = sym ? '(' + sym + ')' : '';
+            dxyDescEl.textContent = dxy.summary || '';
+          } else {
+            dxyTrendEl.textContent = 'N/A';
+            dxyTrendEl.classList.remove('bullish', 'bearish');
+            dxyTrendEl.classList.add('neutral');
+            dxySymEl.textContent = '';
+            dxyDescEl.textContent = 'DXY / UUP data unavailable.';
+          }
+        }
+
         // Live dot color
         const dot = document.getElementById('regime-dot');
         if (dot) dot.style.background = meta.color;
@@ -1494,6 +1743,20 @@
       } catch (e) {
         document.getElementById('regime-current').textContent = 'Error';
         document.getElementById('regime-since').textContent = '—';
+        const dxyWrap = document.getElementById('regime-dxy-wrap');
+        if (dxyWrap) {
+          dxyWrap.hidden = false;
+          const dxyTrendEl = document.getElementById('regime-dxy-trend');
+          if (dxyTrendEl) {
+            dxyTrendEl.textContent = '—';
+            dxyTrendEl.classList.remove('bullish', 'bearish');
+            dxyTrendEl.classList.add('neutral');
+          }
+          const dxySymEl = document.getElementById('regime-dxy-symbol');
+          if (dxySymEl) dxySymEl.textContent = '';
+          const dxyDescEl = document.getElementById('regime-dxy-desc');
+          if (dxyDescEl) dxyDescEl.textContent = 'Could not load USD macro.';
+        }
       }
     }
     loadRegimeStatus();
