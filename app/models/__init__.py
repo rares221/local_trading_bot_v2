@@ -3,5 +3,9 @@ from .feed_item import FeedItem
 from .recommendation import Recommendation, ActiveTrade
 from .market_analysis import MarketAnalysis
 from .daily_briefing import DailyBriefing
+from .backtest import BacktestRun, BacktestTrade
 
-__all__ = ["Base", "FeedItem", "Recommendation", "ActiveTrade", "MarketAnalysis", "DailyBriefing"]
+__all__ = [
+    "Base", "FeedItem", "Recommendation", "ActiveTrade",
+    "MarketAnalysis", "DailyBriefing", "BacktestRun", "BacktestTrade",
+]

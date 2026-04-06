@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from app.core.config import settings
 from app.core.database import init_db
 from app.api.routes import router
+from app.api.backtest_routes import router as backtest_router
 from app.jobs.scheduler import start_scheduler
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -75,6 +76,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.include_router(router, prefix="/api", tags=["api"])
+app.include_router(backtest_router, prefix="/api", tags=["backtest"])
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
@@ -142,3 +144,9 @@ async def journal_page() -> HTMLResponse:
 async def calendar_page() -> HTMLResponse:
     """Macro calendar: FOMC, CPI, NFP dates that affect recommendation confidence."""
     return HTMLResponse(content=_read_static("calendar.html"))
+
+
+@app.get("/backtest", response_class=HTMLResponse)
+async def backtest_page() -> HTMLResponse:
+    """Backtesting: run historical replay and view results (win rate, Sharpe, drawdown)."""
+    return HTMLResponse(content=_read_static("backtest.html"))

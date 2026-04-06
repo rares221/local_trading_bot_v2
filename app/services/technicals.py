@@ -25,6 +25,35 @@ _ohlcv_cache: dict[str, pd.DataFrame] = {}
 # Separate cache for intraday (key = symbol) to avoid overwriting daily
 _ohlcv_intraday_cache: dict[str, pd.DataFrame] = {}
 
+# ---------------------------------------------------------------------------
+# Backtest mode: when set, fetch_ohlcv slices data up to this date.
+# Use set_backtest_mode() / clear_backtest_mode() from the replay engine.
+# ---------------------------------------------------------------------------
+_backtest_cutoff: Optional[pd.Timestamp] = None
+
+
+def set_backtest_mode(cutoff: Optional[pd.Timestamp]) -> None:
+    """Enable/disable backtest mode. When enabled, fetch_ohlcv returns data <= cutoff."""
+    global _backtest_cutoff
+    _backtest_cutoff = cutoff
+
+
+def clear_backtest_mode() -> None:
+    """Return to live mode (no date slicing)."""
+    global _backtest_cutoff
+    _backtest_cutoff = None
+
+
+def _apply_backtest_cutoff(df: pd.DataFrame) -> Optional[pd.DataFrame]:
+    """Slice df to <= _backtest_cutoff if in backtest mode. Returns None if empty after slice."""
+    if _backtest_cutoff is None or df is None or df.empty:
+        return df
+    try:
+        sliced = df[df.index <= _backtest_cutoff]
+        return sliced if not sliced.empty else None
+    except Exception:
+        return df
+
 
 def clear_cache() -> None:
     _ohlcv_cache.clear()
@@ -35,13 +64,16 @@ def fetch_ohlcv(symbol: str, period: str = "90d", interval: Optional[str] = None
     """
     Fetch OHLCV history from yfinance with caching. Returns None on failure.
     interval: None or "1d" for daily; "1h" for hourly (uses 30d period, cached separately).
+    In backtest mode (_backtest_cutoff set), returns data sliced to that date.
     """
     use_interval = interval or "1d"
     cache_key = symbol if use_interval == "1d" else f"{symbol}_{use_interval}"
     cache = _ohlcv_cache if use_interval == "1d" else _ohlcv_intraday_cache
     if cache_key in cache:
         cached = cache[cache_key]
-        return cached if not cached.empty else None
+        if cached.empty:
+            return None
+        return _apply_backtest_cutoff(cached)
     # yfinance logs and some builds also print "$TICKER: possibly delisted" to the console;
     # keep loggers quiet (failures still return None / empty df).
     log = logging.getLogger("yfinance")
@@ -62,7 +94,7 @@ def fetch_ohlcv(symbol: str, period: str = "90d", interval: Optional[str] = None
             cache[cache_key] = pd.DataFrame()
             return None
         cache[cache_key] = df
-        return df
+        return _apply_backtest_cutoff(df)
     except Exception:
         cache[cache_key] = pd.DataFrame()
         return None

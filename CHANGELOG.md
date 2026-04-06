@@ -4,6 +4,69 @@ All notable changes to this project will be documented here.
 
 ---
 
+## [Unreleased] — 2026-04-06
+
+### Branch: `improvements_trade_builder`
+
+---
+
+### Added — Backtesting Framework (PRIORITATE 1)
+
+Implementare completa a engine-ului de backtesting bazat pe historical replay.
+
+#### `app/services/technicals.py` — Backtest Mode
+- Adaugat `_backtest_cutoff: Optional[pd.Timestamp]` la nivel de modul
+- Adaugat `set_backtest_mode(cutoff)` si `clear_backtest_mode()` pentru a controla taierea datelor
+- Adaugat `_apply_backtest_cutoff(df)` — sliceaza DataFrame-ul la data de cutoff
+- `fetch_ohlcv()` acum returneaza date taiate cand `_backtest_cutoff` e setat, fara sa altereze cache-ul (full data ramane in cache, slicing e la read)
+
+#### `app/services/backtesting/` — Pachet nou
+- **`data_provider.py`**: `prefetch_symbols()` — pre-fetches OHLCV cu period="3y" pentru toti simbolii si injecteaza in `_ohlcv_cache`; `get_trading_days()` — extrage zilele de tranzactionare dintr-o fereastra data; `get_future_bars()` — returneaza bare OHLCV dupa o data (pentru simulare outcome)
+- **`simulator.py`**: `simulate_outcome()` — scaneaza barele viitoare si determina `hit_tp` / `hit_sl` / `expired`; gestioneaza edge case-ul in care aceeasi bara atinge ambele niveluri (gap heuristic); calculeaza `pnl_r` (P&L in R-multiples)
+- **`replay.py`**: `run_backtest()` — loop principal: pentru fiecare zi de tranzactionare seteaza cutoff, construieste semnale tehnice (fara sentiment), simuleaza outcome-urile si calculeaza metrici; `_build_signal()` — genereaza un semnal pentru un simbol/zi daca confidence >= min_confidence si R:R >= 1.0
+- **`metrics.py`**: `compute_metrics()` — calculeaza win rate per confidence bucket (6 bucket-uri: <40, 40-49, ..., 80+), Sharpe ratio anualizat, max drawdown pe curba R cumulativa, avg P&L (R), breakdown pe simbol si directie
+
+#### `app/models/backtest.py` — Modele noi
+- `BacktestRun`: id, date range, status (running/completed/failed), metrici agregate (win_rate, sharpe, max_drawdown, avg_rr), `metrics_json` pentru breakdown complet
+- `BacktestTrade`: toate campurile unui semnal individual: entry/SL/TP, confidence, outcome, `pnl_r`, `bars_held`, `volatility_regime`, `trend_bias`, `atr_pct`
+
+#### `app/api/backtest_routes.py` — Endpoints noi
+- `POST /api/backtest/run` — porneste un run in background (async task); returneaza imediat cu run_id
+- `GET /api/backtest/runs` — lista toate run-urile (newest first)
+- `GET /api/backtest/runs/{id}` — detalii + metrici pentru un run
+- `GET /api/backtest/runs/{id}/trades` — trades paginate cu filtre (outcome, symbol)
+- `DELETE /api/backtest/runs/{id}` — sterge run + toate trade-urile
+
+#### `app/static/backtest.html` — Pagina UI noua
+- Formular de configurare (date, risk_tier, min_confidence, period)
+- Lista run-uri cu status (badge running/completed/failed) si polling automat la 5s
+- Metrici agregate: win rate, Sharpe, max drawdown, avg P&L (R), total signals/trades, wins/losses
+- Win rate by confidence bucket cu progress bar vizual
+- Tabel de trades cu filtre (outcome, symbol), paginare
+- Breakdown per simbol si per directie
+
+#### `migrations/versions/002_backtest_tables.py` — Migrare noua
+- Creeaza `backtest_runs` si `backtest_trades` cu toate coloanele si indexurile necesare
+
+#### `app/main.py`
+- Inregistrat `backtest_router` cu prefix `/api`
+- Adaugat ruta `/backtest` pentru pagina HTML
+
+### Changed
+
+#### `app/core/database.py` — Eliminare SQLite
+- Eliminat complet codul SQLite (`aiosqlite`, `_ensure_sqlite_data_dir`, `_sqlite_compat_migrations`)
+- PostgreSQL + TimescaleDB only — schema gestionata exclusiv prin Alembic
+- Adaugat `AsyncSessionLocal` alias pentru background tasks
+
+#### `requirements.txt`
+- Eliminat `aiosqlite` (SQLite nu mai e suportat)
+
+#### `app/models/__init__.py`
+- Adaugat import pentru `BacktestRun`, `BacktestTrade`
+
+---
+
 ## [Unreleased] — 2026-04-03
 
 ### Branch: `ui/recommendations-table-improvements`
