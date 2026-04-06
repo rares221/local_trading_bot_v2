@@ -221,12 +221,15 @@
     }
     .bt-modal {
       width: 100%; max-width: 560px;
+      max-height: 90vh;
       background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 55%, #312e81 100%);
       border: 1px solid rgba(99,102,241,.35);
       border-radius: 14px;
       box-shadow: 0 24px 60px rgba(0,0,0,.6);
       overflow: hidden;
       position: relative;
+      display: flex;
+      flex-direction: column;
     }
     .bt-modal::before {
       content: '';
@@ -246,6 +249,7 @@
       display: flex; align-items: center; justify-content: space-between;
       padding: 20px 24px 16px;
       border-bottom: 1px solid rgba(255,255,255,.08);
+      flex-shrink: 0;
     }
     .bt-header-left { display: flex; flex-direction: column; gap: 3px; }
     .bt-title { font-size: 1.1rem; font-weight: 700; color: #f8fafc; letter-spacing: -.02em; }
@@ -259,7 +263,7 @@
     }
     .bt-close:hover { background: rgba(255,255,255,.14); color: #f8fafc; }
 
-    .bt-body { padding: 20px 24px 24px; }
+    .bt-body { padding: 20px 24px 24px; overflow-y: auto; flex: 1; }
 
     .bt-loading {
       display: flex; flex-direction: column; align-items: center; gap: 14px;
