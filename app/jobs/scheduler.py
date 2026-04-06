@@ -338,8 +338,17 @@ async def job_update_active_trades() -> None:
                 trade.trade_phase = "trailing"
                 phase = "trailing"
 
-            # ATR-based trailing (all phases)
-            sl, tp = compute_atr_levels(current_price, rec.risk_tier, snapshot=snap, direction=direction)
+            # ATR-based trailing (all phases). SL follows volatility from *current* price.
+            # TP from compute_atr_levels is a fresh entry-style target — same for every leg on
+            # this symbol, so it must NOT replace per-leg TPs from split / Fib strategies.
+            # Leg labels: ``app.services.trade_strategies`` (STRATEGY_LEG_VANILLA vs STRATEGY_LEG_SPLIT_*,
+            # THIRDS_*, FIB_*, RSTEP_*, etc. from ``legs_for_strategy``). Only VANILLA uses tp_atr here.
+            sl, tp_atr = compute_atr_levels(current_price, rec.risk_tier, snapshot=snap, direction=direction)
+            strat_leg = getattr(trade, "strategy_leg", None) or "vanilla"
+            if strat_leg != "vanilla" and trade.current_tp is not None:
+                tp = trade.current_tp
+            else:
+                tp = tp_atr
 
             # SL only moves in favorable direction
             if trade.suggested_sl is not None:

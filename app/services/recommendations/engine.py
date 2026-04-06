@@ -8,6 +8,10 @@ Per–asset-class tuning (commodities / FX / crypto / VIX vs equities) lives in
 
 Structured skip forensics: grep ``[ENGINE_SKIP]``; each batch ends with ``[ENGINE_DIGEST]``.
 Both include ``pipeline_run_id`` (UUID) for a single ``build_daily_candidates`` invocation.
+
+Skip reasons include ``exclude_taken`` (``status=taken`` for that category+asset — logged with
+``phase`` ideas|backfill), ``skip_backfill_already_in_ideas``, ``risk_tier_above_preference``,
+``batch_duplicate_asset``, plus existing gates (confidence, R:R, correlation, etc.).
 """
 import json
 import logging
@@ -1154,7 +1158,17 @@ def _candidates_for_pairs(
     seen: set[str] = set()
     excluded = exclude_taken or set()
     for (c, asset_id) in pairs:
-        if c != category or asset_id in seen or (category, asset_id) in excluded:
+        if c != category:
+            continue
+        if asset_id in seen:
+            continue
+        if (category, asset_id) in excluded:
+            _log_engine_skip(
+                "exclude_taken",
+                category=category,
+                asset_id=asset_id,
+                phase="ideas",
+            )
             continue
         seen.add(asset_id)
         resolved = _resolve_symbol_risk(category, asset_id, universe)
@@ -1162,6 +1176,15 @@ def _candidates_for_pairs(
             continue
         symbol, risk_tier = resolved
         if RISK_TIER_ORDER.get(risk_tier, 99) > max_risk_level:
+            _log_engine_skip(
+                "risk_tier_above_preference",
+                category=category,
+                asset_id=asset_id,
+                symbol=symbol,
+                risk_tier=risk_tier,
+                max_preferred_tier_order=max_risk_level,
+                phase="ideas",
+            )
             continue
         pol = get_asset_class_policy(category, asset_id)
         min_rr = _min_rr_floor_for_build(category, pol)
@@ -1261,9 +1284,33 @@ def build_daily_candidates_for_category(
         items = ASSETS_BY_CATEGORY.get(category, [])
         rest: list[Candidate] = []
         for asset_id, symbol, risk_tier in items:
-            if asset_id in chosen_ids or (category, asset_id) in excluded:
+            if asset_id in chosen_ids:
+                _log_engine_skip(
+                    "skip_backfill_already_in_ideas",
+                    category=category,
+                    asset_id=asset_id,
+                    symbol=symbol,
+                )
+                continue
+            if (category, asset_id) in excluded:
+                _log_engine_skip(
+                    "exclude_taken",
+                    category=category,
+                    asset_id=asset_id,
+                    symbol=symbol,
+                    phase="backfill",
+                )
                 continue
             if RISK_TIER_ORDER.get(risk_tier, 99) > max_risk_level:
+                _log_engine_skip(
+                    "risk_tier_above_preference",
+                    category=category,
+                    asset_id=asset_id,
+                    symbol=symbol,
+                    risk_tier=risk_tier,
+                    max_preferred_tier_order=max_risk_level,
+                    phase="backfill",
+                )
                 continue
             pol = get_asset_class_policy(category, asset_id)
             min_rr = _min_rr_floor_for_build(category, pol)
@@ -1343,6 +1390,16 @@ def build_daily_candidates(
         len(BATCH_CATEGORIES),
         market_ctx.regime.regime,
     )
+    _excl = exclude_taken or set()
+    if _excl:
+        sample = ", ".join(f"{a}:{b}" for a, b in sorted(_excl)[:15])
+        more = f" (+{len(_excl) - 15} more)" if len(_excl) > 15 else ""
+        logger.info(
+            "[ENGINE] exclude_taken: %d pair(s) will not be re-recommended (status=taken). Sample: %s%s",
+            len(_excl),
+            sample,
+            more,
+        )
 
     out: list[Candidate] = []
     batch_ctx: dict[str, Any] = {
@@ -1360,6 +1417,12 @@ def build_daily_candidates(
             nonlocal total_risk_pct
             key = (c.asset_category, c.asset_id)
             if key in seen_asset_key:
+                _log_engine_skip(
+                    "batch_duplicate_asset",
+                    category=c.asset_category,
+                    asset_id=c.asset_id,
+                    note="same category+asset already added this batch",
+                )
                 return False
             symbol_new = get_yf_symbol(c.asset_category, c.asset_id)
             if symbol_new and out:
