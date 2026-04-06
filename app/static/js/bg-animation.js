@@ -23,11 +23,11 @@
 
   // [left%, top%, diameter_px, rgb, opacity, duration_s, delay_s]
   var ORB_DEFS = [
-    [  4,  6, 680, '99,102,241',  .09, 30,   0],
-    [ 72, 56, 560, '139,92,246',  .07, 40,  -7],
-    [ 44, 16, 460, '59,130,246',  .06, 24, -13],
-    [ 16, 70, 380, '168,85,247',  .055,34, -10],
-    [ 84,  2, 320, '20,184,166',  .05, 21,  -4],
+    [  4,  6, 680, '99,102,241',  .22, 30,   0],
+    [ 72, 56, 560, '139,92,246',  .16, 40,  -7],
+    [ 44, 16, 460, '59,130,246',  .14, 24, -13],
+    [ 16, 70, 380, '168,85,247',  .12, 34, -10],
+    [ 84,  2, 320, '20,184,166',  .10, 21,  -4],
   ];
 
   function injectOrbs() {
@@ -47,9 +47,9 @@
 
   // ── Canvas price-chart animation ─────────────────────────────────────────────
   var SERIES = [
-    { c: '99,102,241',  lop: .13, fop: .045, lw: 1.6, drift: -.49  },
-    { c: '139,92,246',  lop: .08, fop: .028, lw: 1.1, drift: -.488 },
-    { c: '59,130,246',  lop: .055, fop: .018, lw: .8, drift: -.492 },
+    { c: '99,102,241',  lop: .30, fop: .10, lw: 1.6, drift: -.49  },
+    { c: '139,92,246',  lop: .18, fop: .06, lw: 1.1, drift: -.488 },
+    { c: '59,130,246',  lop: .12, fop: .04, lw: .8, drift: -.492 },
   ];
   var XSTEP      = 3;   // px per data point
   var SKIP       = 9;   // frames between new price points (slower = calmer)
@@ -129,7 +129,7 @@
 
     // Subtle top-center indigo glow (drawn on canvas so it pulses slightly with the chart)
     var glowGrd = ctx.createRadialGradient(W * 0.5, 0, 0, W * 0.5, 0, W * 0.55);
-    glowGrd.addColorStop(0, 'rgba(99,102,241,.06)');
+    glowGrd.addColorStop(0, 'rgba(99,102,241,.14)');
     glowGrd.addColorStop(1, 'rgba(99,102,241,0)');
     ctx.fillStyle = glowGrd;
     ctx.fillRect(0, 0, W, H * 0.55);

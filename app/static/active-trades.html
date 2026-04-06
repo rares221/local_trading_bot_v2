@@ -15,8 +15,10 @@
 
     /* ── Card shell ── */
     .trade-card {
-      background: #111827;
-      border: 1px solid rgba(255,255,255,.07);
+      background: rgba(17,24,39,.78);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      border: 1px solid rgba(255,255,255,.09);
       border-left: 4px solid rgba(255,255,255,.12);
       border-radius: var(--radius);
       box-shadow: 0 2px 8px rgba(0,0,0,.35);
@@ -33,7 +35,7 @@
       flex-wrap: wrap; gap: var(--space-1);
       padding: 14px var(--space-3);
       border-bottom: 1px solid rgba(255,255,255,.07);
-      background: #0f172a;
+      background: rgba(15,23,42,.85);
     }
     .trade-header-left { display: flex; align-items: center; gap: 10px; }
     .trade-asset { font-size: 1.25rem; font-weight: 700; letter-spacing: -.025em; color: #f8fafc; }
@@ -100,7 +102,7 @@
       width: 3px; height: 17px;
       background: #f8fafc; border-radius: 2px;
       transform: translateX(-50%);
-      box-shadow: 0 0 0 2px #111827;
+      box-shadow: 0 0 0 2px rgba(17,24,39,.9);
     }
 
     /* ── Footer ── */
@@ -115,15 +117,15 @@
     .history-panel {
       padding: var(--space-2) var(--space-3) var(--space-3);
       border-top: 1px solid rgba(255,255,255,.07);
-      background: #0c1220;
+      background: rgba(12,18,32,.85);
     }
     .history-panel table {
       font-size: 13px;
-      background: #111827; border-radius: var(--radius); overflow: hidden;
+      background: rgba(17,24,39,.8); border-radius: var(--radius); overflow: hidden;
       color: rgba(248,250,252,.75);
     }
     .history-panel th {
-      background: #0f172a; color: rgba(248,250,252,.4);
+      background: rgba(15,23,42,.9); color: rgba(248,250,252,.4);
       border-bottom-color: rgba(255,255,255,.07);
     }
     .history-panel td { border-bottom-color: rgba(255,255,255,.05); }

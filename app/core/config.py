@@ -10,8 +10,13 @@ class Settings(BaseSettings):
     app_name: str = "local_trading_bot_v2"
     debug: bool = False
 
-    # Database (SQLite by default)
+    # Database — set to postgresql+asyncpg://... for TimescaleDB in production
     database_url: str = "sqlite+aiosqlite:///./data/trading.db"
+
+    # SQLite → PostgreSQL migration: set MIGRATION_ENABLED=true and point
+    # SQLITE_SOURCE_URL to the old SQLite file to transfer all data on startup.
+    migration_enabled: bool = False
+    sqlite_source_url: str = "sqlite:///./data/trading.db"
 
     # Data paths (reuse pattern from codeops-trading-app: optional file cache)
     data_dir: Path = Path("./data")

@@ -55,37 +55,298 @@
     </section>
 
     <section class="card" id="result-card" style="display:none;">
-      <h2 class="section-title" id="result-title">Research result</h2>
       <div id="result-loading" class="loading-overlay" style="display:none;"><span class="spinner spinner--lg"></span> Generating research&hellip;</div>
       <div id="result-summary" style="display:none;">
-        <p class="meta" style="font-weight:600;margin-bottom:4px;">Summary</p>
-        <div id="result-text" class="block-summary"></div>
+        <div id="result-header" class="rs-header"></div>
+        <div id="result-sections" class="rs-sections"></div>
       </div>
       <div id="result-empty" class="alert alert--warning" style="display:none;">No summary returned. Check that an LLM provider is configured on the <a href="/dashboard">Dashboard</a>.</div>
-      <details id="result-context" style="margin-top:var(--space-2);display:none;">
-        <summary style="cursor:pointer;font-weight:600;font-size:14px;">Context (sentiment, price, headlines)</summary>
-        <pre id="result-json" class="block-payload mt-1"></pre>
+      <details id="result-context" class="rs-context-details" style="margin-top:var(--space-2);display:none;">
+        <summary class="rs-context-summary">
+          <span data-icon="bar-chart-2" data-icon-size="14"></span> Market Context
+        </summary>
+        <div id="result-context-body" class="rs-context-body"></div>
       </details>
     </section>
 
     <p class="disclaimer">Educational and research purposes only. Not financial advice.</p>
   </main>
 
+  <style>
+    /* ── Research Summary UI ── */
+    .rs-header {
+      display: flex; align-items: flex-start; justify-content: space-between;
+      flex-wrap: wrap; gap: var(--space-2);
+      padding-bottom: var(--space-2);
+      border-bottom: 1px solid rgba(255,255,255,.07);
+      margin-bottom: var(--space-2);
+    }
+    .rs-header-left { display: flex; flex-direction: column; gap: 4px; }
+    .rs-asset-name { font-size: 1.35rem; font-weight: 700; letter-spacing: -.02em; color: #f8fafc; }
+    .rs-asset-sub  { font-size: 13px; color: rgba(248,250,252,.45); }
+    .rs-header-badges { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 4px; }
+
+    .rs-badge {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 4px 10px; border-radius: 6px;
+      font-size: 12px; font-weight: 600;
+    }
+    .rs-badge--long    { background: rgba(16,185,129,.15); color: #6ee7b7; border: 1px solid rgba(16,185,129,.25); }
+    .rs-badge--short   { background: rgba(239,68,68,.15);  color: #fca5a5; border: 1px solid rgba(239,68,68,.25); }
+    .rs-badge--neutral { background: rgba(248,250,252,.08); color: rgba(248,250,252,.6); border: 1px solid rgba(255,255,255,.1); }
+    .rs-badge--sent-bull { background: rgba(16,185,129,.12); color: #6ee7b7; }
+    .rs-badge--sent-bear { background: rgba(239,68,68,.12);  color: #fca5a5; }
+    .rs-badge--sent-neut { background: rgba(248,250,252,.08); color: rgba(248,250,252,.5); }
+    .rs-badge--risk-low  { background: rgba(16,185,129,.12); color: #6ee7b7; }
+    .rs-badge--risk-med  { background: rgba(245,158,11,.12); color: #fcd34d; }
+    .rs-badge--risk-high { background: rgba(239,68,68,.12);  color: #fca5a5; }
+
+    .rs-sections { display: flex; flex-direction: column; gap: var(--space-2); }
+
+    .rs-section {
+      border-radius: var(--radius);
+      border: 1px solid;
+      padding: var(--space-2) var(--space-3);
+    }
+    .rs-section--rationale {
+      background: rgba(16,185,129,.06);
+      border-color: rgba(16,185,129,.2);
+    }
+    .rs-section--risk {
+      background: rgba(239,68,68,.06);
+      border-color: rgba(239,68,68,.2);
+    }
+    .rs-section--neutral {
+      background: rgba(99,102,241,.06);
+      border-color: rgba(99,102,241,.2);
+    }
+
+    .rs-section-hd {
+      display: flex; align-items: center; gap: 10px;
+      margin-bottom: 10px;
+    }
+    .rs-section-icon {
+      width: 34px; height: 34px; border-radius: 8px; flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .rs-section--rationale .rs-section-icon { background: rgba(16,185,129,.15); color: #10b981; }
+    .rs-section--risk      .rs-section-icon { background: rgba(239,68,68,.15);  color: #ef4444; }
+    .rs-section--neutral   .rs-section-icon { background: rgba(99,102,241,.15); color: #6366f1; }
+
+    .rs-section-label {
+      font-size: 13px; font-weight: 700; letter-spacing: .02em; text-transform: uppercase;
+    }
+    .rs-section--rationale .rs-section-label { color: #34d399; }
+    .rs-section--risk      .rs-section-label { color: #f87171; }
+    .rs-section--neutral   .rs-section-label { color: #a5b4fc; }
+
+    .rs-section-sublabel {
+      font-size: 11px; color: rgba(248,250,252,.35); margin-top: 1px;
+    }
+    .rs-section-text {
+      font-size: 14px; line-height: 1.7; color: rgba(248,250,252,.85);
+    }
+
+    /* ── Context section ── */
+    .rs-context-details { margin-top: var(--space-2); }
+    .rs-context-summary {
+      cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+      font-size: 13px; font-weight: 600; color: rgba(248,250,252,.5);
+      padding: 6px 0; user-select: none;
+      transition: color .15s;
+    }
+    .rs-context-summary:hover { color: rgba(248,250,252,.8); }
+    .rs-context-body { margin-top: var(--space-2); display: flex; flex-direction: column; gap: var(--space-2); }
+
+    .rs-ctx-grid {
+      display: flex; flex-wrap: wrap; gap: 10px;
+    }
+    .rs-ctx-chip {
+      display: flex; flex-direction: column; gap: 2px;
+      background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.07);
+      border-radius: 8px; padding: 8px 14px;
+    }
+    .rs-ctx-chip-label { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: rgba(248,250,252,.35); }
+    .rs-ctx-chip-value { font-size: 14px; font-weight: 600; font-family: var(--font-mono); color: #f8fafc; }
+
+    .rs-headlines { display: flex; flex-direction: column; gap: 6px; }
+    .rs-headline-item {
+      display: flex; align-items: flex-start; gap: 8px;
+      font-size: 13px; color: rgba(248,250,252,.65); line-height: 1.5;
+    }
+    .rs-headline-dot {
+      width: 5px; height: 5px; border-radius: 50%;
+      background: rgba(99,102,241,.6); flex-shrink: 0; margin-top: 7px;
+    }
+    .rs-technicals {
+      font-size: 13px; color: rgba(248,250,252,.55);
+      padding: 8px 12px; background: rgba(255,255,255,.03);
+      border-radius: 6px; border-left: 3px solid rgba(99,102,241,.4);
+    }
+  </style>
   <script>
     function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+    // ── Parse "**Label:** content" sections from LLM output ──
+    function parseSections(text) {
+      const sections = [];
+      const re = /\*\*([^*]+?)\*\*:?\s*/g;
+      let match, lastIdx = 0, lastLabel = null;
+
+      while ((match = re.exec(text)) !== null) {
+        if (lastLabel !== null) {
+          sections.push({ label: lastLabel, content: text.slice(lastIdx, match.index).trim() });
+        } else if (match.index > 0) {
+          // text before first label
+          const pre = text.slice(0, match.index).trim();
+          if (pre) sections.push({ label: null, content: pre });
+        }
+        lastLabel = match[1].trim();
+        lastIdx = re.lastIndex;
+      }
+      if (lastLabel !== null) {
+        sections.push({ label: lastLabel, content: text.slice(lastIdx).trim() });
+      }
+      if (sections.length === 0) {
+        sections.push({ label: null, content: text.trim() });
+      }
+      return sections;
+    }
+
+    // ── Map label → visual config ──
+    const SECTION_MAP = {
+      'rationale':  { cls: 'rationale', iconKey: 'trending-up',      title: 'Why This Trade Might Work', sub: 'The trade thesis — conditions that support this direction' },
+      'main risk':  { cls: 'risk',      iconKey: 'alert-triangle',    title: 'Main Risk',                 sub: 'What could go wrong and cause a loss' },
+      'risk':       { cls: 'risk',      iconKey: 'alert-triangle',    title: 'Risk Factor',               sub: 'Key risk to watch' },
+      'bias':       { cls: 'neutral',   iconKey: 'compass',           title: 'Market Bias',               sub: 'Overall market sentiment direction' },
+      'setup':      { cls: 'neutral',   iconKey: 'crosshair',         title: 'Trade Setup',               sub: 'How and where to enter' },
+      'catalyst':   { cls: 'neutral',   iconKey: 'zap',               title: 'Catalyst',                  sub: 'Event or condition driving the move' },
+    };
+
+    function getSectionCfg(label) {
+      if (!label) return { cls: 'neutral', iconKey: 'file-text', title: 'Analysis', sub: '' };
+      const key = label.toLowerCase();
+      for (const [k, v] of Object.entries(SECTION_MAP)) {
+        if (key.includes(k)) return v;
+      }
+      return { cls: 'neutral', iconKey: 'info', title: label, sub: '' };
+    }
+
+    // ── Render summary ──
+    function renderSummary(summaryText, ctx) {
+      const sections = parseSections(summaryText);
+
+      // Header
+      const hdr = document.getElementById('result-header');
+      const assetId = ctx.asset_id || '';
+      const direction = (ctx.direction || '').toLowerCase();
+      const sentiment = ctx.sentiment_avg;
+      const riskTier = ctx.risk_tier || '';
+      const fundamentals = ctx.fundamentals || {};
+      const shortName = fundamentals.short_name || '';
+
+      let dirBadge = '';
+      if (direction === 'long') {
+        dirBadge = '<span class="rs-badge rs-badge--long">' + icon('trending-up', 12) + ' LONG</span>';
+      } else if (direction === 'short') {
+        dirBadge = '<span class="rs-badge rs-badge--short">' + icon('trending-down', 12) + ' SHORT</span>';
+      }
+
+      let sentBadge = '';
+      if (sentiment !== null && sentiment !== undefined) {
+        const val = parseFloat(sentiment);
+        let cls = 'rs-badge--sent-neut', label = 'Neutral';
+        if (val > 0.1) { cls = 'rs-badge--sent-bull'; label = 'Bullish'; }
+        else if (val < -0.1) { cls = 'rs-badge--sent-bear'; label = 'Bearish'; }
+        sentBadge = '<span class="rs-badge ' + cls + '">' + icon('activity', 12) + ' Sentiment: ' + label + ' (' + val.toFixed(2) + ')</span>';
+      }
+
+      let riskBadge = '';
+      if (riskTier) {
+        const rk = riskTier.toLowerCase();
+        let cls = 'rs-badge--risk-med';
+        if (rk.includes('low')) cls = 'rs-badge--risk-low';
+        else if (rk.includes('high')) cls = 'rs-badge--risk-high';
+        riskBadge = '<span class="rs-badge ' + cls + '">' + icon('shield', 12) + ' Risk: ' + esc(riskTier) + '</span>';
+      }
+
+      hdr.innerHTML =
+        '<div class="rs-header-left">' +
+          '<div class="rs-asset-name">' + esc(assetId.toUpperCase()) + (shortName ? ' <span style="font-weight:400;font-size:1rem;color:rgba(248,250,252,.5)">· ' + esc(shortName) + '</span>' : '') + '</div>' +
+          '<div class="rs-header-badges">' + dirBadge + sentBadge + riskBadge + '</div>' +
+        '</div>';
+
+      // Sections
+      const sectionsEl = document.getElementById('result-sections');
+      sectionsEl.innerHTML = sections.map(function(s) {
+        const cfg = getSectionCfg(s.label);
+        return '<div class="rs-section rs-section--' + cfg.cls + '">' +
+          '<div class="rs-section-hd">' +
+            '<div class="rs-section-icon">' + icon(cfg.iconKey, 16) + '</div>' +
+            '<div>' +
+              '<div class="rs-section-label">' + esc(cfg.title) + '</div>' +
+              (cfg.sub ? '<div class="rs-section-sublabel">' + esc(cfg.sub) + '</div>' : '') +
+            '</div>' +
+          '</div>' +
+          '<p class="rs-section-text">' + esc(s.content) + '</p>' +
+        '</div>';
+      }).join('');
+    }
+
+    // ── Render context ──
+    function renderContext(ctx) {
+      if (!ctx) return;
+      const el = document.getElementById('result-context-body');
+      const parts = [];
+
+      // Metric chips
+      const chips = [];
+      if (ctx.buy_in_price != null) chips.push({ label: 'Price', value: '$' + ctx.buy_in_price });
+      if (ctx.sentiment_avg != null) {
+        const v = parseFloat(ctx.sentiment_avg);
+        const label = v > 0.1 ? 'Bullish' : v < -0.1 ? 'Bearish' : 'Neutral';
+        chips.push({ label: 'Sentiment', value: label + ' (' + v.toFixed(3) + ')' });
+      }
+      if (ctx.risk_tier) chips.push({ label: 'Risk Tier', value: ctx.risk_tier });
+      if (ctx.direction) chips.push({ label: 'Direction', value: ctx.direction.charAt(0).toUpperCase() + ctx.direction.slice(1) });
+      const f = ctx.fundamentals || {};
+      if (f.sector) chips.push({ label: 'Sector', value: f.sector });
+      if (f.industry) chips.push({ label: 'Industry', value: f.industry });
+
+      if (chips.length) {
+        parts.push('<div class="rs-ctx-grid">' +
+          chips.map(c => '<div class="rs-ctx-chip"><span class="rs-ctx-chip-label">' + esc(c.label) + '</span><span class="rs-ctx-chip-value">' + esc(c.value) + '</span></div>').join('') +
+        '</div>');
+      }
+
+      // Technicals
+      if (ctx.volatility_notes) {
+        parts.push('<div class="rs-technicals">' + icon('bar-chart-2', 13) + ' <strong>Technicals:</strong> ' + esc(ctx.volatility_notes) + '</div>');
+      }
+
+      // Headlines
+      const headlines = ctx.headlines || [];
+      if (headlines.length) {
+        parts.push('<div class="rs-headlines">' +
+          '<div class="rs-ctx-chip-label" style="margin-bottom:6px;">Recent Headlines</div>' +
+          headlines.slice(0, 5).map(h => '<div class="rs-headline-item"><span class="rs-headline-dot"></span>' + esc(h) + '</div>').join('') +
+        '</div>');
+      }
+
+      el.innerHTML = parts.join('');
+      document.getElementById('result-context').style.display = 'block';
+    }
+
     const assetInput = document.getElementById('asset-id');
     const catSelect = document.getElementById('category');
     const resolveBtn = document.getElementById('resolve-btn');
     const resolveHint = document.getElementById('resolve-hint');
     const getBtn = document.getElementById('get-btn');
     const resultCard = document.getElementById('result-card');
-    const resultTitle = document.getElementById('result-title');
     const resultLoading = document.getElementById('result-loading');
     const resultSummary = document.getElementById('result-summary');
-    const resultText = document.getElementById('result-text');
     const resultEmpty = document.getElementById('result-empty');
     const resultContext = document.getElementById('result-context');
-    const resultJson = document.getElementById('result-json');
 
     resolveBtn.addEventListener('click', async () => {
       const raw = assetInput.value.trim();
@@ -121,7 +382,6 @@
       const category = catSelect.value;
 
       resultCard.style.display = 'block';
-      resultTitle.textContent = assetId + ' (' + category + ')';
       resultLoading.style.display = 'flex';
       resultSummary.style.display = 'none';
       resultEmpty.style.display = 'none';
@@ -134,13 +394,10 @@
         const r = await fetch('/api/research/summary?asset_id=' + encodeURIComponent(assetId) + '&category=' + encodeURIComponent(category) + '&generate=true');
         const d = await r.json();
         resultLoading.style.display = 'none';
-        if (d.context) {
-          resultContext.style.display = 'block';
-          resultJson.textContent = JSON.stringify(d.context, null, 2);
-        }
         if (d.summary && d.summary.trim()) {
+          renderSummary(d.summary.trim(), d.context || {});
           resultSummary.style.display = 'block';
-          resultText.textContent = d.summary.trim();
+          if (d.context) renderContext(d.context);
         } else {
           resultEmpty.style.display = 'block';
         }

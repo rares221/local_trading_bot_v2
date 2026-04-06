@@ -5,6 +5,7 @@ Pure pandas/numpy — no external TA library needed.
 """
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 import math
 from dataclasses import dataclass, field
@@ -49,7 +50,14 @@ def fetch_ohlcv(symbol: str, period: str = "90d", interval: Optional[str] = None
     try:
         ticker = yf.Ticker(symbol)
         kwargs = {"period": "30d" if use_interval == "1h" else period, "interval": use_interval}
-        df = ticker.history(**kwargs)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(ticker.history, **kwargs)
+            try:
+                df = future.result(timeout=30)
+            except concurrent.futures.TimeoutError:
+                logger.warning("[TECHNICALS] yfinance timeout (30s) for symbol=%s", symbol)
+                cache[cache_key] = pd.DataFrame()
+                return None
         if df is None or df.empty or "Close" not in df.columns:
             cache[cache_key] = pd.DataFrame()
             return None
@@ -627,12 +635,12 @@ def compute_atr_levels(
             if support is not None and support < price:
                 # Place SL slightly below the support (0.2% buffer)
                 sr_sl = support * 0.998
-                # Only use if it's between the ATR-based SL and price (tighter but not too tight)
+                # Only snap if it's above the ATR-based SL (tighter) and at least 0.5% from price
                 min_sl = price * 0.995  # never tighter than 0.5%
                 if sr_sl > sl_base and sr_sl < min_sl:
-                    pass  # too tight, keep ATR level
-                elif sr_sl > sl_base:
-                    sl = sr_sl
+                    sl = sr_sl  # valid: tighter than ATR and far enough from price
+                elif sr_sl >= min_sl:
+                    pass  # too tight (within 0.5% of price), keep ATR level
 
             # TP: consider nearest resistance above for a realistic target
             resistance = snapshot.nearest_resistance_above()

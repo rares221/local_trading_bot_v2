@@ -1,6 +1,25 @@
 version: "3.8"
 
 services:
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: trading-timescaledb
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-trading}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trading}
+      POSTGRES_DB: ${POSTGRES_DB:-trading}
+    ports:
+      - "5432"
+    volumes:
+      - timescale_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-trading} -d ${POSTGRES_DB:-trading}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
   app:
     build:
       context: .
@@ -15,6 +34,13 @@ services:
       - .env
     environment:
       - TZ=UTC
+      - DATABASE_URL=postgresql+asyncpg://trading:trading@timescaledb:5432/trading
+      - MIGRATION_ENABLED=false
+      - SQLITE_SOURCE_URL=sqlite:///./data/trading.db
+    depends_on:
+      timescaledb:
+        condition: service_healthy
 
 volumes:
   trading_data:
+  timescale_data:

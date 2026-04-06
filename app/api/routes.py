@@ -998,7 +998,10 @@ async def fit_calibration(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
     if len(confidences) < 10:
         return _with_disclaimer({"ok": False, "message": f"Not enough data (n={len(confidences)}). Need at least 10 closed trades."})
 
-    a, b = fit_platt_calibration(confidences, outcomes)
+    result = fit_platt_calibration(confidences, outcomes)
+    if result is None:
+        return _with_disclaimer({"ok": False, "message": "Platt calibration failed (sklearn unavailable or fitting error). Existing params preserved."})
+    a, b = result
     set_platt_params(a, b)
     return _with_disclaimer({"ok": True, "message": f"Platt calibration fitted on {len(confidences)} trades.", "a": a, "b": b})
 

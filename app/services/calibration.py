@@ -53,39 +53,40 @@ def clear_platt_params() -> None:
         logger.warning("[CALIBRATION] Could not delete platt file: %s", e)
 
 
-def fit_platt_calibration(confidences: list[float], outcomes: list[float]) -> tuple[float, float]:
+def fit_platt_calibration(confidences: list[float], outcomes: list[float]) -> Optional[tuple[float, float]]:
     """
     Fit Platt scaling (logistic regression) on (confidence/100, outcome 0/1).
     Returns (coef, intercept) such that calibrated_prob = 1 / (1 + exp(-(coef*conf + intercept))).
-    Uses sklearn LogisticRegression if available; falls back to identity mapping.
+    Returns None on failure (insufficient data, missing sklearn, or fitting error) so callers
+    can preserve the existing calibration instead of overwriting it with broken params.
     """
     if len(confidences) < 10:
         logger.warning("[CALIBRATION] Not enough data (n=%d < 10) to fit Platt calibration", len(confidences))
-        return (0.0, 0.0)
-    
+        return None
+
     try:
         from sklearn.linear_model import LogisticRegression
         import numpy as np
-        
+
         X = np.array(confidences).reshape(-1, 1)
         y = np.array(outcomes)
-        
+
         # Fit logistic regression with no regularization (C=1e10) for Platt scaling
         lr = LogisticRegression(C=1e10, max_iter=1000, solver='lbfgs')
         lr.fit(X, y)
-        
+
         coef = float(lr.coef_[0][0])
         intercept = float(lr.intercept_[0])
-        
+
         logger.info("[CALIBRATION] Platt calibration fitted: coef=%.4f, intercept=%.4f (n=%d)", coef, intercept, len(confidences))
         return (coef, intercept)
-    
+
     except ImportError:
         logger.warning("[CALIBRATION] sklearn not available; Platt calibration disabled. Install: pip install scikit-learn")
-        return (0.0, 0.0)
+        return None
     except Exception as e:
         logger.error("[CALIBRATION] Failed to fit Platt calibration: %s", e, exc_info=True)
-        return (0.0, 0.0)
+        return None
 
 
 def apply_platt_calibration(raw_confidence: int) -> float:
