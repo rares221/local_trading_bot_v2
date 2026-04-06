@@ -35,6 +35,8 @@ class Settings(BaseSettings):
     # Research / rationale (Option B): multi-provider LLM (Dexter-style).
     research_llm_provider: str = "openai"   # openai | anthropic | ollama | openrouter
     research_llm_model: str = ""           # empty = use provider default (e.g. gpt-4o-mini, llama3.1)
+    # Extended thinking for Anthropic models (0 = disabled). budget_tokens controls depth; max ~16000.
+    research_llm_thinking_budget: int = 0
     openai_api_key: str | None = None
     anthropic_api_key: str | None = None
     openrouter_api_key: str | None = None

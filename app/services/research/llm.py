@@ -123,18 +123,30 @@ async def _call_openrouter(
 
 
 async def _call_anthropic(
-    model: str, system: str, user: str, api_key: str, *, max_tokens: int = 200
+    model: str, system: str, user: str, api_key: str, *, max_tokens: int = 200,
+    thinking_budget: int = 0,
 ) -> str | None:
     import anthropic
     client = anthropic.AsyncAnthropic(api_key=api_key)
-    msg = await client.messages.create(
+
+    kwargs: dict = dict(
         model=model,
-        max_tokens=max_tokens,
         system=system,
         messages=[{"role": "user", "content": user}],
     )
-    if msg.content and len(msg.content) > 0 and hasattr(msg.content[0], "text"):
-        return msg.content[0].text.strip()
+    if thinking_budget > 0:
+        # Extended thinking: max_tokens must exceed budget; extra 1024 for the actual response
+        kwargs["max_tokens"] = thinking_budget + 1024
+        kwargs["thinking"] = {"type": "enabled", "budget_tokens": thinking_budget}
+    else:
+        kwargs["max_tokens"] = max_tokens
+
+    msg = await client.messages.create(**kwargs)
+
+    # Content may include thinking blocks — return the first text block
+    for block in (msg.content or []):
+        if getattr(block, "type", None) == "text" and getattr(block, "text", None):
+            return block.text.strip()
     return None
 
 
@@ -302,12 +314,13 @@ async def generate_rationale(context: dict[str, Any]) -> str | None:
     system = SYSTEM_PROMPT
     user = _format_user_content(context)
     ollama_base_url = (cfg.get("ollama_base_url") or "").strip() or (settings.ollama_base_url or "http://localhost:11434")
+    thinking_budget = int(cfg.get("thinking_budget") or 0)
 
     try:
         if provider_id == "openai":
             return await _call_openai(model, system, user, api_key or "", max_tokens=200)
         if provider_id == "anthropic":
-            return await _call_anthropic(model, system, user, api_key or "", max_tokens=200)
+            return await _call_anthropic(model, system, user, api_key or "", max_tokens=200, thinking_budget=thinking_budget)
         if provider_id == "ollama":
             return await _call_ollama(model, system, user, ollama_base_url)
         if provider_id == "openrouter":
@@ -386,4 +399,89 @@ async def generate_strategy_explanation(user_message: str) -> str | None:
             exc,
             exc_info=log.isEnabledFor(logging.DEBUG),
         )
+    return None
+
+
+_BACKTEST_INSIGHT_SYSTEM = (
+    "You are a quantitative trading analyst reviewing backtesting results for a systematic trading strategy. "
+    "In 3–5 sentences only, interpret the results: comment on signal quality, whether the win rate is acceptable, "
+    "any confidence-bucket patterns worth noting, and one concrete tuning recommendation. "
+    "Be specific and data-driven. No disclaimers. No generic statements."
+)
+
+
+async def generate_backtest_insight(
+    asset_id: str,
+    direction: str,
+    risk_tier: str,
+    metrics: dict,
+    direction_stats: dict,
+    by_confidence_bucket: dict,
+) -> str | None:
+    """
+    Post-backtest LLM interpretation for the active trade modal.
+    Returns 3–5 sentences of analyst commentary, or None if LLM unavailable.
+    """
+    from app.core.config import settings
+    from app.core.preferences import get_research_llm_config
+
+    cfg = get_research_llm_config()
+    provider_id = (cfg.get("research_llm_provider") or "openai").strip().lower()
+    provider = get_provider_by_id(provider_id)
+    if not provider:
+        provider_id = "openai"
+        provider = get_provider_by_id("openai")
+
+    api_key = _get_api_key_for_provider(provider_id)
+    if not is_available(provider_id, api_key):
+        return None
+
+    model = (cfg.get("research_llm_model") or "").strip() or provider.default_model
+    if not model:
+        return None
+
+    ollama_base_url = (cfg.get("ollama_base_url") or "").strip() or (
+        settings.ollama_base_url or "http://localhost:11434"
+    )
+
+    dir_s = direction_stats.get(direction, {})
+    other_dir = "short" if direction == "long" else "long"
+    other_s = direction_stats.get(other_dir, {})
+
+    def _pct(v):
+        return f"{round((v or 0) * 100, 1)}%" if v is not None else "N/A"
+
+    bucket_lines = []
+    for bucket, bd in (by_confidence_bucket or {}).items():
+        wr = bd.get("win_rate")
+        n = bd.get("total", 0)
+        bucket_lines.append(f"  {bucket}: {_pct(wr)} win rate ({n} trades)")
+
+    user_content = (
+        f"Asset: {asset_id} | Direction analysed: {direction.upper()} | Risk tier: {risk_tier}\n"
+        f"\n--- {direction.upper()} direction ---\n"
+        f"Signals: {dir_s.get('total', 0)} | Wins: {dir_s.get('wins', 0)} | Win rate: {_pct(dir_s.get('win_rate'))}\n"
+        f"\n--- {other_dir.upper()} direction ---\n"
+        f"Signals: {other_s.get('total', 0)} | Wins: {other_s.get('wins', 0)} | Win rate: {_pct(other_s.get('win_rate'))}\n"
+        f"\n--- Overall ---\n"
+        f"Win rate: {_pct(metrics.get('win_rate'))} | Avg P&L: {metrics.get('avg_pnl_r', 'N/A')}R\n"
+        f"Sharpe: {metrics.get('sharpe_ratio', 'N/A')} | Max drawdown: {metrics.get('max_drawdown_r', 'N/A')}R\n"
+        f"Wins: {metrics.get('wins', 0)} | Losses: {metrics.get('losses', 0)} | Expired: {metrics.get('expired', 0)}\n"
+        f"\n--- Win rate by confidence bucket ---\n"
+        + ("\n".join(bucket_lines) if bucket_lines else "  No bucket data")
+    )
+
+    try:
+        if provider_id == "openai":
+            return await _call_openai(model, _BACKTEST_INSIGHT_SYSTEM, user_content, api_key or "", max_tokens=250)
+        if provider_id == "anthropic":
+            return await _call_anthropic(model, _BACKTEST_INSIGHT_SYSTEM, user_content, api_key or "", max_tokens=250)
+        if provider_id == "ollama":
+            combined = f"{_BACKTEST_INSIGHT_SYSTEM.strip()}\n\n---\n\n{user_content.strip()}"
+            return await _call_ollama(model, "", combined, ollama_base_url, num_predict=250, timeout=120.0)
+        if provider_id == "openrouter":
+            return await _call_openrouter(model, _BACKTEST_INSIGHT_SYSTEM, user_content, api_key or "", max_tokens=250)
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("Backtest insight LLM call failed (%s/%s): %s", provider_id, model, exc)
     return None

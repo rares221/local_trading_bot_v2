@@ -1,18 +1,23 @@
 """
 Backtesting API routes.
 
-POST /api/backtest/run      — start a new backtest run (async, runs in background thread)
-GET  /api/backtest/runs     — list all backtest runs
-GET  /api/backtest/runs/{id} — get run details + metrics
+POST /api/backtest/run          — start a new backtest run (async, background)
+GET  /api/backtest/runs         — list all backtest runs
+GET  /api/backtest/runs/{id}    — get run details + metrics
 GET  /api/backtest/runs/{id}/trades — paginated trade list for a run
-DELETE /api/backtest/runs/{id} — delete a run + its trades
+DELETE /api/backtest/runs/{id}  — delete a run + its trades
+GET  /api/backtest/quick        — quick single-symbol backtest (sync, ~15s), used by active trade cards
 """
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone, date
+import threading
+from datetime import datetime, timezone, date, timedelta
 from typing import Any, Optional
 from uuid import uuid4
+
+# Prevents concurrent backtests from clobbering the shared technicals cache
+_backtest_lock = threading.Lock()
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import BaseModel
@@ -219,6 +224,162 @@ async def delete_backtest_run(run_id: str, db: AsyncSession = Depends(get_db)) -
     await db.commit()
 
     return {"deleted": run_id}
+
+
+@router.get("/backtest/quick")
+async def quick_backtest(
+    asset_id: str,
+    category: str = "stocks",
+    direction: str = "long",
+    risk_tier: str = "moderate",
+    period: str = "1y",
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """
+    Quick single-symbol backtest for an active trade card.
+    Runs synchronously in a thread pool (~10-20s). Returns metrics filtered
+    by the specified direction so the user sees relevant stats for their trade.
+    Includes historical sentiment from market_analyses and LLM interpretation.
+    """
+    from app.services.recommendations.engine import get_yf_symbol
+    from app.services.backtesting.replay import run_backtest
+    from app.models.market_analysis import MarketAnalysis
+
+    yahoo_symbol = get_yf_symbol(category, asset_id)
+    if not yahoo_symbol:
+        yahoo_symbol = asset_id.upper()
+
+    # Map user-facing period to yfinance period for pre-fetch
+    prefetch_period = "3y" if period in ("1y", "2y") else "5y"
+
+    end = date.today()
+    if period == "1y":
+        start = end - timedelta(days=365)
+    elif period == "2y":
+        start = end - timedelta(days=730)
+    else:
+        start = end - timedelta(days=365)
+
+    # Pre-load historical sentiment from market_analyses for the period
+    start_dt = datetime.combine(start, datetime.min.time()).replace(tzinfo=timezone.utc)
+    ma_result = await db.execute(
+        select(MarketAnalysis)
+        .where(MarketAnalysis.as_of >= start_dt)
+        .order_by(MarketAnalysis.as_of.asc())
+        .limit(500)
+    )
+    ma_rows = ma_result.scalars().all()
+
+    # Build list of (datetime, by_asset_sentiment) tuples
+    sentiment_history: list[tuple] = []
+    for ma in ma_rows:
+        payload = ma.payload or {}
+        by_asset = payload.get("by_asset_sentiment")
+        if by_asset and ma.as_of:
+            sentiment_history.append((ma.as_of, by_asset))
+
+    logger.info(
+        "[BACKTEST/quick] %s: %d sentiment snapshots loaded from market_analyses",
+        asset_id, len(sentiment_history)
+    )
+
+    def _run() -> dict:
+        with _backtest_lock:
+            return run_backtest(
+                start_date=start,
+                end_date=end,
+                symbols=[yahoo_symbol],
+                risk_tier=risk_tier,
+                min_confidence=35,  # permissive — we want sample size
+                period=prefetch_period,
+                sentiment_history=sentiment_history if sentiment_history else None,
+            )
+
+    loop = asyncio.get_event_loop()
+    try:
+        result = await loop.run_in_executor(None, _run)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Backtest failed: {e}")
+
+    metrics = result.get("metrics", {})
+    signals = result.get("signals", [])
+    total_days = result.get("total_days", 0)
+
+    # Direction-specific stats
+    by_dir = metrics.get("by_direction", {})
+    dir_stats = by_dir.get(direction, {})
+    other_dir = "short" if direction == "long" else "long"
+    other_stats = by_dir.get(other_dir, {})
+
+    win_rate = dir_stats.get("win_rate")
+    total_for_dir = dir_stats.get("total", 0)
+
+    # Plain language verdict
+    if total_for_dir < 5:
+        verdict = f"Not enough {direction.upper()} signals in this period to draw conclusions ({total_for_dir} found)."
+    else:
+        wr_pct = round((win_rate or 0) * 100, 1)
+        avg_pnl = metrics.get("avg_pnl_r") or 0
+        verdict = (
+            f"Over the last {period}, when the engine said {direction.upper()} on {asset_id}, "
+            f"{wr_pct}% of signals hit take-profit. "
+            f"Average trade returned {avg_pnl:+.2f}R."
+        )
+
+    direction_stats_out = {
+        direction: {
+            "total": dir_stats.get("total", 0),
+            "wins": dir_stats.get("wins", 0),
+            "win_rate": dir_stats.get("win_rate"),
+        },
+        other_dir: {
+            "total": other_stats.get("total", 0),
+            "wins": other_stats.get("wins", 0),
+            "win_rate": other_stats.get("win_rate"),
+        },
+    }
+
+    by_confidence_bucket = metrics.get("by_confidence_bucket", {})
+
+    # LLM post-analysis (non-blocking; returns None if LLM not configured)
+    llm_analysis: Optional[str] = None
+    try:
+        from app.services.research.llm import generate_backtest_insight
+        llm_analysis = await generate_backtest_insight(
+            asset_id=asset_id,
+            direction=direction,
+            risk_tier=risk_tier,
+            metrics=metrics,
+            direction_stats=direction_stats_out,
+            by_confidence_bucket=by_confidence_bucket,
+        )
+    except Exception as e:
+        logger.warning("[BACKTEST/quick] LLM insight failed: %s", e)
+
+    return {
+        "symbol": yahoo_symbol,
+        "asset_id": asset_id,
+        "direction": direction,
+        "risk_tier": risk_tier,
+        "period": period,
+        "test_days": total_days,
+        "total_signals": metrics.get("total_signals", len(signals)),
+        "sentiment_snapshots_used": len(sentiment_history),
+        "direction_stats": direction_stats_out,
+        "overall": {
+            "win_rate": metrics.get("win_rate"),
+            "avg_pnl_r": metrics.get("avg_pnl_r"),
+            "sharpe_ratio": metrics.get("sharpe_ratio"),
+            "max_drawdown_r": metrics.get("max_drawdown_r"),
+            "wins": metrics.get("wins"),
+            "losses": metrics.get("losses"),
+            "expired": metrics.get("expired"),
+        },
+        "by_confidence_bucket": by_confidence_bucket,
+        "verdict": verdict,
+        "llm_analysis": llm_analysis,
+        "disclaimer": DISCLAIMER,
+    }
 
 
 async def _run_backtest_background(run_id: str, body: BacktestRequest) -> None:

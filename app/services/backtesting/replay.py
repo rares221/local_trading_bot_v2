@@ -4,12 +4,13 @@ Historical replay engine for backtesting.
 For each trading day in [start_date, end_date]:
   1. Set backtest mode in technicals (cutoff = that day)
   2. For each symbol, build TechnicalSnapshot as of that day
-  3. Compute confidence score (technical-only — no live sentiment)
+  3. Compute confidence score (technicals + optional historical sentiment)
   4. If confidence >= min_confidence, record a signal (entry, SL, TP)
   5. After all signals: simulate outcome from future bars
 
-The replay is intentionally technical-only because historical sentiment is not stored.
-Pass by_asset_sentiment=None (neutral). This gives a clean signal quality baseline.
+If sentiment_history is provided (list of (datetime, by_asset_sentiment) tuples from
+market_analyses records), the closest past record is used per replay date to inject
+historical sentiment into the confidence computation.
 """
 from __future__ import annotations
 
@@ -52,6 +53,7 @@ def run_backtest(
     min_confidence: int = 40,
     period: str = "3y",
     progress_callback: Optional[Any] = None,
+    sentiment_history: Optional[list[tuple]] = None,
 ) -> dict[str, Any]:
     """
     Run full historical backtest.
@@ -64,6 +66,8 @@ def run_backtest(
         min_confidence: Minimum confidence score to record a signal.
         period: yfinance period string for pre-fetching ("2y", "3y", etc.).
         progress_callback: Optional callable(current_day, total_days) for progress tracking.
+        sentiment_history: Optional list of (datetime, by_asset_sentiment) tuples from
+            market_analyses records. If provided, the closest past record is used per day.
 
     Returns:
         Dict with 'signals', 'metrics', and summary fields.
@@ -90,6 +94,12 @@ def run_backtest(
 
     logger.info("[BACKTEST] %d trading days to replay", len(trading_days))
 
+    # Sort sentiment_history ascending by datetime for bisect lookups
+    _sent_hist: list[tuple] = []
+    if sentiment_history:
+        _sent_hist = sorted(sentiment_history, key=lambda t: t[0])
+        logger.info("[BACKTEST] Sentiment history: %d market_analyses records loaded", len(_sent_hist))
+
     signals: list[dict] = []
 
     # Step 3: For each day, build signals
@@ -104,9 +114,26 @@ def run_backtest(
         cutoff_ts = pd.Timestamp(sim_date)
         tech.set_backtest_mode(cutoff_ts)
 
+        # Find closest past sentiment snapshot
+        day_sentiment: Optional[dict] = None
+        if _sent_hist:
+            sim_dt = pd.Timestamp(sim_date, tz="UTC")
+            # Find last record with as_of <= sim_date
+            lo, hi = 0, len(_sent_hist) - 1
+            idx = -1
+            while lo <= hi:
+                mid = (lo + hi) // 2
+                if _sent_hist[mid][0] <= sim_dt:
+                    idx = mid
+                    lo = mid + 1
+                else:
+                    hi = mid - 1
+            if idx >= 0:
+                day_sentiment = _sent_hist[idx][1]
+
         for symbol in symbols:
             try:
-                sig = _build_signal(symbol, sim_date, risk_tier, min_confidence)
+                sig = _build_signal(symbol, sim_date, risk_tier, min_confidence, day_sentiment)
                 if sig:
                     signals.append(sig)
             except Exception as e:
@@ -144,6 +171,7 @@ def _build_signal(
     sim_date: date,
     risk_tier: str,
     min_confidence: int,
+    by_asset_sentiment: Optional[dict] = None,
 ) -> Optional[dict]:
     """
     Build a single signal for one symbol on one day.
@@ -161,14 +189,27 @@ def _build_signal(
         if len(available) < MIN_BARS_FOR_SIGNAL:
             return None
 
-    # Direction from technicals alone (no sentiment for backtesting)
+    # Extract per-symbol sentiment from historical snapshot (if available)
+    # by_asset_sentiment keys are asset tags (e.g. "AAPL", "Oil", "Gold")
+    # Try symbol as-is, then strip exchange suffix (e.g. "CL=F" → "CL")
+    hist_sentiment: Optional[float] = None
+    hist_count: int = 0
+    if by_asset_sentiment:
+        candidates = [symbol, symbol.split("=")[0], symbol.split("-")[0], symbol.split(".")[0]]
+        for cand in candidates:
+            entry = by_asset_sentiment.get(cand)
+            if entry:
+                hist_sentiment = entry.get("avg")
+                hist_count = entry.get("count", 0)
+                break
+
+    # Direction from technicals (sentiment nudges confidence, not direction)
     from app.services.technicals import determine_direction as _determine_direction
     direction = _determine_direction(None, snap)
 
-    # Confidence from technicals only (sentiment=None, count=0)
     confidence = compute_confidence(
-        sentiment_avg=None,
-        sentiment_count=0,
+        sentiment_avg=hist_sentiment,
+        sentiment_count=hist_count,
         snapshot=snap,
         direction=direction,
     )

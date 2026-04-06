@@ -60,7 +60,16 @@ def get_research_llm_config() -> dict[str, Any]:
             provider = "openai"
     model = (data.get("research_llm_model") or "").strip() or (settings.research_llm_model or "").strip()
     ollama_base_url = (data.get("ollama_base_url") or "").strip() or (settings.ollama_base_url or "http://localhost:11434").strip()
-    return {"research_llm_provider": provider, "research_llm_model": model, "ollama_base_url": ollama_base_url}
+    try:
+        thinking_budget = int(data.get("research_llm_thinking_budget", settings.research_llm_thinking_budget or 0))
+    except (TypeError, ValueError):
+        thinking_budget = 0
+    return {
+        "research_llm_provider": provider,
+        "research_llm_model": model,
+        "ollama_base_url": ollama_base_url,
+        "thinking_budget": max(0, thinking_budget),
+    }
 
 
 def set_research_llm_config(provider: str | None = None, model: str | None = None, ollama_base_url: str | None = None) -> dict[str, Any]:

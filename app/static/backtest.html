@@ -4,6 +4,11 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Backtesting — Trading Bot</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/common.css">
+  <script src="/static/js/icons.js"></script>
   <style>
     :root {
       --bg: #0f1117;
@@ -19,14 +24,6 @@
       --loss: #ff4d6d;
       --expired: #f4a261;
     }
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
-
-    nav { background: var(--surface); border-bottom: 1px solid var(--border); padding: 12px 24px; display: flex; align-items: center; gap: 24px; flex-wrap: wrap; }
-    nav a { color: var(--muted); text-decoration: none; font-size: 14px; }
-    nav a:hover, nav a.active { color: var(--text); }
-    .nav-brand { font-weight: 700; font-size: 16px; color: var(--accent); margin-right: 8px; }
-
     .container { max-width: 1200px; margin: 0 auto; padding: 24px; }
     h1 { font-size: 22px; font-weight: 700; margin-bottom: 4px; }
     .subtitle { color: var(--muted); font-size: 13px; margin-bottom: 24px; }
@@ -105,19 +102,33 @@
 </head>
 <body>
 
-<nav>
-  <span class="nav-brand">TradingBot</span>
-  <a href="/dashboard">Dashboard</a>
-  <a href="/recommendations">Recommendations</a>
-  <a href="/active-trades">Active Trades</a>
-  <a href="/journal">Journal</a>
-  <a href="/briefing">Briefing</a>
-  <a href="/backtest" class="active">Backtest</a>
+<nav class="nav">
+    <a href="/dashboard"><span data-icon="sliders-horizontal"></span> Configuration</a>
+    <a href="/recommendations"><span data-icon="list-checks"></span> Recommendations</a>
+    <a href="/trade-builder"><span data-icon="sliders-horizontal"></span> Trade builder</a>
+    <a href="/research"><span data-icon="search"></span> Research</a>
+    <a href="/analysis"><span data-icon="bar-chart-2"></span> Analysis</a>
+    <a href="/active-trades"><span data-icon="activity"></span> Active trades</a>
+    <a href="/backtest" class="active"><span data-icon="history"></span> Backtest</a>
+    <a href="/journal"><span data-icon="book-open"></span> Journal</a>
+    <a href="/briefing"><span data-icon="newspaper"></span> Briefing</a>
+    <a href="/calendar"><span data-icon="calendar"></span> Calendar</a>
 </nav>
 
 <div class="container">
   <h1>Backtesting</h1>
   <p class="subtitle">Historical replay of the recommendation engine — technical signals only (no live sentiment).</p>
+
+  <div style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.25);border-radius:9px;padding:14px 18px;margin-bottom:20px;font-size:13px;line-height:1.6;color:rgba(226,232,240,.8);">
+    <strong style="color:#a5b4fc;">ℹ What is this page for?</strong><br>
+    This is a <strong>strategy validation tool</strong> — it replays the recommendation engine on historical data to answer questions like:
+    <em>"Does a higher confidence score actually lead to more profitable trades?"</em> or
+    <em>"Does moderate vs aggressive risk tier perform better?"</em><br><br>
+    Runs on all 28 tracked symbols over a custom date range. It takes ~2–5 minutes to complete.<br>
+    <strong>For a quick analysis of a specific trade you have open</strong>, use the
+    <a href="/active-trades" style="color:#818cf8;text-decoration:underline;">Active Trades</a>
+    page — each card has a <strong>Backtest button</strong> that runs a focused analysis on that symbol.
+  </div>
 
   <div class="grid grid-2" style="margin-bottom:24px;">
     <!-- Left: Run form -->
