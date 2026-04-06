@@ -183,6 +183,73 @@
       padding: 8px 12px; background: rgba(255,255,255,.03);
       border-radius: 6px; border-left: 3px solid rgba(99,102,241,.4);
     }
+
+    /* ── Trade Setup card ── */
+    .rs-setup {
+      border-radius: var(--radius);
+      border: 1px solid rgba(99,102,241,.25);
+      background: rgba(99,102,241,.06);
+      padding: var(--space-2) var(--space-3);
+    }
+    .rs-setup-hd {
+      display: flex; align-items: center; gap: 10px; margin-bottom: 14px;
+    }
+    .rs-setup-icon {
+      width: 34px; height: 34px; border-radius: 8px; flex-shrink: 0;
+      background: rgba(99,102,241,.15); color: #6366f1;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .rs-setup-title { font-size: 13px; font-weight: 700; letter-spacing: .02em; text-transform: uppercase; color: #a5b4fc; }
+    .rs-setup-sub   { font-size: 11px; color: rgba(248,250,252,.35); margin-top: 1px; }
+
+    .rs-levels {
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 14px;
+    }
+    .rs-level {
+      background: rgba(0,0,0,.2); border-radius: 8px; padding: 12px 14px;
+      border: 1px solid rgba(255,255,255,.07);
+      display: flex; flex-direction: column; gap: 4px;
+    }
+    .rs-level-label {
+      font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em;
+      color: rgba(248,250,252,.35);
+    }
+    .rs-level-price {
+      font-size: 1.15rem; font-weight: 700; font-family: var(--font-mono);
+      font-variant-numeric: tabular-nums;
+    }
+    .rs-level--entry .rs-level-price { color: #f8fafc; }
+    .rs-level--sl    .rs-level-price { color: #f87171; }
+    .rs-level--tp    .rs-level-price { color: #34d399; }
+    .rs-level-pct {
+      font-size: 12px; font-family: var(--font-mono); font-variant-numeric: tabular-nums;
+    }
+    .rs-level--sl .rs-level-pct { color: rgba(248,113,113,.7); }
+    .rs-level--tp .rs-level-pct { color: rgba(52,211,153,.7); }
+    .rs-level--entry .rs-level-pct { color: rgba(248,250,252,.35); font-size: 11px; }
+
+    .rs-rr-bar {
+      display: flex; align-items: center; gap: 10px; margin-top: 4px;
+    }
+    .rs-rr-label { font-size: 12px; color: rgba(248,250,252,.45); white-space: nowrap; }
+    .rs-rr-track {
+      flex: 1; height: 6px; border-radius: 3px;
+      background: linear-gradient(to right, rgba(239,68,68,.4), rgba(52,211,153,.4));
+      position: relative; overflow: hidden;
+    }
+    .rs-rr-marker {
+      position: absolute; top: 0; bottom: 0; width: 2px; background: #f8fafc;
+      border-radius: 1px;
+    }
+    .rs-rr-value { font-size: 13px; font-weight: 700; font-family: var(--font-mono); white-space: nowrap; }
+    .rs-rr-good { color: #34d399; }
+    .rs-rr-bad  { color: #f87171; }
+    .rs-rr-ok   { color: #fcd34d; }
+
+    .rs-no-levels {
+      font-size: 13px; color: rgba(248,250,252,.4); font-style: italic;
+      padding: 4px 0;
+    }
   </style>
   <script>
     function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
@@ -232,6 +299,80 @@
       return { cls: 'neutral', iconKey: 'info', title: label, sub: '' };
     }
 
+    // ── Render trade setup card ──
+    function renderTradeSetup(ctx) {
+      const entry = ctx.buy_in_price != null ? parseFloat(ctx.buy_in_price) : null;
+      const sl    = ctx.stop_loss    != null ? parseFloat(ctx.stop_loss)    : null;
+      const tp    = ctx.take_profit  != null ? parseFloat(ctx.take_profit)  : null;
+      const dir   = (ctx.direction || 'long').toLowerCase();
+
+      function fmt(v) {
+        if (v == null) return '—';
+        return v >= 1000 ? '$' + v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                         : '$' + v.toFixed(2);
+      }
+      function pct(from, to) {
+        if (from == null || to == null || from === 0) return '';
+        const p = ((to - from) / from * 100);
+        return (p >= 0 ? '+' : '') + p.toFixed(2) + '%';
+      }
+
+      let levelsHtml = '';
+      if (entry != null) {
+        const slPct  = sl != null ? pct(entry, sl) : '—';
+        const tpPct  = tp != null ? pct(entry, tp) : '—';
+        const dirLabel = dir === 'short' ? 'Short entry' : 'Long entry';
+
+        levelsHtml = '<div class="rs-levels">' +
+          '<div class="rs-level rs-level--entry">' +
+            '<div class="rs-level-label">Entry</div>' +
+            '<div class="rs-level-price">' + fmt(entry) + '</div>' +
+            '<div class="rs-level-pct">' + esc(dirLabel) + '</div>' +
+          '</div>' +
+          '<div class="rs-level rs-level--sl">' +
+            '<div class="rs-level-label">Stop Loss</div>' +
+            '<div class="rs-level-price">' + (sl != null ? fmt(sl) : '<span style="color:rgba(248,250,252,.3)">—</span>') + '</div>' +
+            '<div class="rs-level-pct">' + esc(slPct) + '</div>' +
+          '</div>' +
+          '<div class="rs-level rs-level--tp">' +
+            '<div class="rs-level-label">Take Profit</div>' +
+            '<div class="rs-level-price">' + (tp != null ? fmt(tp) : '<span style="color:rgba(248,250,252,.3)">—</span>') + '</div>' +
+            '<div class="rs-level-pct">' + esc(tpPct) + '</div>' +
+          '</div>' +
+        '</div>';
+
+        // R:R bar
+        if (sl != null && tp != null && entry !== sl) {
+          const risk   = Math.abs(entry - sl);
+          const reward = Math.abs(tp - entry);
+          const rr     = reward / risk;
+          const rrStr  = rr.toFixed(2) + ':1';
+          const rrCls  = rr >= 2 ? 'rs-rr-good' : rr >= 1.5 ? 'rs-rr-ok' : 'rs-rr-bad';
+          // marker at 1/3 of bar = 1:1 breakeven; scale 0–3:1
+          const markerPct = Math.min(Math.max((1 / 3) * 100, 5), 95);
+          levelsHtml +=
+            '<div class="rs-rr-bar">' +
+              '<span class="rs-rr-label">Risk / Reward</span>' +
+              '<div class="rs-rr-track"><div class="rs-rr-marker" style="left:' + markerPct.toFixed(1) + '%"></div></div>' +
+              '<span class="rs-rr-value ' + rrCls + '">' + esc(rrStr) + '</span>' +
+            '</div>';
+        }
+      } else {
+        levelsHtml = '<p class="rs-no-levels">No price levels available — no prior recommendation found for this asset.</p>';
+      }
+
+      return '<div class="rs-setup">' +
+        '<div class="rs-setup-hd">' +
+          '<div class="rs-setup-icon">' + icon('crosshair', 16) + '</div>' +
+          '<div>' +
+            '<div class="rs-setup-title">Suggested Trade Levels</div>' +
+            '<div class="rs-setup-sub">Based on most recent recommendation for this asset</div>' +
+          '</div>' +
+        '</div>' +
+        levelsHtml +
+      '</div>';
+    }
+
     // ── Render summary ──
     function renderSummary(summaryText, ctx) {
       const sections = parseSections(summaryText);
@@ -278,7 +419,8 @@
 
       // Sections
       const sectionsEl = document.getElementById('result-sections');
-      sectionsEl.innerHTML = sections.map(function(s) {
+      const setupHtml = renderTradeSetup(ctx);
+      sectionsEl.innerHTML = setupHtml + sections.map(function(s) {
         const cfg = getSectionCfg(s.label);
         return '<div class="rs-section rs-section--' + cfg.cls + '">' +
           '<div class="rs-section-hd">' +

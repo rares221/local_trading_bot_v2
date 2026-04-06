@@ -66,6 +66,10 @@ async def build_research_context(
             ctx["risk_tier"] = rec.risk_tier
         ctx["volatility_notes"] = getattr(rec, "volatility_notes", None)
         ctx["confidence_score"] = getattr(rec, "confidence_score", None)
+        if rec.stop_loss:
+            ctx["stop_loss"] = float(rec.stop_loss)
+        if rec.take_profit:
+            ctx["take_profit"] = float(rec.take_profit)
 
     # Derive direction from sentiment if no recommendation exists
     if not ctx["direction"]:
