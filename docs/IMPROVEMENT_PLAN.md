@@ -95,7 +95,7 @@ Calibrare: Platt scaling pe trade-uri inchise
 
 ## Ce ramane de implementat — perspectiva trader
 
-### PRIORITATE 1 — Backtesting (foundation pentru tot restul)
+### ✅ PRIORITATE 1 — Backtesting (foundation pentru tot restul) — DONE 2026-04-06
 
 **De ce e problema:**
 Intreaga strategie e construita pe logica "suna bine". Nu stim daca win rate-ul real e 40% sau 60%. Fara backtest nu poti raspunde la nicio intrebare esentiala: functioneaza mai bine pe trend sau pe range? Cate false signals genereaza in risk_off? Cat de des sare SL-ul ATR-based vs unul mai larg? Fara aceste raspunsuri, orice "imbunatatire" adaugata e o schimbare oarba — poti sa faci sistemul mai rau crezand ca il faci mai bun.
