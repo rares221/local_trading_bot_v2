@@ -201,6 +201,9 @@
     }
     .rs-setup-title { font-size: 13px; font-weight: 700; letter-spacing: .02em; text-transform: uppercase; color: #a5b4fc; }
     .rs-setup-sub   { font-size: 11px; color: rgba(248,250,252,.35); margin-top: 1px; }
+    .rs-setup-source { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 4px; margin-left: 8px; }
+    .rs-setup-source--rec  { background: rgba(16,185,129,.12); color: #6ee7b7; }
+    .rs-setup-source--calc { background: rgba(99,102,241,.12); color: #a5b4fc; }
 
     .rs-levels {
       display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 14px;
@@ -301,10 +304,11 @@
 
     // ── Render trade setup card ──
     function renderTradeSetup(ctx) {
-      const entry = ctx.buy_in_price != null ? parseFloat(ctx.buy_in_price) : null;
-      const sl    = ctx.stop_loss    != null ? parseFloat(ctx.stop_loss)    : null;
-      const tp    = ctx.take_profit  != null ? parseFloat(ctx.take_profit)  : null;
-      const dir   = (ctx.direction || 'long').toLowerCase();
+      const entry  = ctx.buy_in_price != null ? parseFloat(ctx.buy_in_price) : null;
+      const sl     = ctx.stop_loss    != null ? parseFloat(ctx.stop_loss)    : null;
+      const tp     = ctx.take_profit  != null ? parseFloat(ctx.take_profit)  : null;
+      const dir    = (ctx.direction   || 'long').toLowerCase();
+      const source = ctx.levels_source || 'unavailable';
 
       function fmt(v) {
         if (v == null) return '—';
@@ -316,6 +320,8 @@
         const p = ((to - from) / from * 100);
         return (p >= 0 ? '+' : '') + p.toFixed(2) + '%';
       }
+
+      if (source === 'unavailable') return '';
 
       let levelsHtml = '';
       if (entry != null) {
@@ -357,16 +363,22 @@
               '<span class="rs-rr-value ' + rrCls + '">' + esc(rrStr) + '</span>' +
             '</div>';
         }
-      } else {
-        levelsHtml = '<p class="rs-no-levels">No price levels available — no prior recommendation found for this asset.</p>';
       }
+
+      const sourceBadge = source === 'recommendation'
+        ? '<span class="rs-setup-source rs-setup-source--rec">' + icon('check-circle', 10) + ' From recommendation</span>'
+        : '<span class="rs-setup-source rs-setup-source--calc">' + icon('cpu', 10) + ' ATR-calculated</span>';
+
+      const subText = source === 'recommendation'
+        ? 'Levels from the most recent recommendation for this asset'
+        : 'Estimated using ATR + volatility regime · not a guarantee';
 
       return '<div class="rs-setup">' +
         '<div class="rs-setup-hd">' +
           '<div class="rs-setup-icon">' + icon('crosshair', 16) + '</div>' +
           '<div>' +
-            '<div class="rs-setup-title">Suggested Trade Levels</div>' +
-            '<div class="rs-setup-sub">Based on most recent recommendation for this asset</div>' +
+            '<div class="rs-setup-title">Suggested Trade Levels' + sourceBadge + '</div>' +
+            '<div class="rs-setup-sub">' + esc(subText) + '</div>' +
           '</div>' +
         '</div>' +
         levelsHtml +

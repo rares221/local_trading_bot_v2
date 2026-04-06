@@ -76,6 +76,61 @@ async def build_research_context(
         sent = ctx.get("sentiment_avg")
         ctx["direction"] = "short" if (sent is not None and sent < -0.05) else "long"
 
+    # If SL/TP are missing, calculate them using ATR + quant workflow
+    if not ctx.get("stop_loss") or not ctx.get("take_profit"):
+        risk_tier = ctx.get("risk_tier") or "moderate"
+        direction = ctx.get("direction") or "long"
+        # get_yf_symbol only works for assets in the universe; fall back to direct ticker
+        symbol = get_yf_symbol(category, asset_id)
+        if not symbol and category.lower() in ("stocks", "etfs", "etf", "stock"):
+            symbol = asset_id.upper()
+        calculated = False
+        if symbol:
+            try:
+                from app.services.recommendations.engine import (
+                    compute_sl_tp_for_symbol as _calc_symbol,
+                )
+                result = _calc_symbol(symbol, risk_tier, direction)
+                if result:
+                    live_price, sl, tp, snap = result
+                    ctx["stop_loss"] = sl
+                    ctx["take_profit"] = tp
+                    # Use live price as entry if we didn't have one
+                    if ctx["buy_in_price"] is None:
+                        ctx["buy_in_price"] = live_price
+                    ctx["levels_source"] = "calculated"
+                    ctx["atr"] = snap.atr if snap and snap.atr else None
+                    calculated = True
+            except Exception:
+                pass
+        # Fallback: fetch live price directly if still missing
+        if not calculated and not ctx.get("buy_in_price") and symbol:
+            try:
+                import yfinance as yf
+                fi = yf.Ticker(symbol).fast_info
+                lp = getattr(fi, "last_price", None) or getattr(fi, "lastPrice", None)
+                if lp:
+                    ctx["buy_in_price"] = float(lp)
+            except Exception:
+                pass
+
+        if not calculated and ctx.get("buy_in_price"):
+            try:
+                from app.services.technicals import compute_atr_levels
+                sl, tp = compute_atr_levels(
+                    float(ctx["buy_in_price"]), risk_tier, direction=direction
+                )
+                ctx["stop_loss"] = sl
+                ctx["take_profit"] = tp
+                ctx["levels_source"] = "calculated"
+                calculated = True
+            except Exception:
+                pass
+        if not calculated:
+            ctx["levels_source"] = "unavailable"
+    else:
+        ctx["levels_source"] = "recommendation"
+
     # Up to 2 recent feed headlines that mention this asset (asset_id in asset_tags)
     q = select(FeedItem).order_by(FeedItem.fetched_at.desc()).limit(200)
     result = await session.execute(q)
@@ -86,6 +141,8 @@ async def build_research_context(
                 break
     # Optional: yfinance .info for sector, industry, market cap (stocks/ETFs; skip on failure)
     symbol = get_yf_symbol(category, asset_id)
+    if not symbol and category.lower() in ("stocks", "etfs", "etf", "stock"):
+        symbol = asset_id.upper()
     if symbol:
         try:
             import yfinance as yf
