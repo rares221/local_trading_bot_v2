@@ -49,14 +49,18 @@
 
 /* Reset */
 *, *::before, *::after { box-sizing: border-box; }
+
+/* Dark base on html — body is transparent so the canvas layer shows through */
+html {
+  background-color: var(--background);
+  background-image: radial-gradient(circle at 1px 1px, rgba(99,102,241,.032) 1px, transparent 0);
+  background-size: 28px 28px;
+  background-attachment: fixed;
+}
+
 body {
   margin: 0; min-height: 100vh;
-  background-color: var(--background);
-  background-image:
-    radial-gradient(ellipse 90% 50% at 50% -10%, rgba(99,102,241,.07) 0%, transparent 65%),
-    radial-gradient(circle at 1px 1px, rgba(99,102,241,.035) 1px, transparent 0);
-  background-size: auto, 28px 28px;
-  background-attachment: fixed, fixed;
+  background: transparent;
   color: var(--foreground);
   font-family: var(--font-sans); font-size: 15px; line-height: 1.6;
   -webkit-font-smoothing: antialiased;

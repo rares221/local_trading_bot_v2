@@ -216,3 +216,11 @@
     hydrateIcons();
   }
 })();
+
+// Auto-load animated background (lazy, non-blocking)
+(function () {
+  var s = document.createElement('script');
+  s.src = '/static/js/bg-animation.js';
+  s.async = true;
+  document.head.appendChild(s);
+})();
