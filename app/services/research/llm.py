@@ -521,19 +521,34 @@ async def generate_backtest_insight(
     )
 
     raw: str | None = None
+    import logging as _log
+    _logger = _log.getLogger(__name__)
+
+    # Anthropic with extended thinking needs higher max_tokens
+    thinking_budget = int(cfg.get("thinking_budget") or 0)
+    anthropic_max_tokens = (thinking_budget + 1024) if (provider_id == "anthropic" and thinking_budget > 0) else 1200
+
     try:
         if provider_id == "openai":
-            raw = await _call_openai(model, _BACKTEST_INSIGHT_SYSTEM, user_content, api_key or "", max_tokens=400)
+            raw = await _call_openai(model, _BACKTEST_INSIGHT_SYSTEM, user_content, api_key or "", max_tokens=1200)
         elif provider_id == "anthropic":
-            raw = await _call_anthropic(model, _BACKTEST_INSIGHT_SYSTEM, user_content, api_key or "", max_tokens=400)
+            raw = await _call_anthropic(
+                model, _BACKTEST_INSIGHT_SYSTEM, user_content, api_key or "",
+                max_tokens=anthropic_max_tokens, thinking_budget=thinking_budget,
+            )
         elif provider_id == "ollama":
             combined = f"{_BACKTEST_INSIGHT_SYSTEM.strip()}\n\n---\n\n{user_content.strip()}"
-            raw = await _call_ollama(model, "", combined, ollama_base_url, num_predict=400, timeout=120.0)
+            raw = await _call_ollama(model, "", combined, ollama_base_url, num_predict=600, timeout=120.0)
         elif provider_id == "openrouter":
-            raw = await _call_openrouter(model, _BACKTEST_INSIGHT_SYSTEM, user_content, api_key or "", max_tokens=400)
+            raw = await _call_openrouter(model, _BACKTEST_INSIGHT_SYSTEM, user_content, api_key or "", max_tokens=1200)
+        else:
+            return None
     except Exception as exc:
-        import logging
-        logging.getLogger(__name__).warning("Backtest insight LLM call failed (%s/%s): %s", provider_id, model, exc)
+        _logger.warning("Backtest insight LLM call failed (%s/%s): %s", provider_id, model, exc)
         return None
 
-    return _parse_backtest_insight_json(raw)
+    _logger.debug("Backtest insight raw response (%s): %r", provider_id, (raw or "")[:300])
+    parsed = _parse_backtest_insight_json(raw)
+    if parsed is None:
+        _logger.warning("Backtest insight JSON parse failed for %s. Raw: %r", asset_id, (raw or "")[:200])
+    return parsed

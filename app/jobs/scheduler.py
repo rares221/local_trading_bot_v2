@@ -386,14 +386,19 @@ async def job_update_active_trades() -> None:
             else:
                 trade.signal_flip_count = max(flip_count - 1, 0)
 
+            # SL trails (trailing stop); TP stays fixed at the per-leg strategy target.
+            # Overwriting suggested_tp with ATR from current price would make all legs
+            # of a multi-leg strategy look identical (same ATR, same price, same risk tier).
+            # The TP is a fixed exit target chosen at trade creation — don't override it.
+            leg_tp = trade.current_tp  # per-leg strategy TP (set at creation, never changed)
             trade.suggested_sl = sl
-            trade.suggested_tp = tp
+            trade.suggested_tp = leg_tp  # keeps per-leg TP; no misleading arrow in UI
             trade.suggested_at = now
             trade.last_updated = now
             level = ActiveTradeLevel(
                 active_trade_id=trade.id,
                 sl=sl,
-                tp=tp,
+                tp=leg_tp,
                 created_at=now,
                 source=f"scheduled_update_{phase}",
             )

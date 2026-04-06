@@ -720,10 +720,13 @@
         return (isLong ? sug >= orig : sug <= orig) ? 'level-suggested--up' : 'level-suggested--down';
       }
 
-      /* Range bar: shows where entry sits between SL and TP */
+      /* Range bar: shows where entry sits between SL and TP.
+         SL uses the trailing suggested value if available; TP always uses the
+         per-leg strategy target (origTP) — never the ATR-based suggestion which
+         would be identical across all legs and wrong. */
       function rangeBar() {
         const sl = sugSL || origSL;
-        const tp = sugTP || origTP;
+        const tp = origTP;           // always use the fixed per-leg strategy TP
         if (!sl || !tp || !entry) return '';
         const range = tp - sl;
         if (range <= 0) return '';
@@ -834,7 +837,7 @@
         h += `
           <div class="level-cell cur-cell" id="cur-${idx}"
                data-sl="${sugSL || origSL || ''}"
-               data-tp="${sugTP || origTP || ''}"
+               data-tp="${origTP || ''}"
                data-is-long="${(t.direction || 'long') !== 'short' ? '1' : '0'}">
             <div class="cur-cell-body">
               <span class="level-label"><span class="cur-price-live"><span class="cur-price-dot"></span> Current Price</span></span>
