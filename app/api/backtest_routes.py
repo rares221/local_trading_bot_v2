@@ -232,14 +232,12 @@ async def quick_backtest(
     category: str = "stocks",
     direction: str = "long",
     risk_tier: str = "moderate",
-    period: str = "1y",
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """
-    Quick single-symbol backtest for an active trade card.
-    Runs synchronously in a thread pool (~10-20s). Returns metrics filtered
-    by the specified direction so the user sees relevant stats for their trade.
-    Includes historical sentiment from market_analyses and LLM interpretation.
+    Quick 14-day-outcome backtest over the last 90 days for an active trade card.
+    Uses recent market conditions and historical sentiment.
+    Includes the current engine signal for today and an LLM 14-day forward prediction.
     """
     from app.services.recommendations.engine import get_yf_symbol
     from app.services.backtesting.replay import run_backtest
@@ -249,28 +247,23 @@ async def quick_backtest(
     if not yahoo_symbol:
         yahoo_symbol = asset_id.upper()
 
-    # Map user-facing period to yfinance period for pre-fetch
-    prefetch_period = "3y" if period in ("1y", "2y") else "5y"
-
+    # Signal window: last 90 days (recent conditions, relevant sample)
+    # Pre-fetch: 2y (indicators need 100+ bars; 90d window is just the replay range)
     end = date.today()
-    if period == "1y":
-        start = end - timedelta(days=365)
-    elif period == "2y":
-        start = end - timedelta(days=730)
-    else:
-        start = end - timedelta(days=365)
+    start = end - timedelta(days=90)
+    prefetch_period = "2y"
+    max_outcome_bars = 14  # 14 trading days = ~3 calendar weeks
 
-    # Pre-load historical sentiment from market_analyses for the period
+    # Load historical sentiment snapshots for the last 90 days
     start_dt = datetime.combine(start, datetime.min.time()).replace(tzinfo=timezone.utc)
     ma_result = await db.execute(
         select(MarketAnalysis)
         .where(MarketAnalysis.as_of >= start_dt)
         .order_by(MarketAnalysis.as_of.asc())
-        .limit(500)
+        .limit(200)
     )
     ma_rows = ma_result.scalars().all()
 
-    # Build list of (datetime, by_asset_sentiment) tuples
     sentiment_history: list[tuple] = []
     for ma in ma_rows:
         payload = ma.payload or {}
@@ -278,8 +271,13 @@ async def quick_backtest(
         if by_asset and ma.as_of:
             sentiment_history.append((ma.as_of, by_asset))
 
+    # Load LATEST sentiment snapshot for the current signal analysis
+    latest_by_asset: dict = {}
+    if sentiment_history:
+        latest_by_asset = sentiment_history[-1][1]
+
     logger.info(
-        "[BACKTEST/quick] %s: %d sentiment snapshots loaded from market_analyses",
+        "[BACKTEST/quick] %s: 90-day window, 14-bar outcomes, %d sentiment snapshots",
         asset_id, len(sentiment_history)
     )
 
@@ -290,9 +288,10 @@ async def quick_backtest(
                 end_date=end,
                 symbols=[yahoo_symbol],
                 risk_tier=risk_tier,
-                min_confidence=35,  # permissive — we want sample size
+                min_confidence=30,  # permissive — short window, want sample size
                 period=prefetch_period,
                 sentiment_history=sentiment_history if sentiment_history else None,
+                max_outcome_bars=max_outcome_bars,
             )
 
     loop = asyncio.get_event_loop()
@@ -303,7 +302,6 @@ async def quick_backtest(
 
     metrics = result.get("metrics", {})
     signals = result.get("signals", [])
-    total_days = result.get("total_days", 0)
 
     # Direction-specific stats
     by_dir = metrics.get("by_direction", {})
@@ -313,18 +311,6 @@ async def quick_backtest(
 
     win_rate = dir_stats.get("win_rate")
     total_for_dir = dir_stats.get("total", 0)
-
-    # Plain language verdict
-    if total_for_dir < 5:
-        verdict = f"Not enough {direction.upper()} signals in this period to draw conclusions ({total_for_dir} found)."
-    else:
-        wr_pct = round((win_rate or 0) * 100, 1)
-        avg_pnl = metrics.get("avg_pnl_r") or 0
-        verdict = (
-            f"Over the last {period}, when the engine said {direction.upper()} on {asset_id}, "
-            f"{wr_pct}% of signals hit take-profit. "
-            f"Average trade returned {avg_pnl:+.2f}R."
-        )
 
     direction_stats_out = {
         direction: {
@@ -341,8 +327,30 @@ async def quick_backtest(
 
     by_confidence_bucket = metrics.get("by_confidence_bucket", {})
 
-    # LLM post-analysis (non-blocking; returns None if LLM not configured)
-    llm_analysis: Optional[str] = None
+    # Compute TODAY's engine signal for this asset (current conditions)
+    current_signal: Optional[dict] = None
+    try:
+        current_signal = await loop.run_in_executor(None, lambda: _compute_current_signal(yahoo_symbol, risk_tier, latest_by_asset))
+    except Exception as e:
+        logger.warning("[BACKTEST/quick] Current signal computation failed: %s", e)
+
+    # Plain-language verdict (90-day context, 14-day outcomes)
+    if total_for_dir < 3:
+        verdict = (
+            f"Too few {direction.upper()} signals in the last 90 days ({total_for_dir} found) "
+            f"to draw reliable conclusions for a 14-day trade horizon."
+        )
+    else:
+        wr_pct = round((win_rate or 0) * 100, 1)
+        avg_pnl = metrics.get("avg_pnl_r") or 0
+        verdict = (
+            f"In the last 90 days, {direction.upper()} signals on {asset_id} hit target "
+            f"{wr_pct}% of the time within 14 trading days. "
+            f"Average outcome: {avg_pnl:+.2f}R per trade."
+        )
+
+    # LLM 14-day forward prediction
+    llm_analysis: Optional[dict] = None
     try:
         from app.services.research.llm import generate_backtest_insight
         llm_analysis = await generate_backtest_insight(
@@ -352,6 +360,8 @@ async def quick_backtest(
             metrics=metrics,
             direction_stats=direction_stats_out,
             by_confidence_bucket=by_confidence_bucket,
+            current_signal=current_signal,
+            horizon_days=14,
         )
     except Exception as e:
         logger.warning("[BACKTEST/quick] LLM insight failed: %s", e)
@@ -361,10 +371,11 @@ async def quick_backtest(
         "asset_id": asset_id,
         "direction": direction,
         "risk_tier": risk_tier,
-        "period": period,
-        "test_days": total_days,
+        "window_days": 90,
+        "outcome_bars": max_outcome_bars,
         "total_signals": metrics.get("total_signals", len(signals)),
         "sentiment_snapshots_used": len(sentiment_history),
+        "current_signal": current_signal,
         "direction_stats": direction_stats_out,
         "overall": {
             "win_rate": metrics.get("win_rate"),
@@ -379,6 +390,59 @@ async def quick_backtest(
         "verdict": verdict,
         "llm_analysis": llm_analysis,
         "disclaimer": DISCLAIMER,
+    }
+
+
+def _compute_current_signal(symbol: str, risk_tier: str, by_asset_sentiment: dict) -> Optional[dict]:
+    """
+    Compute today's engine signal for a symbol using current OHLCV + optional sentiment.
+    Returns a signal dict with confidence, direction, SL, TP, or None if no data.
+    """
+    from app.services.technicals import (
+        build_snapshot, compute_atr_levels, compute_confidence,
+        calc_risk_reward, determine_direction,
+    )
+    import app.services.technicals as tech
+
+    # Use current data (no backtest cutoff)
+    tech.clear_backtest_mode()
+    snap = build_snapshot(symbol)
+    if snap is None or snap.price <= 0:
+        return None
+
+    # Extract sentiment for this symbol
+    hist_sentiment: Optional[float] = None
+    hist_count: int = 0
+    if by_asset_sentiment:
+        candidates = [symbol, symbol.split("=")[0], symbol.split("-")[0], symbol.split(".")[0]]
+        for cand in candidates:
+            entry = by_asset_sentiment.get(cand)
+            if entry:
+                hist_sentiment = entry.get("avg")
+                hist_count = entry.get("count", 0)
+                break
+
+    direction = determine_direction(None, snap)
+    confidence = compute_confidence(
+        sentiment_avg=hist_sentiment,
+        sentiment_count=hist_count,
+        snapshot=snap,
+        direction=direction,
+    )
+    sl, tp = compute_atr_levels(snap.price, risk_tier, snapshot=snap, direction=direction)
+    rr = calc_risk_reward(snap.price, sl, tp)
+
+    return {
+        "direction": direction,
+        "confidence": confidence,
+        "price": round(snap.price, 4),
+        "stop_loss": round(sl, 4),
+        "take_profit": round(tp, 4),
+        "risk_reward": round(rr, 3) if rr else None,
+        "volatility_regime": snap.volatility_regime,
+        "trend_bias": snap.trend_bias,
+        "sentiment_avg": round(hist_sentiment, 4) if hist_sentiment is not None else None,
+        "sentiment_count": hist_count,
     }
 
 

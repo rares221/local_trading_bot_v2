@@ -54,6 +54,7 @@ def run_backtest(
     period: str = "3y",
     progress_callback: Optional[Any] = None,
     sentiment_history: Optional[list[tuple]] = None,
+    max_outcome_bars: int = OUTCOME_MAX_BARS,
 ) -> dict[str, Any]:
     """
     Run full historical backtest.
@@ -68,6 +69,7 @@ def run_backtest(
         progress_callback: Optional callable(current_day, total_days) for progress tracking.
         sentiment_history: Optional list of (datetime, by_asset_sentiment) tuples from
             market_analyses records. If provided, the closest past record is used per day.
+        max_outcome_bars: Maximum trading bars to hold a trade before expiry (default 30).
 
     Returns:
         Dict with 'signals', 'metrics', and summary fields.
@@ -143,9 +145,9 @@ def run_backtest(
     tech.clear_backtest_mode()
 
     # Step 5: Simulate outcomes using future bars from full OHLCV
-    logger.info("[BACKTEST] Simulating outcomes for %d signals", len(signals))
+    logger.info("[BACKTEST] Simulating outcomes for %d signals (max %d bars)", len(signals), max_outcome_bars)
     for sig in signals:
-        _simulate_signal_outcome(sig, ohlcv_data)
+        _simulate_signal_outcome(sig, ohlcv_data, max_outcome_bars)
 
     # Step 6: Compute aggregate metrics
     metrics = compute_metrics(signals)
@@ -247,11 +249,11 @@ def _build_signal(
     }
 
 
-def _simulate_signal_outcome(sig: dict, ohlcv_data: dict[str, pd.DataFrame]) -> None:
+def _simulate_signal_outcome(sig: dict, ohlcv_data: dict[str, pd.DataFrame], max_bars: int = OUTCOME_MAX_BARS) -> None:
     """Simulate outcome in-place on the signal dict."""
     symbol = sig["symbol"]
     entry_date = date.fromisoformat(sig["entry_date"])
-    future = get_future_bars(symbol, entry_date, OUTCOME_MAX_BARS, ohlcv_data)
+    future = get_future_bars(symbol, entry_date, max_bars, ohlcv_data)
 
     if future is None:
         sig["outcome"] = "expired"
@@ -267,7 +269,7 @@ def _simulate_signal_outcome(sig: dict, ohlcv_data: dict[str, pd.DataFrame]) -> 
         take_profit=sig["take_profit"],
         direction=sig["direction"],
         future_bars=future,
-        max_bars=OUTCOME_MAX_BARS,
+        max_bars=max_bars,
     )
 
     sig["outcome"] = result.outcome

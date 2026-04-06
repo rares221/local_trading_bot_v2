@@ -403,11 +403,42 @@ async def generate_strategy_explanation(user_message: str) -> str | None:
 
 
 _BACKTEST_INSIGHT_SYSTEM = (
-    "You are a quantitative trading analyst reviewing backtesting results for a systematic trading strategy. "
-    "In 3–5 sentences only, interpret the results: comment on signal quality, whether the win rate is acceptable, "
-    "any confidence-bucket patterns worth noting, and one concrete tuning recommendation. "
-    "Be specific and data-driven. No disclaimers. No generic statements."
+    "You are a quantitative trading analyst reviewing short-term backtesting results and making a forward-looking prediction. "
+    "Return ONLY valid JSON with this exact structure — no markdown, no extra text:\n"
+    "{\n"
+    '  "grade": "A"|"B"|"C"|"D"|"F",\n'
+    '  "grade_reason": "one short sentence explaining the grade",\n'
+    '  "key_insights": ["insight 1", "insight 2", "insight 3"],\n'
+    '  "recommendation": "one concrete actionable recommendation for the next 14 days"\n'
+    "}\n\n"
+    "Grade rubric: A = win rate ≥55% AND positive avg P&L AND sharpe >1; "
+    "B = win rate 45-54% OR solid avg P&L; C = win rate 35-44%; D = win rate 25-34%; F = below 25% or losing avg P&L.\n"
+    "key_insights: exactly 3 bullet strings — one about recent signal quality (last 90 days), "
+    "one about risk metrics (drawdown/sharpe), one about what TODAY's signal and current conditions imply for the next 14 days.\n"
+    "The third insight MUST reference the current signal confidence and sentiment if provided. "
+    "Write for a mixed audience: plain enough for a beginner, precise enough for a pro trader. No disclaimers."
 )
+
+
+def _parse_backtest_insight_json(raw: str | None) -> dict | None:
+    """Extract and parse JSON from LLM response, tolerating markdown fences."""
+    import json, re
+    if not raw:
+        return None
+    # Strip markdown code fences if present
+    cleaned = re.sub(r"```(?:json)?", "", raw).strip()
+    # Find first { ... } block
+    m = re.search(r"\{.*\}", cleaned, re.DOTALL)
+    if not m:
+        return None
+    try:
+        data = json.loads(m.group(0))
+        # Validate required fields
+        if all(k in data for k in ("grade", "grade_reason", "key_insights", "recommendation")):
+            return data
+    except (json.JSONDecodeError, ValueError):
+        pass
+    return None
 
 
 async def generate_backtest_insight(
@@ -417,10 +448,13 @@ async def generate_backtest_insight(
     metrics: dict,
     direction_stats: dict,
     by_confidence_bucket: dict,
-) -> str | None:
+    current_signal: dict | None = None,
+    horizon_days: int = 14,
+) -> dict | None:
     """
-    Post-backtest LLM interpretation for the active trade modal.
-    Returns 3–5 sentences of analyst commentary, or None if LLM unavailable.
+    Post-backtest LLM interpretation with 14-day forward prediction.
+    Returns a structured dict: {grade, grade_reason, key_insights[], recommendation}
+    or None if LLM unavailable or response cannot be parsed.
     """
     from app.core.config import settings
     from app.core.preferences import get_research_llm_config
@@ -457,31 +491,49 @@ async def generate_backtest_insight(
         n = bd.get("total", 0)
         bucket_lines.append(f"  {bucket}: {_pct(wr)} win rate ({n} trades)")
 
+    # Current signal section
+    cs_lines = ""
+    if current_signal:
+        cs = current_signal
+        cs_lines = (
+            f"\n--- TODAY's engine signal (current conditions) ---\n"
+            f"Direction: {cs.get('direction','?').upper()} | Confidence: {cs.get('confidence','?')} | "
+            f"Risk/Reward: {cs.get('risk_reward','N/A')}x\n"
+            f"Price: {cs.get('price','?')} | SL: {cs.get('stop_loss','?')} | TP: {cs.get('take_profit','?')}\n"
+            f"Trend bias: {cs.get('trend_bias','?')} | Volatility: {cs.get('volatility_regime','?')}\n"
+            f"Sentiment avg (recent): {cs.get('sentiment_avg','N/A')} ({cs.get('sentiment_count',0)} articles)\n"
+        )
+
     user_content = (
         f"Asset: {asset_id} | Direction analysed: {direction.upper()} | Risk tier: {risk_tier}\n"
-        f"\n--- {direction.upper()} direction ---\n"
+        f"Backtest window: last 90 days | Outcome horizon: {horizon_days} trading days\n"
+        f"\n--- {direction.upper()} direction (last 90 days) ---\n"
         f"Signals: {dir_s.get('total', 0)} | Wins: {dir_s.get('wins', 0)} | Win rate: {_pct(dir_s.get('win_rate'))}\n"
-        f"\n--- {other_dir.upper()} direction ---\n"
+        f"\n--- {other_dir.upper()} direction (last 90 days) ---\n"
         f"Signals: {other_s.get('total', 0)} | Wins: {other_s.get('wins', 0)} | Win rate: {_pct(other_s.get('win_rate'))}\n"
-        f"\n--- Overall ---\n"
+        f"\n--- Overall (last 90 days) ---\n"
         f"Win rate: {_pct(metrics.get('win_rate'))} | Avg P&L: {metrics.get('avg_pnl_r', 'N/A')}R\n"
         f"Sharpe: {metrics.get('sharpe_ratio', 'N/A')} | Max drawdown: {metrics.get('max_drawdown_r', 'N/A')}R\n"
         f"Wins: {metrics.get('wins', 0)} | Losses: {metrics.get('losses', 0)} | Expired: {metrics.get('expired', 0)}\n"
         f"\n--- Win rate by confidence bucket ---\n"
         + ("\n".join(bucket_lines) if bucket_lines else "  No bucket data")
+        + cs_lines
     )
 
+    raw: str | None = None
     try:
         if provider_id == "openai":
-            return await _call_openai(model, _BACKTEST_INSIGHT_SYSTEM, user_content, api_key or "", max_tokens=250)
-        if provider_id == "anthropic":
-            return await _call_anthropic(model, _BACKTEST_INSIGHT_SYSTEM, user_content, api_key or "", max_tokens=250)
-        if provider_id == "ollama":
+            raw = await _call_openai(model, _BACKTEST_INSIGHT_SYSTEM, user_content, api_key or "", max_tokens=400)
+        elif provider_id == "anthropic":
+            raw = await _call_anthropic(model, _BACKTEST_INSIGHT_SYSTEM, user_content, api_key or "", max_tokens=400)
+        elif provider_id == "ollama":
             combined = f"{_BACKTEST_INSIGHT_SYSTEM.strip()}\n\n---\n\n{user_content.strip()}"
-            return await _call_ollama(model, "", combined, ollama_base_url, num_predict=250, timeout=120.0)
-        if provider_id == "openrouter":
-            return await _call_openrouter(model, _BACKTEST_INSIGHT_SYSTEM, user_content, api_key or "", max_tokens=250)
+            raw = await _call_ollama(model, "", combined, ollama_base_url, num_predict=400, timeout=120.0)
+        elif provider_id == "openrouter":
+            raw = await _call_openrouter(model, _BACKTEST_INSIGHT_SYSTEM, user_content, api_key or "", max_tokens=400)
     except Exception as exc:
         import logging
         logging.getLogger(__name__).warning("Backtest insight LLM call failed (%s/%s): %s", provider_id, model, exc)
-    return None
+        return None
+
+    return _parse_backtest_insight_json(raw)
