@@ -40,9 +40,9 @@
     .trade-header-badges { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
     .badge-sep { width: 1px; height: 16px; background: rgba(255,255,255,.12); flex-shrink: 0; }
 
-    /* ── Levels 3-column grid ── */
+    /* ── Levels 4-column grid ── */
     .trade-levels {
-      display: grid; grid-template-columns: 1fr 1fr 1fr;
+      display: grid; grid-template-columns: 1fr 1fr 1fr 1fr;
       border-bottom: 1px solid rgba(255,255,255,.07);
     }
     .level-cell {
@@ -175,9 +175,37 @@
     /* Dot stroke adapts to card background */
     .history-chart-wrap svg circle { stroke: var(--card); }
 
-    @media (max-width: 640px) {
+    /* ── Live price cell ── */
+    .cur-price-live {
+      display: inline-flex; align-items: center; gap: 5px;
+    }
+    .cur-price-dot {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: #10b981;
+      box-shadow: 0 0 6px #10b981;
+      animation: pulse-dot 2s ease-in-out infinite;
+      flex-shrink: 0;
+    }
+    @keyframes pulse-dot {
+      0%, 100% { opacity: 1; } 50% { opacity: .35; }
+    }
+    .at-price-ts {
+      font-size: 10px; color: rgba(248,250,252,.25);
+      margin-left: auto;
+    }
+    /* Current price cell layout */
+    .cur-cell { flex-direction: row !important; align-items: center !important; gap: 10px !important; }
+    .cur-cell-body { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 0; }
+    .cur-mini-track { flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
+
+    @media (max-width: 768px) {
+      .trade-levels { grid-template-columns: 1fr 1fr; }
+      .level-cell:nth-child(2) { border-right: none; }
+      .level-cell:nth-child(3) { border-top: 1px solid rgba(255,255,255,.07); }
+    }
+    @media (max-width: 480px) {
       .trade-levels { grid-template-columns: 1fr; }
-      .level-cell { border-right: none; border-bottom: 1px solid var(--border); }
+      .level-cell { border-right: none; border-bottom: 1px solid rgba(255,255,255,.07); }
       .level-cell:last-child { border-bottom: none; }
     }
 
@@ -270,6 +298,7 @@
           <span class="at-stat-value" id="at-stat-danger">—</span>
           <span class="at-stat-label">Danger</span>
         </div>
+        <span class="at-price-ts" id="at-price-ts"></span>
       </div>
     </div>
 
@@ -512,7 +541,7 @@
       const hasSugTP = sugTP && fmtNum(sugTP) !== fmtNum(origTP);
 
       /* ── Assemble HTML ── */
-      let h = `<div class="trade-card ${cardCls}">`;
+      let h = `<div class="trade-card ${cardCls}" data-asset="${esc(t.asset_id||'')}" data-entry="${entry||''}" data-direction="${esc(t.direction||'long')}">`;
 
       /* Header */
       h += `
@@ -574,6 +603,24 @@
           }
           <span class="level-hint" style="color:#10b981;">${pctFrom(hasSugTP ? sugTP : origTP)} from entry</span>
         </div>`;
+
+      /* Current Price (live — populated by pollPrices) */
+      if (!isClosed) {
+        h += `
+          <div class="level-cell cur-cell" id="cur-${idx}"
+               data-sl="${sugSL || origSL || ''}"
+               data-tp="${sugTP || origTP || ''}"
+               data-is-long="${(t.direction || 'long') !== 'short' ? '1' : '0'}">
+            <div class="cur-cell-body">
+              <span class="level-label"><span class="cur-price-live"><span class="cur-price-dot"></span> Current Price</span></span>
+              <span class="level-main cur-price-val" style="color:rgba(248,250,252,.35);">—</span>
+              <span class="level-hint cur-price-pct" style="color:rgba(248,250,252,.25);">fetching…</span>
+            </div>
+            <div class="cur-mini-track" id="trk-${idx}"></div>
+          </div>`;
+      } else {
+        h += `<div class="level-cell"></div>`; /* keep 4-column grid intact */
+      }
 
       h += `</div>`;
 
@@ -709,8 +756,110 @@
       btn.disabled = false; document.getElementById('at-btn-label').textContent = 'Update & refresh';
     }
 
-    document.getElementById('refresh-btn').addEventListener('click', () => load(true));
-    load(false);
+    // ── Real price sparkline SVG ──────────────────────────────────────────────
+    function buildSparklineSVG(prices) {
+      if (!prices || prices.length < 2) return '';
+      const W = 100, H = 46, pad = 3;
+      const min = Math.min(...prices), max = Math.max(...prices);
+      const range = max - min || 1;
+      const n = prices.length;
+
+      function toX(i) { return pad + (i / (n - 1)) * (W - pad * 2); }
+      function toY(v)  { return H - pad - ((v - min) / range) * (H - pad * 2); }
+
+      const up = prices[n - 1] >= prices[0];
+      const lineColor = up ? '#34d399' : '#f87171';
+      const fillColor = up ? 'rgba(52,211,153,.1)' : 'rgba(248,113,113,.1)';
+
+      const linePts = prices.map((v, i) => `${toX(i).toFixed(1)},${toY(v).toFixed(1)}`).join(' ');
+      const lastX = toX(n - 1).toFixed(1);
+      const lastY = toY(prices[n - 1]).toFixed(1);
+
+      // Filled area under line
+      const areaD = `M ${toX(0).toFixed(1)},${H} ` +
+        prices.map((v, i) => `L ${toX(i).toFixed(1)},${toY(v).toFixed(1)}`).join(' ') +
+        ` L ${lastX},${H} Z`;
+
+      return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" style="display:block;overflow:visible;">
+        <path d="${areaD}" fill="${fillColor}"/>
+        <polyline points="${linePts}" fill="none" stroke="${lineColor}" stroke-width="1.5"
+                  stroke-linejoin="round" stroke-linecap="round"/>
+        <circle cx="${lastX}" cy="${lastY}" r="3" fill="${lineColor}"/>
+        <circle cx="${lastX}" cy="${lastY}" r="5" fill="${lineColor}" opacity=".2"/>
+      </svg>`;
+    }
+
+    // ── Load sparklines once (yfinance cached, fast on repeat calls) ──────────
+    async function loadSparklines() {
+      const seen = new Set();
+      await Promise.all(tradesData.map(async (t, idx) => {
+        if (t.trade_phase && t.trade_phase.startsWith('closed')) return;
+        const key = t.asset_id + ':' + (t.asset_category || 'stocks');
+        const isFirst = !seen.has(key);
+        seen.add(key);
+        try {
+          const cat = encodeURIComponent(t.asset_category || 'stocks');
+          const aid = encodeURIComponent(t.asset_id);
+          const r = await fetch(`/api/active-trades/sparkline/${aid}?category=${cat}`);
+          if (!r.ok) return;
+          const data = await r.json();
+          const svg = buildSparklineSVG(data.prices);
+          // Apply to all cards with same asset (multi-leg strategies)
+          tradesData.forEach((td, i) => {
+            if (td.asset_id !== t.asset_id) return;
+            const trk = document.getElementById('trk-' + i);
+            if (trk) trk.innerHTML = svg;
+          });
+        } catch (_) { /* non-critical */ }
+      }));
+    }
+
+    // ── Live price polling ─────────────────────────────────────────────────────
+    async function pollPrices() {
+      try {
+        const r = await fetch('/api/active-trades/prices');
+        if (!r.ok) return;
+        const data = await r.json();
+        const prices = data.prices || {};
+
+        tradesData.forEach((t, idx) => {
+          const cell = document.getElementById('cur-' + idx);
+          if (!cell) return;
+          const price = prices[t.asset_id];
+          if (price == null) {
+            cell.querySelector('.cur-price-pct').textContent = 'no price available';
+            return;
+          }
+          const entry  = t.buy_in_price;
+          const isLong = cell.dataset.isLong === '1';
+          let color = 'rgba(248,250,252,.7)';
+          let pctText = '';
+          if (entry && entry > 0) {
+            const pct = (price - entry) / entry * 100;
+            pctText = (pct >= 0 ? '+' : '') + pct.toFixed(2) + '% from entry';
+            const profitable = isLong ? price >= entry : price <= entry;
+            color = profitable ? '#34d399' : '#f87171';
+          }
+          const valEl = cell.querySelector('.cur-price-val');
+          const pctEl = cell.querySelector('.cur-price-pct');
+          if (valEl) { valEl.textContent = '$' + price.toFixed(2); valEl.style.color = color; }
+          if (pctEl) { pctEl.textContent = pctText; pctEl.style.color = color; }
+        });
+
+        const ts = document.getElementById('at-price-ts');
+        if (ts) ts.textContent = 'Prices as of ' + new Date().toLocaleTimeString();
+      } catch (_) { /* non-critical */ }
+    }
+
+    let _priceInterval = null;
+    function startPricePolling() {
+      pollPrices();
+      if (_priceInterval) clearInterval(_priceInterval);
+      _priceInterval = setInterval(pollPrices, 60000);
+    }
+
+    document.getElementById('refresh-btn').addEventListener('click', () => load(true).then(() => { startPricePolling(); loadSparklines(); }));
+    load(false).then(() => { startPricePolling(); loadSparklines(); });
   </script>
 </body>
 </html>

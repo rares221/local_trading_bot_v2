@@ -761,6 +761,66 @@ async def list_active_trades(
     return _with_disclaimer({"items": items})
 
 
+@router.get("/active-trades/sparkline/{asset_id}")
+async def get_active_trade_sparkline(
+    asset_id: str,
+    category: str = "stocks",
+) -> dict[str, Any]:
+    """Hourly close prices for a mini sparkline chart (last ~40 candles). Uses cached yfinance data."""
+    from app.services.technicals import fetch_ohlcv
+    from app.services.recommendations.engine import get_yf_symbol
+
+    symbol = get_yf_symbol(category, asset_id)
+    if not symbol:
+        raise HTTPException(status_code=404, detail="Unknown asset")
+
+    df = await asyncio.to_thread(fetch_ohlcv, symbol, interval="1h")
+    if df is None or df.empty:
+        df = await asyncio.to_thread(fetch_ohlcv, symbol)
+    if df is None or df.empty:
+        raise HTTPException(status_code=404, detail="No price data")
+
+    closes = [round(float(c), 4) for c in df["Close"].tail(40).tolist()]
+    return {"asset_id": asset_id, "prices": closes}
+
+
+@router.get("/active-trades/prices")
+async def get_active_trade_prices(
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Current market price for each open active trade, keyed by asset_id. Lightweight — safe to poll every 60s."""
+    from sqlalchemy.orm import selectinload
+    from app.services.recommendations.engine import get_yf_symbol, snapshot_prices_for_recommendations
+
+    q = (
+        select(ActiveTrade)
+        .options(selectinload(ActiveTrade.recommendation))
+        .where(ActiveTrade.outcome.is_(None))
+    )
+    result = await db.execute(q)
+    trades = result.scalars().all()
+
+    # Build minimal objects snapshot_prices_for_recommendations expects
+    class _AssetRef:
+        def __init__(self, asset_id: str, asset_category: str):
+            self.asset_id = asset_id
+            self.asset_category = asset_category
+
+    refs = []
+    seen: set[str] = set()
+    for t in trades:
+        rec = t.recommendation
+        if not rec:
+            continue
+        key = f"{rec.asset_category}:{rec.asset_id}"
+        if key not in seen:
+            seen.add(key)
+            refs.append(_AssetRef(rec.asset_id, rec.asset_category))
+
+    prices = await asyncio.to_thread(snapshot_prices_for_recommendations, refs)
+    return {"prices": prices}
+
+
 @router.post("/active-trades/{trade_id}/close-manually")
 async def close_trade_manually(
     trade_id: str,
