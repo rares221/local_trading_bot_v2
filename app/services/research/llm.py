@@ -4,12 +4,20 @@ Supports OpenAI, Anthropic, Ollama, OpenRouter; uses research_llm_provider + res
 """
 from __future__ import annotations
 
+import asyncio
+import json
+import logging
+from datetime import datetime, timezone
 from typing import Any
 
 from app.services.research.providers import (
     get_provider_by_id,
     is_available,
 )
+
+_logger = logging.getLogger(__name__)
+
+PROMPT_VERSION_RATIONALE = "rationale_v1"
 
 
 STRATEGY_EXPLAIN_SYSTEM = (
@@ -322,13 +330,64 @@ async def generate_correlation_analysis(diverging_signals: list[dict[str, Any]])
     return None
 
 
+async def _log_rationale_async(
+    context: dict[str, Any],
+    rationale_text: str,
+    provider_id: str,
+    model: str,
+    flags: list[str],
+    retry_count: int,
+) -> None:
+    """Fire-and-forget: persist rationale + validation result to llm_rationale_logs."""
+    try:
+        from app.core.database import AsyncSessionLocal
+        from app.models.llm_rationale_log import LLMRationaleLog
+
+        expiry_days = context.get("expiry_days") or context.get("horizon_days") or 14
+        horizon = "near" if int(expiry_days) <= 14 else "far"
+
+        # Slim context snapshot — exclude bulky / redundant fields.
+        snapshot_keys = (
+            "asset_id", "asset_category", "direction", "sentiment_avg", "sentiment_count",
+            "sentiment_trend", "buy_in_price", "stop_loss", "take_profit", "risk_tier",
+            "confidence_score", "volatility_notes", "market_regime", "headlines",
+            "vpoc", "vah", "val", "vp_bias", "vp_overextension", "in_value_area",
+        )
+        snapshot = {k: context[k] for k in snapshot_keys if k in context}
+
+        entry = LLMRationaleLog(
+            created_at=datetime.now(timezone.utc),
+            recommendation_id=context.get("recommendation_id"),
+            asset_id=str(context.get("asset_id") or ""),
+            asset_category=str(context.get("category") or context.get("asset_category") or ""),
+            direction=str(context.get("direction") or "long"),
+            horizon=horizon,
+            horizon_days=int(expiry_days),
+            provider_id=provider_id,
+            model=model,
+            prompt_version=PROMPT_VERSION_RATIONALE,
+            context_snapshot=json.dumps(snapshot, default=str),
+            rationale_text=rationale_text,
+            validation_flags=json.dumps(flags),
+            retry_count=retry_count,
+        )
+        async with AsyncSessionLocal() as session:
+            session.add(entry)
+            await session.commit()
+    except Exception as exc:
+        _logger.warning("Failed to log rationale to DB (non-fatal): %s", exc)
+
+
 async def generate_rationale(context: dict[str, Any]) -> str | None:
     """
-    One-shot LLM call using the configured provider (from preferences or config).
-    Returns 2–4 sentences on why this idea might make sense and main risk, or None if unavailable/fails.
+    LLM call with validation + retry loop (max 2 retries on blocking failures).
+    Logs every attempt to llm_rationale_logs (fire-and-forget).
+    Returns 2-4 sentences on why the trade direction makes sense and the main risk,
+    or None if the provider is unavailable or all attempts fail.
     """
     from app.core.config import settings
     from app.core.preferences import get_research_llm_config
+    from app.services.research.validator import validate_rationale, MAX_RETRIES
 
     cfg = get_research_llm_config()
     provider_id = (cfg.get("research_llm_provider") or "openai").strip().lower()
@@ -345,26 +404,74 @@ async def generate_rationale(context: dict[str, Any]) -> str | None:
     if not model:
         return None
 
-    system = SYSTEM_PROMPT
-    user = _format_user_content(context)
     ollama_base_url = (cfg.get("ollama_base_url") or "").strip() or (settings.ollama_base_url or "http://localhost:11434")
     thinking_budget = int(cfg.get("thinking_budget") or 0)
 
-    try:
-        if provider_id == "openai":
-            return await _call_openai(model, system, user, api_key or "", max_tokens=400)
-        if provider_id == "anthropic":
-            return await _call_anthropic(
-                model, system, user, api_key or "",
-                max_tokens=400, thinking_budget=thinking_budget, output_buffer=400,
+    all_flags: list[str] = []
+    last_text: str | None = None
+
+    for attempt in range(MAX_RETRIES + 1):
+        system = SYSTEM_PROMPT
+        user = _format_user_content(context)
+        corrective = context.get("_corrective_instruction")
+        if corrective:
+            user = user + f"\n\n[CORRECTION REQUIRED]: {corrective}"
+
+        try:
+            if provider_id == "openai":
+                text = await _call_openai(model, system, user, api_key or "", max_tokens=400)
+            elif provider_id == "anthropic":
+                text = await _call_anthropic(
+                    model, system, user, api_key or "",
+                    max_tokens=400, thinking_budget=thinking_budget, output_buffer=400,
+                )
+            elif provider_id == "ollama":
+                text = await _call_ollama(model, system, user, ollama_base_url)
+            elif provider_id == "openrouter":
+                text = await _call_openrouter(model, system, user, api_key or "", max_tokens=400)
+            else:
+                return None
+        except Exception as exc:
+            _logger.warning("LLM call failed (%s/%s) attempt %d: %s", provider_id, model, attempt, exc)
+            break
+
+        if not text:
+            break
+
+        last_text = text
+        result = validate_rationale(text, context)
+
+        # Accumulate unique flags across attempts.
+        for flag in result.flags:
+            if flag not in all_flags:
+                all_flags.append(flag)
+
+        if result.passed:
+            # Log and return immediately.
+            asyncio.create_task(
+                _log_rationale_async(context, text, provider_id, model, all_flags, attempt)
             )
-        if provider_id == "ollama":
-            return await _call_ollama(model, system, user, ollama_base_url)
-        if provider_id == "openrouter":
-            return await _call_openrouter(model, system, user, api_key or "", max_tokens=400)
-    except Exception as exc:
-        import logging
-        logging.getLogger(__name__).warning("LLM call failed (%s/%s): %s", provider_id, model, exc)
+            return text
+
+        if attempt < MAX_RETRIES and result.retry_message:
+            _logger.debug(
+                "Rationale validation failed on attempt %d (%s). Retrying. Flags: %s",
+                attempt, provider_id, result.flags,
+            )
+            context = dict(context, _corrective_instruction=result.retry_message)
+
+    # All attempts exhausted — log whatever we have and return it (better than None).
+    if last_text:
+        asyncio.create_task(
+            _log_rationale_async(context, last_text, provider_id, model, all_flags, MAX_RETRIES)
+        )
+        if all_flags:
+            _logger.warning(
+                "Rationale returned with unresolved flags after %d retries (%s/%s): %s",
+                MAX_RETRIES, provider_id, model, all_flags,
+            )
+        return last_text
+
     return None
 
 
@@ -681,20 +788,47 @@ async def generate_gap_advice(context: dict[str, Any]) -> str | None:
     thinking_budget = int(cfg.get("thinking_budget") or 0)
     _GAP_OUTPUT_BUFFER = 150
 
-    try:
-        if provider_id == "openai":
-            return await _call_openai(model, _GAP_ADVICE_SYSTEM, user_content, api_key or "", max_tokens=100)
-        elif provider_id == "anthropic":
-            return await _call_anthropic(
-                model, _GAP_ADVICE_SYSTEM, user_content, api_key or "",
-                max_tokens=100, thinking_budget=thinking_budget, output_buffer=_GAP_OUTPUT_BUFFER,
-            )
-        elif provider_id == "ollama":
-            combined = f"{_GAP_ADVICE_SYSTEM.strip()}\n\n---\n\n{user_content.strip()}"
-            return await _call_ollama(model, "", combined, ollama_base_url, num_predict=60, timeout=60.0)
-        elif provider_id == "openrouter":
-            return await _call_openrouter(model, _GAP_ADVICE_SYSTEM, user_content, api_key or "", max_tokens=100)
-    except Exception as exc:
-        _logger.warning("Gap advice LLM call failed (%s/%s): %s", provider_id, model, exc)
+    from app.services.research.validator import validate_rationale, MAX_RETRIES
 
-    return None
+    corrective: str | None = None
+    last_text: str | None = None
+
+    for attempt in range(MAX_RETRIES + 1):
+        user_msg = user_content if corrective is None else user_content + f"\n\n[CORRECTION REQUIRED]: {corrective}"
+
+        try:
+            if provider_id == "openai":
+                text = await _call_openai(model, _GAP_ADVICE_SYSTEM, user_msg, api_key or "", max_tokens=100)
+            elif provider_id == "anthropic":
+                text = await _call_anthropic(
+                    model, _GAP_ADVICE_SYSTEM, user_msg, api_key or "",
+                    max_tokens=100, thinking_budget=thinking_budget, output_buffer=_GAP_OUTPUT_BUFFER,
+                )
+            elif provider_id == "ollama":
+                combined = f"{_GAP_ADVICE_SYSTEM.strip()}\n\n---\n\n{user_msg.strip()}"
+                text = await _call_ollama(model, "", combined, ollama_base_url, num_predict=60, timeout=60.0)
+            elif provider_id == "openrouter":
+                text = await _call_openrouter(model, _GAP_ADVICE_SYSTEM, user_msg, api_key or "", max_tokens=100)
+            else:
+                text = None
+        except Exception as exc:
+            _logger.warning("Gap advice LLM call failed (%s/%s) attempt %d: %s", provider_id, model, attempt, exc)
+            break
+
+        if not text:
+            break
+
+        last_text = text
+        result = validate_rationale(text, context, prompt_type="gap")
+
+        if result.passed:
+            return text
+
+        if attempt < MAX_RETRIES and result.retry_message:
+            corrective = result.retry_message
+            _logger.debug(
+                "Gap advice retry %d/%d for %s — flags: %s",
+                attempt + 1, MAX_RETRIES, context.get("asset_id"), result.flags,
+            )
+
+    return last_text

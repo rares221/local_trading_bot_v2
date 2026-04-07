@@ -807,13 +807,13 @@ Report the initial grade and any adjustments in grade_reason.
 
 | P | Item | Status | Effort | Impact | Dependency |
 |---|---|---|---|---|---|
-| **1** | Model + migrare Alembic `llm_rationale_log` | ⬜ Pending | Mic | Critic | — |
-| **2** | Validator V1-V3, V5, V7 (structural, fără halucinații) | ⬜ Pending | Mic-Mediu | Critic | — |
+| **1** | Model + migrare Alembic `llm_rationale_log` | ✅ Done 2026-04-07 | Mic | Critic | — |
+| **2** | Validator V1-V3, V5, V7 (structural, fără halucinații) | ✅ Done 2026-04-07 | Mic-Mediu | Critic | — |
 | **3** | `max_tokens` fix + THINKING_BUDGET hardcodat + ierarhie config | ✅ Done 2026-04-07 | Mic | Mediu | — |
-| **4** | Horizon classification + `estimate_expiry_days` max→60 | ⬜ Pending | Mic | Mare | — |
+| **4** | Horizon classification + `estimate_expiry_days` max→60 | ✅ Done 2026-04-07 | Mic | Mare | — |
 | **5** | `_format_user_content` extins (horizon, confidence, sentiment_trend, regime, events) | ⬜ Pending | Mediu | Mare | P4 |
 | **6** | `SYSTEM_PROMPT_NEAR` + `SYSTEM_PROMPT_FAR` | ⬜ Pending | Mediu | Mare | P4, P5 |
-| **7** | Logging rationale în `llm_rationale_log` (fără feedback încă) | ⬜ Pending | Mic | Critic | P1 |
+| **7** | Logging rationale în `llm_rationale_log` (fără feedback încă) | ✅ Done 2026-04-07 | Mic | Critic | P1 |
 | **8** | `capture_metrics_at_entry` (inline la ActiveTrade create) | ⬜ Pending | Mic | Critic | P1, P7 |
 | **9** | `job_verify_outcomes` (copiere outcome + quality score) | ⬜ Pending | Mic | Critic | P1, P7, P8 |
 | **10** | Validator V4a–V4d (halucinații numerice + news) | ⬜ Pending | Mediu | Mare | P7 |
@@ -825,6 +825,19 @@ Report the initial grade and any adjustments in grade_reason.
 | **16** | Grade rubric corectat în `_BACKTEST_INSIGHT_SYSTEM` | ⬜ Pending | Mic | Mediu | — |
 | **17** | Sentiment window extinsă 5-10 zile pentru far horizon | ⬜ Pending | Mediu | Mediu | P4 |
 | **18** | Daily briefing LLM prompt (morning brief narativ) | ⬜ Pending | Mediu | Mediu | — |
+
+### Detalii P2 — implementat 2026-04-07
+
+- `validator.py`: reguli V1–V7 implementate ca funcții independente
+  - **V1** — length check (< 50 chars → retry)
+  - **V2** — truncation heuristic (text > 80 chars fără terminator de propoziție → retry)
+  - **V3** — direction alignment: detectează concluzie bullish în rationale SHORT sau bearish în LONG; excepție pentru fraze concesive (`despite`, `although`, etc.)
+  - **V5** — specificity score: < 2 termeni tehnici din lista de 29 → retry
+  - **V7** — gap advice word count: > 30 cuvinte → retry (opt-in cu `prompt_type="gap"`)
+- `validate_rationale(text, context, prompt_type)` — API public; `prompt_type="gap"` face early-return cu doar V7 (V1/V2/V3/V5 generau false positives pe răspunsuri de 25 cuvinte)
+- `generate_rationale()` — retry loop `MAX_RETRIES=2`: corrective instruction injectată în user message pe fiecare attempt (`[CORRECTION REQUIRED]: {message}`); flags acumulate cross-attempt; DB log fire-and-forget
+- `generate_gap_advice()` — retry loop identic cu V7-only validation; `last_text` returnat chiar dacă nu trece (same behavior ca rationale)
+- **Bug fix**: `_corrective_instruction` era setat în `context` dar `_format_user_content()` nu îl citea → fiecare retry trimitea mesajul original nemodificat; rezolvat prin append explicit la `user` după `_format_user_content()`
 
 ### Detalii P3 — implementat 2026-04-07
 

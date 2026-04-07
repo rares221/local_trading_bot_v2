@@ -576,9 +576,15 @@ async def trade_builder_from_asset(
 
     rationale_text = None
     try:
+        from datetime import date as _date
+        from app.services.technicals import classify_horizon as _classify_horizon
         ctx = await build_research_context(db, cand.asset_id, cand.asset_category)
         ctx["buy_in_price"] = cand.buy_in_price
         ctx["direction"] = cand.direction
+        if cand.expiry_date and "expiry_days" not in ctx:
+            _ed = max(1, (cand.expiry_date - _date.today()).days)
+            ctx["expiry_days"] = _ed
+            ctx["horizon"] = _classify_horizon(_ed)
         rationale_text = await generate_rationale(ctx)
     except Exception:
         pass

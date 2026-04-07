@@ -191,9 +191,15 @@ async def job_daily_batch() -> None:
                 progress.update(llm_pct, "batch", f"LLM rationale {i + 1}/{total_candidates} — {c.asset_id}")
                 rationale_text = None
                 try:
+                    from datetime import date as _date
+                    from app.services.technicals import classify_horizon as _classify_horizon
                     ctx = await build_research_context(session, c.asset_id, c.asset_category)
                     ctx["buy_in_price"] = c.buy_in_price
                     ctx["direction"] = c.direction
+                    if c.expiry_date and "expiry_days" not in ctx:
+                        _ed = max(1, (c.expiry_date - _date.today()).days)
+                        ctx["expiry_days"] = _ed
+                        ctx["horizon"] = _classify_horizon(_ed)
                     rationale_text = await generate_rationale(ctx)
                 except Exception as exc:
                     print(f"  [BATCH] LLM rationale failed for {c.asset_id}: {exc}")

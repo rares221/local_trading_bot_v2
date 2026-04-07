@@ -4,6 +4,38 @@ All notable changes to this project will be documented here.
 
 ---
 
+## [Unreleased] — 2026-04-07
+
+### Branch: `improvements_trade_builder`
+
+---
+
+### Added — LLM Rationale Validator (P2 din LLM_IMPROVEMENT_PLAN)
+
+#### `app/services/research/validator.py` — Strat de validare V1–V7
+
+- **V1 — Length check**: rationale < 50 chars → retry cu instrucțiune corectivă
+- **V2 — Truncation check**: text > 80 chars fără terminator de propoziție (`.!?"'`) → retry cu `max_tokens=350`
+- **V3 — Direction alignment**: detectează concluzie bullish în SHORT sau bearish în LONG; excepție pentru fraze concesive (`despite`, `although`, `even though`, etc.)
+- **V5 — Specificity score**: < 2 termeni tehnici din lista de 29 (RSI, MACD, VPOC, ATR, ADX, Bollinger etc.) → retry
+- **V7 — Gap advice word count**: > 30 cuvinte → retry (aplicat doar cu `prompt_type="gap"`)
+- `ValidationFlag` dataclass: `code`, `message` (log intern), `retry_message` (injectat în LLM)
+- `ValidationResult` dataclass: `passed`, `flags: list[str]`, `retry_message: str | None`
+- `validate_rationale(text, context, *, prompt_type)`: `prompt_type="gap"` face early-return cu doar V7 — V1/V2/V3/V5 generau false positives pe răspunsuri de 25 cuvinte
+
+#### `app/services/research/llm.py` — Retry loop + wiring
+
+- `generate_rationale()`: loop `MAX_RETRIES=2`; corrective instruction injectată ca `\n\n[CORRECTION REQUIRED]: {message}` în user message pe fiecare attempt; flags acumulate cross-attempt; DB log fire-and-forget la final
+- `generate_gap_advice()`: retry loop identic cu V7-only validation; returnează `last_text` chiar dacă nu trece validarea (consistent cu behavior-ul din `generate_rationale`)
+
+### Fixed
+
+#### `app/services/research/llm.py`
+
+- **Bug corrective instruction**: `_corrective_instruction` era setat în `context` dar `_format_user_content()` nu îl citea → fiecare retry trimitea exact același mesaj la LLM; rezolvat prin append explicit la `user` după `_format_user_content()`
+
+---
+
 ## [Unreleased] — 2026-04-06
 
 ### Branch: `improvements_trade_builder`

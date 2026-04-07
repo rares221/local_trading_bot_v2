@@ -981,7 +981,7 @@ def estimate_expiry_days(
     take_profit: float,
     snapshot: Optional[TechnicalSnapshot] = None,
     min_days: int = 1,
-    max_days: int = 30,
+    max_days: int = 60,
 ) -> int:
     if not snapshot or not snapshot.avg_daily_move or snapshot.avg_daily_move <= 0:
         return max_days // 2
@@ -990,6 +990,11 @@ def estimate_expiry_days(
         return min_days
     estimated = math.ceil(distance_pct / snapshot.avg_daily_move)
     return max(min_days, min(estimated, max_days))
+
+
+def classify_horizon(expiry_days: int) -> str:
+    """Classify trade horizon: near (≤14 trading days) or far (>14 trading days)."""
+    return "near" if expiry_days <= 14 else "far"
 
 
 # ---------------------------------------------------------------------------

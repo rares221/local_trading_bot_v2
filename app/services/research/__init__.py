@@ -9,6 +9,8 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from datetime import date
+
 from app.models.feed_item import FeedItem
 from app.services.analysis import get_latest_analysis
 from app.services.recommendations.engine import (
@@ -70,6 +72,12 @@ async def build_research_context(
             ctx["stop_loss"] = float(rec.stop_loss)
         if rec.take_profit:
             ctx["take_profit"] = float(rec.take_profit)
+        # Horizon classification from expiry_date
+        if rec.expiry_date:
+            from app.services.technicals import classify_horizon
+            expiry_days = max(1, (rec.expiry_date - date.today()).days)
+            ctx["expiry_days"] = expiry_days
+            ctx["horizon"] = classify_horizon(expiry_days)
 
     # Derive direction from sentiment if no recommendation exists
     if not ctx["direction"]:
@@ -100,6 +108,12 @@ async def build_research_context(
                         ctx["buy_in_price"] = live_price
                     ctx["levels_source"] = "calculated"
                     ctx["atr"] = snap.atr if snap and snap.atr else None
+                    # Horizon from estimated expiry (only if not already set from rec)
+                    if "expiry_days" not in ctx and live_price and tp:
+                        from app.services.technicals import classify_horizon, estimate_expiry_days
+                        ed = estimate_expiry_days(live_price, tp, snapshot=snap)
+                        ctx["expiry_days"] = ed
+                        ctx["horizon"] = classify_horizon(ed)
                     # Volume Profile fields from snapshot
                     if snap and snap.vpoc is not None:
                         ctx["vpoc"] = snap.vpoc

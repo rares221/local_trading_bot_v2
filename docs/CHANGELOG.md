@@ -4,6 +4,58 @@
 
 ---
 
+## 2026-04-07 — `improvements_trade_builder` (sesiunea 8)
+
+### LLM — P1 (model + migrare + validator + logging) + P4 (horizon classification)
+
+#### P1 — LLMRationaleLog + Validator + Retry Loop (complet)
+
+**Nou: `app/models/llm_rationale_log.py`**
+- Model SQLAlchemy `LLMRationaleLog` cu 25+ coloane: id, created_at, recommendation_id/active_trade_id (FK SET NULL), asset_id, asset_category, direction, horizon, horizon_days, provider_id, model, prompt_version, context_snapshot (JSON), rationale_text, validation_flags (JSON), retry_count
+- Coloane outcome feedback: news_verified, metrics_at_entry, metrics_verification, metrics_accuracy_score, outcome, outcome_at, closing_price, pnl_r, quality_score, hallucination_rate
+- 4 indecși compuși: asset+direction+outcome, category+horizon+outcome, provider+model+outcome, created_at
+- Helper methods: `get_validation_flags()`, `set_validation_flags()`, `get_context_snapshot()`, `get_metrics_at_entry()`
+
+**Nou: `migrations/versions/003_llm_rationale_log.py`**
+- Migrare Alembic revision="003" → creează tabelul `llm_rationale_logs` cu toate coloanele, FK-uri, server_defaults și 6 indecși
+
+**Nou: `app/services/research/validator.py`**
+- `ValidationFlag` + `ValidationResult` dataclasses
+- V1: length check (< 50 chars) → blocking retry
+- V2: truncation heuristic (text > 80 chars, nu se termină cu `.!?"'`) → blocking retry
+- V3: direction alignment per-propoziție, cu detecție concession markers ("despite", "although") → blocking retry
+- V5: specificity score (< 2 termeni tehnici din set de ~25) → blocking retry
+- V7: gap advice word count > 30 → blocking retry
+- `validate_rationale(text, context, prompt_type)` — API public; `prompt_type="gap"` activează V7
+
+**Modificat: `app/services/research/llm.py`**
+- `generate_rationale()` refăcut cu retry loop (MAX_RETRIES=2, 3 încercări total)
+- Fiecare răspuns LLM trece prin `validate_rationale()` înainte de a fi returnat
+- La eșec validare: injectează `_corrective_instruction` în context și reîncearcă
+- `_log_rationale_async()`: fire-and-forget (asyncio.create_task) care persistă `LLMRationaleLog` în propria sesiune DB; loghează la passed sau după toate retry-urile
+- Context snapshot curatizat (exclude OHLCV bulk) — stochează: asset, direction, sentiment, price, levels, technicals, VP fields
+
+**Modificat: `app/models/__init__.py`**
+- Import + export `LLMRationaleLog`
+
+#### P4 — Horizon classification + estimate_expiry_days max→60
+
+**Modificat: `app/services/technicals.py`**
+- `estimate_expiry_days()`: parametru `max_days` schimbat din 30 → **60** — suportă acum far horizon (>14 zile)
+- Funcție nouă: `classify_horizon(expiry_days: int) -> str` — returnează `"near"` (≤14) sau `"far"` (>14)
+
+**Modificat: `app/services/research/__init__.py`**
+- `build_research_context()`: dacă recomandarea are `expiry_date`, calculează `expiry_days` și `horizon` și le adaugă în ctx
+- Dacă SL/TP sunt calculate fresh din snapshot, apelează `estimate_expiry_days()` + `classify_horizon()` pentru același efect
+
+**Modificat: `app/jobs/scheduler.py`**
+- Batch loop: adaugă `expiry_days` + `horizon` din `c.expiry_date` în ctx (dacă nu există deja din `build_research_context`)
+
+**Modificat: `app/api/routes.py`**
+- `trade_builder_from_asset`: adaugă `expiry_days` + `horizon` din `cand.expiry_date` în ctx
+
+---
+
 ## 2026-04-07 — `improvements_trade_builder` (sesiunea 7)
 
 ### LLM — Analiză completă + fix-uri thinking budget + plan îmbunătățiri
