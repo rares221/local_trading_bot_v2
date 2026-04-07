@@ -209,6 +209,8 @@ Sector rotation e un fenomen real: banii se muta din tech in energy, din growth 
 
 ### PRIORITATE 7 — News latenta < 15 minute
 
+> ⚠️ **Decizie pendinta** — necesita cost recurent si analiza de impact reala inainte de implementare.
+
 **De ce e problema:**
 RSS feeds cu refresh la 2 ore inseamna ca o stire aparuta acum e procesata cel mai devreme peste 2 ore. O stire importanta (earnings surprise, decizie Fed neasteptata, geopolitica brusca) misca piata in primele 5-15 minute. Pana procesam semnalul, miscarea e complet facuta, si daca intrarea recomandata era bazata pe acea stire, acum entry-ul e la un pret mult mai prost sau directia s-a si corectat.
 
@@ -220,13 +222,24 @@ Practic, sentiment-ul din RSS e retrospectiv prin design — nu masori ce se int
 - Deduplicare agresiva pe hash de continut (nu doar ID — acelasi articol apare pe mai multe RSS-uri)
 - Rate limiting inteligent per sursa ca sa nu depasim limitele API
 
+**Analiza impact per zona:**
+- **Recomandari (batch):** Impact limitat — batch-ul ruleaza o data pe zi, nu in timp real. Chiar daca stirile vin in 15 minute, recomandarile tot se genereaza la intervale fixe. Latenta mica conteaza doar daca treci la un motor intraday.
+- **Research:** Impact real — research-ul e on-demand, un utilizator care cauta un asset dupa o stire mare ar beneficia de sentiment actualizat in 15 minute vs 2 ore.
+- **Active trades:** Impact indirect — refresh-ul de SL/TP la 2h ar putea incorpora sentiment mai proaspat, dar tehnicele (ATR, RSI, MACD) nu se schimba intraday pe date daily.
+- **Backtesting:** Zero impact — backtesting-ul foloseste date istorice OHLCV, nu feeds live.
+- **Cost:** ~$29/luna Polygon.io sau Benzinga — cost recurent obligatoriu, spre deosebire de toate celelalte prioritati care sunt gratuite.
+
+**Concluzie:** Valoarea reala e in research on-demand, nu in batch. Merita doar daca se adauga un motor de alerte intraday sau daca research-ul devine un use-case principal. De reevaluat in context cu directia produsului.
+
 **Nota:** Polygon.io ~$29/luna plan basic include news. Benzinga similar. Cost recurent necesar.
 
-**Efort:** Mediu | **Impact:** Mare — dar necesita cost recurent
+**Efort:** Mediu | **Impact:** Mare — dar necesita cost recurent si schimbare de arhitectura
 
 ---
 
 ### PRIORITATE 8 — Corelatie dinamica (nu statica 60 zile)
+
+> ⚠️ **Decizie pendinta** — valoarea reala e limitata in contextul actual. A se reevalua inainte de implementare.
 
 **De ce e problema:**
 Filtrul de corelatie curent (skip daca corr ≥ 0.75 pe 60 zile) e menit sa evite over-concentration. Dar 60 zile e o fereastra structurala — masoara corelatia in conditii normale. In momente de stress (crash 2020, rate hike panic 2022), corelatiile intre aproape toate asset-urile converc spre 1: actiunile cad toate impreuna, commodity-urile cad, crypto cade. Diversificarea dispare exact cand ai nevoie de ea.
@@ -238,6 +251,14 @@ In aceste momente, doua asset-uri cu corr 0.50 structural (sub threshold, deci a
 - Logica: skip daca corr recenta (20z) > 0.85 SAU corr structurala (60z) > 0.75
 - `correlation_regime`: normal / elevated / stress, calculat ca media corelatiei cross-asset in portofoliu
 - In `stress` regime: threshold redus la 0.60, sizing redus cu 20%
+
+**Analiza impact per zona:**
+- **Recomandari (batch):** Impact real — filtrul devine mai strict in stress, mai putine semnale corelate simultan. Diferenta dintre a pierde 3R simultan vs 1R.
+- **Research:** Impact zero — research analizeaza un singur asset izolat, corelatie nu are sens acolo.
+- **Active trades:** Impact indirect mic — eventual un banner informativ "corelatie ridicata", dar nu schimba SL/TP sau actiunea concreta.
+- **Backtesting:** Nu se poate valida cu backtestingul actual (signal by signal, nu portofoliu). Ar necesita backtest la nivel de portofoliu — feature separat mai complex.
+
+**Concluzie:** Valoarea reala e doar in filtrul de batch. Imbunatatire marginala fata de VP (PRIORITATE 5) si RS (PRIORITATE 6). De implementat doar dupa validarea prin backtesting ca VP si RS adauga valoare reala.
 
 **Efort:** Mic | **Impact:** Mediu — mai important in perioade de volatilitate ridicata
 

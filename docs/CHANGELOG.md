@@ -4,6 +4,17 @@
 
 ---
 
+## 2026-04-07 — `improvements_trade_builder` (sesiunea 6)
+
+### Analiza impact PRIORITATE 7 și 8 — decizie pendintă
+
+**Modificat: `docs/IMPROVEMENT_PLAN.md`**
+- PRIORITATE 7 (News latență < 15 minute): adăugată analiză de impact per zonă — valoarea reală e în research on-demand, nu în batch; zero impact pe backtesting; cost recurent obligatoriu (~$29/lună); marcată `⚠️ Decizie pendintă`
+- PRIORITATE 8 (Corelație dinamică): adăugată analiză de impact per zonă — valoarea reală e doar în filtrul de batch (mai puține semnale corelate în stress); zero impact pe research și backtesting actual; imbunatatire marginala fata de VP si RS deja implementate; marcată `⚠️ Decizie pendintă`
+- Ambele rămân nedecise până la validarea prin backtesting că VP (PRIORITATE 5) și RS (PRIORITATE 6) adaugă valoare reală
+
+---
+
 ## 2026-04-07 — `improvements_trade_builder` (sesiunea 5)
 
 ### Relative Strength vs Benchmark (PRIORITATE 6 — complet)
