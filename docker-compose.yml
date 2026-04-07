@@ -30,6 +30,7 @@ services:
       - "6001:8000"
     volumes:
       - trading_data:/app/data
+      - .:/app
     env_file:
       - .env
     environment:

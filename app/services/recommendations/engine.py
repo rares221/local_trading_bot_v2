@@ -1188,6 +1188,52 @@ def _build_candidate(
                     )
                     return None
 
+    # ── Volume Profile confidence adjustments ────────────────────────────────
+    # Priority order: VP > swing S/R for signal quality assessment.
+    # Daily-bar VP is an approximation — used as a filter/modifier, not hard gate.
+    if snap and snap.vpoc is not None:
+        vp_notes: list[str] = []
+
+        # 1. Price inside value area → choppy equilibrium zone → reduce confidence
+        if snap.in_value_area():
+            confidence = max(0, confidence - 8)
+            vp_notes.append("in value area (choppy)")
+            logger.debug("[ENGINE] %s: VP: price in value area → -8 conf=%d", asset_id, confidence)
+
+        # 2. Price near a Low Volume Node → fast directional move expected → boost
+        lvn_nearby = (
+            (snap.nearest_lvn_above() is not None and abs(snap.nearest_lvn_above() - price) / price < 0.012)
+            or (snap.nearest_lvn_below() is not None and abs(snap.nearest_lvn_below() - price) / price < 0.012)
+        )
+        if lvn_nearby:
+            confidence = min(100, confidence + 5)
+            vp_notes.append("near LVN (fast move zone)")
+            logger.debug("[ENGINE] %s: VP: near LVN → +5 conf=%d", asset_id, confidence)
+
+        # 3. Overextension from VPOC → mean reversion risk
+        ext = abs(snap.vp_overextension) if snap.vp_overextension is not None else 0.0
+        if ext > 2.0:
+            confidence = max(0, confidence - 10)
+            vp_notes.append(f"overextended {ext:.1f}x VA from VPOC")
+            logger.debug("[ENGINE] %s: VP: overextension %.1f → -10 conf=%d", asset_id, ext, confidence)
+        elif ext > 1.3:
+            confidence = max(0, confidence - 5)
+            vp_notes.append(f"extended {ext:.1f}x VA from VPOC")
+            logger.debug("[ENGINE] %s: VP: overextension %.1f → -5 conf=%d", asset_id, ext, confidence)
+
+        # 4. Direction aligns with VP bias → confirm
+        if (direction == "long" and snap.vp_bias == "below_vpoc") or \
+           (direction == "short" and snap.vp_bias == "above_vpoc"):
+            # Price below VPOC + long = moving toward fair value = VP-confirmed
+            confidence = min(100, confidence + 4)
+            vp_notes.append(f"VP-confirmed ({snap.vp_bias})")
+            logger.debug("[ENGINE] %s: VP: bias confirms direction → +4 conf=%d", asset_id, confidence)
+
+        if vp_notes and regime_note:
+            regime_note = f"{regime_note}; VP: {', '.join(vp_notes)}"
+        elif vp_notes:
+            regime_note = f"VP: {', '.join(vp_notes)}"
+
     if (
         pol.news_boost_min_mentions > 0
         and sentiment_count >= pol.news_boost_min_mentions

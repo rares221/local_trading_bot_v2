@@ -61,25 +61,22 @@
       font-size: 12px; color: #fca5a5;
     }
 
-    /* ── Delayed tooltip ─────────────────────────────────────────────────────── */
-    .gap-tooltip-anchor { position: relative; display: inline-block; }
-    .gap-tooltip {
+    /* ── Delayed tooltip (fixed — breaks out of card overflow) ──────────────── */
+    .gap-tooltip-anchor { display: inline-block; }
+    #gap-tooltip-global {
       display: none;
-      position: absolute;
-      bottom: calc(100% + 8px);
-      left: 50%;
-      transform: translateX(-50%);
+      position: fixed;
       width: 260px;
       background: #1e293b;
       border: 1px solid rgba(234,179,8,.35);
       border-radius: 8px;
       padding: 10px 13px;
       font-size: 12px; line-height: 1.5; color: #cbd5e1;
-      z-index: 999;
+      z-index: 9999;
       pointer-events: none;
       box-shadow: 0 8px 24px rgba(0,0,0,.5);
     }
-    .gap-tooltip::after {
+    #gap-tooltip-global::after {
       content: '';
       position: absolute;
       top: 100%; left: 50%;
@@ -87,9 +84,8 @@
       border: 6px solid transparent;
       border-top-color: rgba(234,179,8,.35);
     }
-    .gap-tooltip strong { color: #fde68a; display: block; margin-bottom: 4px; }
-    .gap-tooltip-anchor:hover .gap-tooltip { display: block; animation: tooltip-in .15s ease; }
-    @keyframes tooltip-in { from { opacity:0; transform: translateX(-50%) translateY(4px); } to { opacity:1; transform: translateX(-50%) translateY(0); } }
+    #gap-tooltip-global strong { color: #fde68a; display: block; margin-bottom: 4px; }
+    @keyframes tooltip-in { from { opacity:0; transform: translateY(4px); } to { opacity:1; transform: translateY(0); } }
 
     /* Gap risk badge */
     .badge--gap-high {
@@ -108,7 +104,12 @@
       padding: 7px 16px;
       background: rgba(234,179,8,.07);
       border-bottom: 1px solid rgba(234,179,8,.18);
-      font-size: 12px; color: #fde68a;
+      font-size: 12px; color: #fde68a; flex-wrap: wrap;
+    }
+    .gap-strip .gap-factors { opacity: .8; }
+    .gap-strip .gap-advice {
+      color: #fef9c3; border-left: 1px solid rgba(234,179,8,.3);
+      padding-left: 8px; margin-left: 4px;
     }
 
     /* ── Levels 4-column grid ── */
@@ -684,44 +685,75 @@
       </div>`;
     }
 
-    // Delayed tooltip: CSS hover shows it immediately; JS delays the display using animation-delay trick via class toggle.
-    // We use a data-delay approach: mouseenter starts a timer, mouseleave cancels it.
-    function initGapTooltips() {
-      document.querySelectorAll('.gap-tooltip-anchor').forEach(el => {
-        let timer = null;
-        const tip = el.querySelector('.gap-tooltip');
-        if (!tip) return;
-        tip.style.display = 'none';
-        el.addEventListener('mouseenter', () => {
-          timer = setTimeout(() => { tip.style.display = 'block'; }, 3000);
+    // Single global fixed tooltip — breaks out of card overflow: hidden.
+    // Each .gap-tooltip-anchor carries data-tip-html with the content.
+    (function() {
+      const TIP_DELAY = 3000;
+      let _timer = null;
+      let _tip = null;
+
+      function ensureTip() {
+        if (_tip) return _tip;
+        _tip = document.createElement('div');
+        _tip.id = 'gap-tooltip-global';
+        document.body.appendChild(_tip);
+        return _tip;
+      }
+
+      function showTip(anchor) {
+        const tip = ensureTip();
+        tip.innerHTML = anchor.dataset.tipHtml || '';
+        tip.style.display = 'block';
+        tip.style.animation = 'tooltip-in .15s ease';
+
+        const r = anchor.getBoundingClientRect();
+        const tw = 260;
+        let left = r.left + r.width / 2 - tw / 2;
+        // keep within viewport
+        left = Math.max(8, Math.min(left, window.innerWidth - tw - 8));
+        const top = r.top - tip.offsetHeight - 10;
+        tip.style.left = left + 'px';
+        tip.style.top  = (top < 8 ? r.bottom + 10 : top) + 'px';
+        // reposition arrow: center over badge
+        const arrowLeft = (r.left + r.width / 2) - left;
+        tip.style.setProperty('--arrow-left', arrowLeft + 'px');
+      }
+
+      function hideTip() {
+        if (_tip) _tip.style.display = 'none';
+      }
+
+      window.initGapTooltips = function() {
+        document.querySelectorAll('.gap-tooltip-anchor').forEach(el => {
+          // remove old listeners by cloning
+          const fresh = el.cloneNode(true);
+          el.parentNode.replaceChild(fresh, el);
+          fresh.addEventListener('mouseenter', () => {
+            _timer = setTimeout(() => showTip(fresh), TIP_DELAY);
+          });
+          fresh.addEventListener('mouseleave', () => {
+            clearTimeout(_timer);
+            hideTip();
+          });
         });
-        el.addEventListener('mouseleave', () => {
-          clearTimeout(timer);
-          tip.style.display = 'none';
-        });
-      });
-    }
+      };
+    })();
 
     function gapBadge(level) {
       if (!level || level === 'low') return '';
       const cls = level === 'high' ? 'badge--gap-high' : 'badge--gap-medium';
       const levelLabel = level === 'high' ? 'HIGH' : 'MEDIUM';
       const tipText = level === 'high'
-        ? 'Overnight gap risk is <strong>HIGH</strong>. This means the market could open far past your stop loss — you might lose significantly more than 1R on a single bad night. Consider reducing position size or closing before weekends/earnings.'
-        : 'Overnight gap risk is <strong>MEDIUM</strong>. Markets sometimes open past your stop loss level due to after-hours news. Your actual loss on a gap night could be larger than planned. Factor this into your position size.';
-      return `<span class="gap-tooltip-anchor">
-        <span class="${cls}">GAP ${levelLabel}</span>
-        <div class="gap-tooltip">
-          <strong>What is gap risk?</strong>
-          When markets close overnight or over the weekend, news can move the price significantly. If bad news hits, the market can "gap" open — meaning the first trade of the day happens far below your stop loss, and you exit at that worse price, not at your stop. ${tipText}
-        </div>
-      </span>`;
+        ? 'Overnight gap risk is HIGH. The market could open far past your stop loss — you might lose more than 1R on a single bad night. Consider reducing position size or closing before weekends/earnings.'
+        : 'Overnight gap risk is MEDIUM. Markets can open past your stop loss due to after-hours news. Your actual loss on a gap night could be larger than planned.';
+      const html = `<strong>What is gap risk?</strong>When markets close overnight or over the weekend, news can move price significantly. The market can "gap" open — the first trade happens far below your stop loss, and you exit at that worse price, not at your stop. ${tipText}`;
+      return `<span class="gap-tooltip-anchor" data-tip-html="${html.replace(/"/g, '&quot;')}"><span class="${cls}">GAP ${levelLabel}</span></span>`;
     }
-    function gapStrip(level, note) {
+    function gapStrip(level, note, tradeId) {
       if (!level || level === 'low') return '';
-      const icon = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>`;
-      const msg = note || 'This asset has elevated overnight gap risk. Price may open significantly past your stop loss.';
-      return `<div class="gap-strip">${icon}<strong>Gap risk ${level}.</strong> ${msg}</div>`;
+      const ico = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>`;
+      const factors = note ? ` ${note}.` : '';
+      return `<div class="gap-strip" id="gap-strip-${tradeId}">${ico}<strong>Gap risk ${level}.</strong><span class="gap-factors">${factors}</span><span class="gap-advice" id="gap-advice-${tradeId}" style="opacity:.6;font-style:italic;margin-left:6px;">Analyzing…</span></div>`;
     }
 
     // ── Lightweight Charts: state ──────────────────────────────────────────────
@@ -951,7 +983,7 @@
           </div>
         </div>
         ${earningsStrip(t.near_earnings, t.days_to_earnings)}
-        ${gapStrip(t.gap_risk_level, t.gap_risk_note)}`;
+        ${gapStrip(t.gap_risk_level, t.gap_risk_note, t.id)}`;
 
       /* Levels grid */
       h += `<div class="trade-levels">`;
@@ -1180,6 +1212,26 @@
         html += '</div>';
         content.innerHTML = html;
         initGapTooltips();
+
+        // Fetch LLM gap advice for medium/high gap risk trades (fire-and-forget per trade)
+        items.filter(t => t.gap_risk_level && t.gap_risk_level !== 'low').forEach(t => {
+          const el = document.getElementById('gap-advice-' + t.id);
+          if (!el) return;
+          fetch('/api/active-trades/' + encodeURIComponent(t.id) + '/gap-advice')
+            .then(r => r.ok ? r.json() : null)
+            .then(data => {
+              if (!el) return;
+              const advice = data && data.advice ? data.advice : null;
+              if (advice) {
+                el.style.opacity = '1';
+                el.style.fontStyle = 'normal';
+                el.textContent = advice;
+              } else {
+                el.style.display = 'none';
+              }
+            })
+            .catch(() => { if (el) el.style.display = 'none'; });
+        });
 
         // Populate hero stats
         const openCount   = items.filter(t => !t.trade_phase || !t.trade_phase.startsWith('closed')).length;

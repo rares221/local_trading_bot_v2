@@ -912,6 +912,91 @@ async def get_active_trade_prices(
     return {"prices": prices}
 
 
+@router.get("/active-trades/{trade_id}/gap-advice")
+async def get_gap_advice(
+    trade_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """
+    Generate a short LLM recommendation for an active trade with gap risk.
+    Assembles: snap (ATR, gap metrics), sentiment, market regime, near_earnings.
+    Returns {"advice": "<one sentence>"} or {"advice": null} if LLM unavailable.
+    """
+    from sqlalchemy.orm import selectinload
+    from app.services.recommendations.engine import get_yf_symbol
+    from app.services.technicals import build_snapshot
+    from app.services.earnings_calendar import is_near_earnings as _is_near_earnings
+    from app.services.research.llm import generate_gap_advice
+    from app.core.preferences import get_gap_risk_config, get_earnings_calendar_config
+    from app.jobs.scheduler import _gap_risk_by_symbol
+    from datetime import date
+    import calendar
+
+    q = (
+        select(ActiveTrade)
+        .options(selectinload(ActiveTrade.recommendation))
+        .where(ActiveTrade.id == trade_id)
+    )
+    result = await db.execute(q)
+    trade = result.scalars().first()
+    if not trade or not trade.recommendation:
+        raise HTTPException(status_code=404, detail="Trade not found")
+
+    rec = trade.recommendation
+    symbol = get_yf_symbol(rec.asset_category, rec.asset_id)
+
+    # Fetch snap in thread (blocking yfinance call)
+    snap = await asyncio.to_thread(build_snapshot, symbol) if symbol else None
+
+    # Gap risk factors from scheduler cache or inline
+    _gap_data = _gap_risk_by_symbol.get(symbol, {}) if symbol else {}
+    gap_level = _gap_data.get("level", "medium")
+    gap_factors = _gap_data.get("note", "")
+
+    # Earnings
+    near_earnings, days_to_earnings = False, None
+    _earn_cfg = get_earnings_calendar_config()
+    if rec.asset_category == "stocks" and symbol:
+        try:
+            near_earnings, days_to_earnings = _is_near_earnings(symbol, _earn_cfg["earnings_window_days"])
+        except Exception:
+            pass
+
+    # Market regime from context (non-critical)
+    market_regime = "unknown"
+    try:
+        from app.services.market_context import detect_market_regime
+        mr = await asyncio.to_thread(detect_market_regime)
+        if mr:
+            market_regime = getattr(mr, "regime", None) or "unknown"
+    except Exception:
+        pass
+
+    today = date.today()
+    expiry_days = (trade.expiry - today).days if trade.expiry else 7
+
+    context = {
+        "asset_id": rec.asset_id,
+        "direction": getattr(rec, "direction", "long"),
+        "category": rec.asset_category,
+        "gap_level": gap_level,
+        "gap_factors": gap_factors,
+        "hold_days": max(0, expiry_days),
+        "weekday_name": calendar.day_name[today.weekday()],
+        "atr_pct": getattr(snap, "atr_pct", None) if snap else None,
+        "overnight_gap_avg": getattr(snap, "overnight_gap_pct_avg", None) if snap else None,
+        "overnight_gap_p95": getattr(snap, "overnight_gap_pct_p95", None) if snap else None,
+        "sentiment_score": None,  # no per-trade sentiment field; leave for LLM inference
+        "market_regime": market_regime,
+        "near_earnings": near_earnings,
+        "days_to_earnings": days_to_earnings,
+        "confidence_score": rec.confidence_score,
+    }
+
+    advice = await generate_gap_advice(context)
+    return {"advice": advice}
+
+
 @router.post("/active-trades/{trade_id}/close-manually")
 async def close_trade_manually(
     trade_id: str,

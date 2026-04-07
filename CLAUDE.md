@@ -1,4 +1,6 @@
 - app is in python. Dockerized. new packages go in requirements.txt, don't install them manually in the container use the requirements.txt file. 
+- this app is a market analisys app for 14 days predictions. keep this in mind when analizing code and workflows.
 - use `make build start` to rebuild and restart containers with changes.
 - use docker logs when debugging
 - when we add a new feature, buton, section, card. we should add a hovering tooltip help to pop up after 3s.
+- don't commit code, don't push code, don't pr code

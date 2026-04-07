@@ -375,6 +375,14 @@ class TechnicalSnapshot:
     # Gap risk metrics: computed from Open vs prev Close across OHLCV history
     overnight_gap_pct_avg: Optional[float] = None  # mean |Open - prev_Close| / prev_Close
     overnight_gap_pct_p95: Optional[float] = None  # 95th percentile gap (tail risk)
+    # Volume Profile (daily-bar approximation, 60-day lookback)
+    vpoc: Optional[float] = None          # Volume Point of Control: price with highest traded volume
+    vah: Optional[float] = None           # Value Area High: upper bound of 70% volume zone
+    val: Optional[float] = None           # Value Area Low: lower bound of 70% volume zone
+    hvn_levels: list[float] = field(default_factory=list)  # High Volume Nodes (institutional interest)
+    lvn_levels: list[float] = field(default_factory=list)  # Low Volume Nodes (price moves fast here)
+    vp_bias: str = "at_vpoc"             # "above_vpoc" | "below_vpoc" | "at_vpoc"
+    vp_overextension: Optional[float] = None  # (price - vpoc) / (vah - val); >1.5 = overextended
 
     @property
     def price_above_vwap(self) -> bool:
@@ -460,6 +468,28 @@ class TechnicalSnapshot:
                 return r
         return None
 
+    # ── Volume Profile helpers ────────────────────────────────────────────────
+
+    def in_value_area(self) -> bool:
+        """Price is inside the 70% value area (choppy equilibrium zone)."""
+        return self.vah is not None and self.val is not None and self.val < self.price < self.vah
+
+    def nearest_hvn_below(self) -> Optional[float]:
+        candidates = [h for h in self.hvn_levels if h < self.price]
+        return max(candidates) if candidates else None
+
+    def nearest_hvn_above(self) -> Optional[float]:
+        candidates = [h for h in self.hvn_levels if h > self.price]
+        return min(candidates) if candidates else None
+
+    def nearest_lvn_above(self) -> Optional[float]:
+        candidates = [l for l in self.lvn_levels if l > self.price]
+        return min(candidates) if candidates else None
+
+    def nearest_lvn_below(self) -> Optional[float]:
+        candidates = [l for l in self.lvn_levels if l < self.price]
+        return max(candidates) if candidates else None
+
 
 def calc_atr_regime(df: pd.DataFrame, lookback: int = 10, period: int = 14) -> str:
     """
@@ -502,6 +532,148 @@ def calc_vwap(df: pd.DataFrame, period: int = 20) -> Optional[float]:
     return float(vwap)
 
 
+def compute_volume_profile(
+    df: pd.DataFrame,
+    lookback: int = 60,
+    n_bins: int = 120,
+    value_area_pct: float = 0.70,
+    hvn_percentile: float = 0.65,
+    lvn_percentile: float = 0.25,
+) -> Optional[dict]:
+    """
+    Build a Volume Profile from daily OHLCV bars (TPO-style approximation).
+
+    Each day's volume is distributed uniformly across its High-Low range into
+    price bins. Accumulating across lookback days produces a volume histogram
+    from which VPOC, VAH, VAL, HVN and LVN levels are derived.
+
+    Returns dict with keys: vpoc, vah, val, hvn_levels, lvn_levels,
+    vp_bias, vp_overextension — or None if data insufficient.
+    """
+    required = {"High", "Low", "Close", "Volume"}
+    if df is None or df.empty or not required.issubset(df.columns):
+        return None
+
+    tail = df.tail(lookback).copy()
+    if len(tail) < 10:
+        return None
+
+    # Drop zero-volume bars (halts, data gaps)
+    tail = tail[tail["Volume"] > 0]
+    if tail.empty:
+        return None
+
+    price_min = float(tail["Low"].min())
+    price_max = float(tail["High"].max())
+    if price_max <= price_min:
+        return None
+
+    bin_size = (price_max - price_min) / n_bins
+    if bin_size <= 0:
+        return None
+
+    # Bin centers
+    bin_edges = np.linspace(price_min, price_max, n_bins + 1)
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+    vol_hist = np.zeros(n_bins)
+
+    for _, row in tail.iterrows():
+        lo = float(row["Low"])
+        hi = float(row["High"])
+        vol = float(row["Volume"])
+        if hi <= lo:
+            # Single-price bar — put all volume in nearest bin
+            idx = int((lo - price_min) / bin_size)
+            idx = max(0, min(n_bins - 1, idx))
+            vol_hist[idx] += vol
+            continue
+        # Find bins that overlap [lo, hi]
+        i_start = max(0, int((lo - price_min) / bin_size))
+        i_end = min(n_bins - 1, int((hi - price_min) / bin_size))
+        n_covered = i_end - i_start + 1
+        vol_per_bin = vol / n_covered
+        vol_hist[i_start:i_end + 1] += vol_per_bin
+
+    if vol_hist.sum() <= 0:
+        return None
+
+    # VPOC: bin with highest volume
+    vpoc_idx = int(np.argmax(vol_hist))
+    vpoc = float(bin_centers[vpoc_idx])
+
+    # Value Area: expand from VPOC until 70% of total volume captured
+    total_vol = vol_hist.sum()
+    target_vol = total_vol * value_area_pct
+    lo_idx = hi_idx = vpoc_idx
+    accumulated = vol_hist[vpoc_idx]
+
+    while accumulated < target_vol:
+        can_expand_up = hi_idx + 1 < n_bins
+        can_expand_dn = lo_idx - 1 >= 0
+        if not can_expand_up and not can_expand_dn:
+            break
+        vol_up = vol_hist[hi_idx + 1] if can_expand_up else -1
+        vol_dn = vol_hist[lo_idx - 1] if can_expand_dn else -1
+        if vol_up >= vol_dn:
+            hi_idx += 1
+            accumulated += vol_hist[hi_idx]
+        else:
+            lo_idx -= 1
+            accumulated += vol_hist[lo_idx]
+
+    vah = float(bin_edges[hi_idx + 1])   # upper edge of highest VA bin
+    val = float(bin_edges[lo_idx])        # lower edge of lowest VA bin
+
+    # HVN: bins above hvn_percentile of all non-zero volume bins
+    nonzero = vol_hist[vol_hist > 0]
+    hvn_thresh = float(np.percentile(nonzero, hvn_percentile * 100)) if len(nonzero) > 0 else 0
+    lvn_thresh = float(np.percentile(nonzero, lvn_percentile * 100)) if len(nonzero) > 0 else 0
+
+    hvn_raw = [float(bin_centers[i]) for i in range(n_bins) if vol_hist[i] >= hvn_thresh]
+    lvn_raw = [float(bin_centers[i]) for i in range(n_bins) if 0 < vol_hist[i] <= lvn_thresh]
+
+    # Cluster HVN/LVN levels: merge within 0.5% of each other
+    def _cluster(levels: list[float], tol: float = 0.005) -> list[float]:
+        if not levels:
+            return []
+        levels = sorted(levels)
+        clusters: list[list[float]] = [[levels[0]]]
+        for lv in levels[1:]:
+            if abs(lv - clusters[-1][-1]) / max(clusters[-1][-1], 1e-9) <= tol:
+                clusters[-1].append(lv)
+            else:
+                clusters.append([lv])
+        return [float(np.mean(c)) for c in clusters]
+
+    hvn_levels = _cluster(hvn_raw)
+    lvn_levels = _cluster(lvn_raw)
+
+    # VP bias and overextension
+    current_price = float(df["Close"].iloc[-1])
+    va_width = vah - val
+    if va_width > 0:
+        vp_overextension = (current_price - vpoc) / va_width
+    else:
+        vp_overextension = 0.0
+
+    if current_price > vpoc * 1.005:
+        vp_bias = "above_vpoc"
+    elif current_price < vpoc * 0.995:
+        vp_bias = "below_vpoc"
+    else:
+        vp_bias = "at_vpoc"
+
+    return {
+        "vpoc": round(vpoc, 4),
+        "vah": round(vah, 4),
+        "val": round(val, 4),
+        "hvn_levels": [round(h, 4) for h in hvn_levels],
+        "lvn_levels": [round(l, 4) for l in lvn_levels],
+        "vp_bias": vp_bias,
+        "vp_overextension": round(vp_overextension, 4),
+    }
+
+
 def build_snapshot(symbol: str) -> Optional[TechnicalSnapshot]:
     """Build full technical snapshot for one symbol."""
     df = fetch_ohlcv(symbol)
@@ -525,6 +697,16 @@ def build_snapshot(symbol: str) -> Optional[TechnicalSnapshot]:
     avg_daily = calc_avg_daily_move(df)
     vwap = calc_vwap(df, period=20)
     vol_regime = calc_atr_regime(df, lookback=10)
+
+    # Volume Profile (daily-bar approximation, 60-day lookback)
+    vp = compute_volume_profile(df)
+    vpoc = vp["vpoc"] if vp else None
+    vah = vp["vah"] if vp else None
+    val = vp["val"] if vp else None
+    hvn_levels = vp["hvn_levels"] if vp else []
+    lvn_levels = vp["lvn_levels"] if vp else []
+    vp_bias = vp["vp_bias"] if vp else "at_vpoc"
+    vp_overextension = vp["vp_overextension"] if vp else None
 
     # Overnight gap distribution: |Open[t] - Close[t-1]| / Close[t-1]
     overnight_gap_pct_avg: Optional[float] = None
@@ -620,6 +802,13 @@ def build_snapshot(symbol: str) -> Optional[TechnicalSnapshot]:
         volatility_regime=vol_regime,
         overnight_gap_pct_avg=_r(overnight_gap_pct_avg, 6),
         overnight_gap_pct_p95=_r(overnight_gap_pct_p95, 6),
+        vpoc=_r(vpoc, 4) if vpoc is not None else None,
+        vah=_r(vah, 4) if vah is not None else None,
+        val=_r(val, 4) if val is not None else None,
+        hvn_levels=[round(h, 4) for h in hvn_levels],
+        lvn_levels=[round(l, 4) for l in lvn_levels],
+        vp_bias=vp_bias,
+        vp_overextension=_r(vp_overextension, 4) if vp_overextension is not None else None,
     )
 
 
@@ -677,27 +866,59 @@ def compute_atr_levels(
 
     sl, tp = sl_base, tp_base
 
-    # S/R-aware adjustment
+    # ── Volume Profile-aware adjustment (priority over swing S/R) ────────────
+    if snapshot and snapshot.vpoc is not None:
+        min_sl_dist = price * 0.995  # SL never tighter than 0.5% from price
+
+        if direction == "long":
+            # SL: prefer nearest HVN below (institutional support) or VAL
+            for vp_anchor in [snapshot.nearest_hvn_below(), snapshot.val]:
+                if vp_anchor and vp_anchor < price:
+                    vp_sl = vp_anchor * 0.998
+                    if sl_base < vp_sl < min_sl_dist:
+                        sl = vp_sl
+                        break
+
+            # TP: avoid placing TP inside an HVN (price stalls/reverses there)
+            hvn_above = snapshot.nearest_hvn_above()
+            if hvn_above and price < hvn_above < tp_base:
+                tp = hvn_above * 0.997  # just below the HVN — realistic exit
+            # VAH as TP cap: strong resistance at value area boundary
+            if snapshot.vah and price < snapshot.vah < tp_base:
+                tp = snapshot.vah * 0.998
+
+        else:  # short
+            # SL: prefer nearest HVN above or VAH
+            for vp_anchor in [snapshot.nearest_hvn_above(), snapshot.vah]:
+                if vp_anchor and vp_anchor > price:
+                    vp_sl = vp_anchor * 1.002
+                    max_sl_dist = price * 1.005
+                    if sl_base > vp_sl > max_sl_dist:
+                        sl = vp_sl
+                        break
+
+            # TP: avoid placing TP inside an HVN below
+            hvn_below = snapshot.nearest_hvn_below()
+            if hvn_below and tp_base < hvn_below < price:
+                tp = hvn_below * 1.003  # just above the HVN
+            # VAL as TP cap: strong support at value area boundary
+            if snapshot.val and tp_base < snapshot.val < price:
+                tp = snapshot.val * 1.002
+
+    # ── Swing S/R fallback (when VP levels don't apply) ──────────────────────
     if snapshot:
         if direction == "long":
-            # SL: snap to nearest support below price if it provides a tighter stop
             support = snapshot.nearest_support_below()
             if support is not None and support < price:
-                # Place SL slightly below the support (0.2% buffer)
                 sr_sl = support * 0.998
-                # Only snap if it's above the ATR-based SL (tighter) and at least 0.5% from price
-                min_sl = price * 0.995  # never tighter than 0.5%
+                min_sl = price * 0.995
                 if sr_sl > sl_base and sr_sl < min_sl:
-                    sl = sr_sl  # valid: tighter than ATR and far enough from price
-                elif sr_sl >= min_sl:
-                    pass  # too tight (within 0.5% of price), keep ATR level
+                    sl = sr_sl
 
-            # TP: consider nearest resistance above for a realistic target
             resistance = snapshot.nearest_resistance_above()
             if resistance is not None and resistance > price:
-                # Use resistance as TP if it's between price and ATR-based TP
                 if resistance < tp_base:
-                    tp = resistance * 0.998  # just below resistance
+                    tp = resistance * 0.998
         else:  # short
             resistance = snapshot.nearest_resistance_above()
             if resistance is not None and resistance > price:

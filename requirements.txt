@@ -28,3 +28,8 @@ pydantic-settings>=2.1.0
 # Research rationale (Option B): multi-provider LLM (OpenAI, Anthropic, Ollama, OpenRouter)
 openai>=1.12.0
 anthropic>=0.39.0
+
+# Testing
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+pytest-mock>=3.12.0

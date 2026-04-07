@@ -552,3 +552,110 @@ async def generate_backtest_insight(
     if parsed is None:
         _logger.warning("Backtest insight JSON parse failed for %s. Raw: %r", asset_id, (raw or "")[:200])
     return parsed
+
+
+# ── Gap Risk Advisor ──────────────────────────────────────────────────────────
+
+_GAP_ADVICE_SYSTEM = (
+    "You are a risk manager advising a retail trader on an active position that has elevated overnight gap risk. "
+    "Your job: analyze the provided trade data and give ONE specific, actionable recommendation in plain English. "
+    "Be direct and concrete. Maximum 25 words. No markdown, no bullet points, no disclaimers. "
+    "Examples of good output: "
+    "'Reduce to half size before Friday close; this short spans 2 weekends with bearish momentum.' "
+    "'Consider closing 30% now — high ATR plus earnings in 3 days makes overnight gap destructive.' "
+    "'Hold but place a tighter mental stop; gap avg is small relative to your SL buffer.'"
+)
+
+
+async def generate_gap_advice(context: dict[str, Any]) -> str | None:
+    """
+    Generate a short LLM gap risk recommendation for an active trade.
+    Uses extended thinking (Anthropic) or standard call (other providers).
+    Returns a single plain-text sentence or None if LLM unavailable.
+    """
+    import logging as _log
+    _logger = _log.getLogger(__name__)
+
+    from app.core.config import settings
+    from app.core.preferences import get_research_llm_config
+
+    cfg = get_research_llm_config()
+    provider_id = (cfg.get("research_llm_provider") or "openai").strip().lower()
+    provider = get_provider_by_id(provider_id)
+    if not provider:
+        provider_id = "openai"
+        provider = get_provider_by_id("openai")
+
+    api_key = _get_api_key_for_provider(provider_id)
+    if not is_available(provider_id, api_key):
+        return None
+
+    model = (cfg.get("research_llm_model") or "").strip() or provider.default_model
+    if not model:
+        return None
+
+    # Build user message from context
+    asset      = context.get("asset_id", "Unknown")
+    direction  = context.get("direction", "long").upper()
+    category   = context.get("category", "stocks")
+    gap_level  = context.get("gap_level", "medium").upper()
+    gap_factors = context.get("gap_factors", "")
+    hold_days  = context.get("hold_days")
+    atr_pct    = context.get("atr_pct")
+    gap_avg    = context.get("overnight_gap_avg")
+    gap_p95    = context.get("overnight_gap_p95")
+    sentiment  = context.get("sentiment_score")
+    regime     = context.get("market_regime", "unknown")
+    near_earn  = context.get("near_earnings", False)
+    days_earn  = context.get("days_to_earnings")
+    confidence = context.get("confidence_score")
+    weekday    = context.get("weekday_name", "")
+
+    parts = [
+        f"Asset: {asset} ({category}, {direction}).",
+        f"Gap risk level: {gap_level}. Active risk factors: {gap_factors or 'hold period, category'}.",
+    ]
+    if hold_days is not None:
+        parts.append(f"Days until expiry: {hold_days}.")
+    if weekday:
+        parts.append(f"Today is {weekday}.")
+    if atr_pct is not None:
+        parts.append(f"ATR (daily %): {atr_pct*100:.2f}%.")
+    if gap_avg is not None:
+        parts.append(f"Avg overnight gap: {gap_avg*100:.2f}%.")
+    if gap_p95 is not None:
+        parts.append(f"95th-pct overnight gap: {gap_p95*100:.2f}%.")
+    if sentiment is not None:
+        sentiment_label = "bullish" if sentiment > 0.05 else "bearish" if sentiment < -0.05 else "neutral"
+        parts.append(f"Current sentiment: {sentiment:.2f} ({sentiment_label}).")
+    if regime and regime != "unknown":
+        parts.append(f"Market regime: {regime}.")
+    if confidence is not None:
+        parts.append(f"Signal confidence: {confidence}%.")
+    if near_earn and days_earn is not None:
+        parts.append(f"Earnings report in {days_earn} day(s) — volatility spike risk.")
+
+    user_content = " ".join(parts) + "\n\nWhat should the trader do about gap risk on this position?"
+
+    ollama_base_url = (cfg.get("ollama_base_url") or "").strip() or (settings.ollama_base_url or "http://localhost:11434")
+
+    # Extended thinking for Anthropic (small budget — focused question)
+    THINKING_BUDGET = 2000
+
+    try:
+        if provider_id == "openai":
+            return await _call_openai(model, _GAP_ADVICE_SYSTEM, user_content, api_key or "", max_tokens=80)
+        elif provider_id == "anthropic":
+            return await _call_anthropic(
+                model, _GAP_ADVICE_SYSTEM, user_content, api_key or "",
+                max_tokens=THINKING_BUDGET + 80, thinking_budget=THINKING_BUDGET,
+            )
+        elif provider_id == "ollama":
+            combined = f"{_GAP_ADVICE_SYSTEM.strip()}\n\n---\n\n{user_content.strip()}"
+            return await _call_ollama(model, "", combined, ollama_base_url, num_predict=60, timeout=60.0)
+        elif provider_id == "openrouter":
+            return await _call_openrouter(model, _GAP_ADVICE_SYSTEM, user_content, api_key or "", max_tokens=80)
+    except Exception as exc:
+        _logger.warning("Gap advice LLM call failed (%s/%s): %s", provider_id, model, exc)
+
+    return None
