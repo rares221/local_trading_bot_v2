@@ -9,7 +9,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from datetime import date
+from datetime import date, datetime, timezone
 
 from app.models.feed_item import FeedItem
 from app.services.analysis import get_latest_analysis
@@ -172,13 +172,22 @@ async def build_research_context(
     else:
         ctx["levels_source"] = "recommendation"
 
-    # Up to 2 recent feed headlines that mention this asset (asset_id in asset_tags)
+    # Up to 3 recent feed headlines with ages (for near-horizon LLM context)
+    ctx["headline_ages"] = []   # parallel list: hours since fetched (float or None)
     q = select(FeedItem).order_by(FeedItem.fetched_at.desc()).limit(200)
     result = await session.execute(q)
+    _now_utc = datetime.now(timezone.utc)
     for it in result.scalars().all():
         if it.asset_tags and asset_id in it.asset_tags:
             ctx["headlines"].append(it.title or "(no title)")
-            if len(ctx["headlines"]) >= 2:
+            if it.fetched_at:
+                fa = it.fetched_at
+                if fa.tzinfo is None:
+                    fa = fa.replace(tzinfo=timezone.utc)
+                ctx["headline_ages"].append(round((_now_utc - fa).total_seconds() / 3600, 1))
+            else:
+                ctx["headline_ages"].append(None)
+            if len(ctx["headlines"]) >= 3:
                 break
     # Optional: yfinance .info for sector, industry, market cap (stocks/ETFs; skip on failure)
     symbol = get_yf_symbol(category, asset_id)
@@ -203,12 +212,57 @@ async def build_research_context(
                         fund["market_cap"] = int(info["marketCap"])
                     if info.get("shortName"):
                         fund["short_name"] = str(info["shortName"])
+                    # P/E + 52-week position — used for far-horizon LLM context
+                    if info.get("trailingPE") is not None:
+                        try:
+                            fund["pe_ratio"] = round(float(info["trailingPE"]), 1)
+                        except Exception:
+                            pass
+                    high52 = info.get("fiftyTwoWeekHigh")
+                    low52 = info.get("fiftyTwoWeekLow")
+                    buy_in = ctx.get("buy_in_price")
+                    if high52 and low52 and buy_in and float(high52) > float(low52):
+                        try:
+                            fund["position_52w"] = round(
+                                (float(buy_in) - float(low52)) / (float(high52) - float(low52)) * 100, 1
+                            )
+                        except Exception:
+                            pass
                     if fund:
                         ctx["fundamentals"] = fund
             finally:
                 log.setLevel(old_level)
         except Exception:
             pass
+    # Sentiment trend from analysis payload (improving / worsening / neutral)
+    if analysis and analysis.payload:
+        by_asset_s = (analysis.payload or {}).get("by_asset_sentiment") or {}
+        asset_info = by_asset_s.get(asset_id) or {}
+        st = asset_info.get("sentiment_trend")
+        if st:
+            ctx["sentiment_trend"] = st
+
+    # Market regime + DXY macro (global signals; sync calls reuse cached yfinance data)
+    try:
+        from app.services.market_context import detect_market_regime, detect_dxy_macro
+        regime = detect_market_regime()
+        ctx["market_regime"] = regime.regime          # risk_on | risk_off | cautious
+        dxy = detect_dxy_macro()
+        if dxy.available:
+            ctx["dxy_trend"] = dxy.trend              # bullish | bearish | neutral
+            ctx["dxy_change_5d"] = dxy.change_5d_pct
+            ctx["dxy_change_20d"] = dxy.change_20d_pct
+    except Exception:
+        pass
+
+    # Upcoming macro events in the trade window (FOMC, CPI, NFP)
+    _expiry_days = int(ctx.get("expiry_days") or 14)
+    try:
+        from app.services.macro_calendar import get_upcoming_events
+        ctx["upcoming_events"] = get_upcoming_events(days_ahead=_expiry_days)
+    except Exception:
+        ctx["upcoming_events"] = []
+
     return ctx
 
 
@@ -222,4 +276,21 @@ async def generate_rationale(context: dict[str, Any]) -> str | None:
     return await _generate(context)
 
 
-__all__ = ["build_research_context", "generate_rationale"]
+async def capture_metrics_at_entry(
+    recommendation_id: str,
+    active_trade_id: str,
+    asset_id: str,
+    asset_category: str,
+    risk_tier: str,
+    direction: str,
+    sentiment_avg: float | None = None,
+) -> None:
+    """Fire-and-forget wrapper — call via asyncio.create_task."""
+    from app.services.research.llm import _capture_metrics_at_entry_async
+    await _capture_metrics_at_entry_async(
+        recommendation_id, active_trade_id, asset_id, asset_category,
+        risk_tier, direction, sentiment_avg,
+    )
+
+
+__all__ = ["build_research_context", "generate_rationale", "capture_metrics_at_entry"]

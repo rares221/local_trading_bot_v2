@@ -515,6 +515,139 @@ async def job_update_active_trades() -> None:
             session.add(level)
         await session.commit()
 
+        # P9: copy outcomes + quality_score to llm_rationale_logs
+        await _verify_outcomes_for_logs(session)
+        await session.commit()
+
+
+def _calculate_quality_score(
+    outcome: str,
+    validation_flags: list[str],
+    retry_count: int,
+    pnl_r: float | None,
+    metrics_accuracy_score: float | None = None,
+    news_verified: bool | None = None,
+) -> int:
+    score = 5  # baseline
+
+    if outcome == "hit_tp":
+        score += 3
+    elif outcome == "hit_sl":
+        score -= 3
+    # expired: no change
+
+    if metrics_accuracy_score is not None:
+        if metrics_accuracy_score >= 0.85:
+            score += 2
+        elif metrics_accuracy_score >= 0.65:
+            score += 1
+        elif metrics_accuracy_score < 0.50:
+            score -= 2
+
+    if news_verified is True:
+        score += 1
+    elif news_verified is False:
+        score -= 1
+
+    for flag in validation_flags:
+        if flag in ("V3_direction_conflict", "V4a_price_hallucination", "V4b_indicator_hallucination"):
+            score -= 2
+        elif flag in ("V4c_news_hallucination", "V4d_temporal_hallucination", "V5_too_generic"):
+            score -= 1
+
+    score -= retry_count
+
+    if outcome == "hit_tp" and pnl_r is not None and pnl_r >= 2.0:
+        score += 1
+
+    return max(0, min(10, score))
+
+
+async def _verify_outcomes_for_logs(session: AsyncSession) -> None:
+    """
+    P9: For every closed ActiveTrade that has a linked LLMRationaleLog without an outcome,
+    copy outcome data and calculate quality_score.
+    Runs at the end of job_update_active_trades.
+    """
+    from app.models.llm_rationale_log import LLMRationaleLog
+    from sqlalchemy import and_
+
+    try:
+        # Find closed trades with unresolved rationale logs
+        q = (
+            select(ActiveTrade, Recommendation)
+            .join(Recommendation, ActiveTrade.recommendation_id == Recommendation.id)
+            .where(ActiveTrade.outcome.isnot(None))
+        )
+        rows = (await session.execute(q)).all()
+
+        if not rows:
+            return
+
+        rec_ids = list({rec.id for _, rec in rows})
+
+        # Load all unresolved logs for these recommendations in one query
+        logs_q = (
+            select(LLMRationaleLog)
+            .where(
+                LLMRationaleLog.recommendation_id.in_(rec_ids),
+                LLMRationaleLog.outcome.is_(None),
+            )
+        )
+        logs = (await session.execute(logs_q)).scalars().all()
+
+        if not logs:
+            return
+
+        # Build lookup: recommendation_id → (trade, rec)
+        trade_by_rec: dict[str, tuple] = {}
+        for trade, rec in rows:
+            if rec.id not in trade_by_rec:
+                trade_by_rec[rec.id] = (trade, rec)
+
+        updated = 0
+        for log in logs:
+            pair = trade_by_rec.get(log.recommendation_id)
+            if not pair:
+                continue
+            trade, rec = pair
+
+            entry_price = rec.buy_in_price or 0.0
+            original_sl = trade.current_sl or 0.0
+            closing_price = trade.closing_price or 0.0
+            direction = getattr(rec, "direction", "long") or "long"
+            risk = abs(entry_price - original_sl)
+
+            pnl_r: float | None = None
+            if risk > 0 and closing_price:
+                if direction == "long":
+                    pnl_r = round((closing_price - entry_price) / risk, 3)
+                else:
+                    pnl_r = round((entry_price - closing_price) / risk, 3)
+
+            flags = log.get_validation_flags()
+            quality = _calculate_quality_score(
+                outcome=trade.outcome,
+                validation_flags=flags,
+                retry_count=log.retry_count or 0,
+                pnl_r=pnl_r,
+                metrics_accuracy_score=log.metrics_accuracy_score,
+                news_verified=log.news_verified,
+            )
+
+            log.outcome = trade.outcome
+            log.outcome_at = trade.outcome_at
+            log.closing_price = closing_price or None
+            log.pnl_r = pnl_r
+            log.quality_score = quality
+            updated += 1
+
+        if updated:
+            await session.flush()
+            print(f"[VERIFY_OUTCOMES] Updated {updated} rationale log(s) with outcome data")
+    except Exception as exc:
+        print(f"[VERIFY_OUTCOMES] Failed (non-fatal): {exc}")
+
 
 async def job_daily_briefing() -> None:
     """Run daily briefing checklist and store result."""

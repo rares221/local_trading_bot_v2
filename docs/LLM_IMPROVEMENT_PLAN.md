@@ -814,8 +814,8 @@ Report the initial grade and any adjustments in grade_reason.
 | **5** | `_format_user_content` extins (horizon, confidence, sentiment_trend, regime, events) | ⬜ Pending | Mediu | Mare | P4 |
 | **6** | `SYSTEM_PROMPT_NEAR` + `SYSTEM_PROMPT_FAR` | ⬜ Pending | Mediu | Mare | P4, P5 |
 | **7** | Logging rationale în `llm_rationale_log` (fără feedback încă) | ✅ Done 2026-04-07 | Mic | Critic | P1 |
-| **8** | `capture_metrics_at_entry` (inline la ActiveTrade create) | ⬜ Pending | Mic | Critic | P1, P7 |
-| **9** | `job_verify_outcomes` (copiere outcome + quality score) | ⬜ Pending | Mic | Critic | P1, P7, P8 |
+| **8** | `capture_metrics_at_entry` (inline la ActiveTrade create) | ✅ Done 2026-04-07 | Mic | Critic | P1, P7 |
+| **9** | `job_verify_outcomes` (copiere outcome + quality score) | ✅ Done 2026-04-07 | Mic | Critic | P1, P7, P8 |
 | **10** | Validator V4a–V4d (halucinații numerice + news) | ⬜ Pending | Mediu | Mare | P7 |
 | **11** | `verify_news_references` (news cross-ref job) | ⬜ Pending | Mediu | Mediu | P1, P7 |
 | **12** | `verify_metrics_claims` (post-outcome) | ⬜ Pending | Mediu | Mare | P8, P9 |

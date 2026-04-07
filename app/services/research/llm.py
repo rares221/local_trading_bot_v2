@@ -30,34 +30,123 @@ STRATEGY_EXPLAIN_SYSTEM = (
 )
 
 
-SYSTEM_PROMPT = (
-    "You are a concise trading research assistant. In 2–4 sentences only, "
-    "explain why this SPECIFIC trade direction (the Direction field provided) might make sense and the main risk. "
-    "CRITICAL: If Direction is 'short', frame the rationale around why the asset may decline — "
-    "do NOT argue for a long/bullish position. If Direction is 'long', argue why it may rise. "
-    "Reference key technicals, sentiment, and market conditions. "
-    "No disclaimers; factual and neutral."
-)
+SYSTEM_PROMPT_NEAR = """\
+You are a concise trading research assistant analyzing a SHORT-TERM trade \
+(horizon: {horizon_days} trading days, ~{calendar_days} calendar days).
+
+In 2-4 sentences, explain why the SPECIFIC direction ({direction}) makes sense \
+FOR THIS TIMEFRAME and identify the most critical near-term risk.
+
+Direction rules (mandatory):
+- SHORT direction: explain why price will DECLINE in the next {horizon_days} days. \
+Do NOT argue for a bullish position.
+- LONG direction: explain why price will RISE in the next {horizon_days} days. \
+Do NOT argue for a bearish position.
+
+Data accuracy rules (mandatory — violations are detected and logged):
+- Use ONLY indicator values explicitly stated in the provided data.
+- Use ONLY prices from context (entry, SL, TP, VPOC, VAH, VAL).
+- Reference ONLY headlines explicitly provided below. Do not add news from memory.
+- Do not approximate or round technical values.
+
+Required content:
+- Reference at least 2 specific indicators with their exact provided values.
+- If macro events are listed in the trade window, assess their impact on direction.
+- If sentiment contradicts direction, acknowledge and explain the technical override.
+- If SL/TP vs Value Area data is provided, mention whether it supports or weakens the setup.
+
+Forbidden:
+- Long-term language ("over the coming months", "fundamentally undervalued").
+- Generic statements without specific provided data.
+- Invented price levels not in context.
+- Disclaimers.
+{hallucination_guard}"""
+
+SYSTEM_PROMPT_FAR = """\
+You are a concise trading research assistant analyzing a MEDIUM-TERM trade \
+(horizon: {horizon_days} trading days, ~{calendar_weeks} calendar weeks).
+
+In 2-4 sentences, explain why the SPECIFIC direction ({direction}) makes sense \
+STRUCTURALLY OVER THIS TIMEFRAME and identify the most critical medium-term risk.
+
+Direction rules (mandatory):
+- SHORT direction: explain structural reasons price will trend LOWER. \
+Do NOT argue for a bullish thesis.
+- LONG direction: explain structural reasons price will trend HIGHER. \
+Do NOT argue for a bearish thesis.
+
+Data accuracy rules (mandatory):
+- Use ONLY values explicitly stated in the provided data.
+- Reference ONLY macro context provided (DXY trend, SPX regime, yields).
+- Do not treat short-term technical patterns as primary drivers on this horizon.
+
+Required content:
+- Reference the structural trend (EMA/SMA alignment if provided, ADX trend strength).
+- Reference macro context (DXY, market regime, yield environment) if provided.
+- Acknowledge the increased uncertainty of a {calendar_weeks}-week prediction.
+- If sector/fundamental data is provided, integrate it.
+
+Forbidden:
+- Short-term language ("this week", "by Friday", "intraday pattern").
+- Generic momentum without trend context.
+- Invented support/resistance levels.
+- Disclaimers.
+{hallucination_guard}"""
 
 
 def _format_user_content(context: dict[str, Any]) -> str:
-    sentiment = context.get("sentiment_avg")
-    price = context.get("buy_in_price")
-    risk = context.get("risk_tier")
-    headlines = context.get("headlines") or []
-    asset = context.get("asset_id", "this asset")
+    asset       = context.get("asset_id", "this asset")
+    direction   = context.get("direction", "long")
+    horizon     = context.get("horizon", "near")
+    expiry_days = context.get("expiry_days")
+    sentiment   = context.get("sentiment_avg")
+    sent_trend  = context.get("sentiment_trend")
+    confidence  = context.get("confidence_score")
+    price       = context.get("buy_in_price")
+    risk        = context.get("risk_tier")
+    market_reg  = context.get("market_regime")
     fundamentals = context.get("fundamentals") or {}
-    direction = context.get("direction", "long")
+    headlines   = context.get("headlines") or []
+    hl_ages     = context.get("headline_ages") or []
+    upcoming    = context.get("upcoming_events") or []
+
     parts = [f"Asset: {asset}.", f"Direction: {direction}."]
+
+    # ── Horizon (common) ─────────────────────────────────────────────────────
+    if expiry_days is not None:
+        cal_days = round(int(expiry_days) * 1.4)
+        parts.append(f"Trade horizon: {horizon} ({expiry_days} trading days, ~{cal_days} calendar days).")
+
+    # ── Confidence score (common) ─────────────────────────────────────────────
+    if confidence is not None:
+        parts.append(f"Engine confidence: {int(confidence)}/100.")
+
+    # ── Sentiment (common) ───────────────────────────────────────────────────
     if sentiment is not None:
         parts.append(f"Recent sentiment (weighted avg): {sentiment:.3f}.")
+        if sent_trend:
+            parts.append(f"Sentiment trend (24h vs 24-72h window): {sent_trend}.")
+        # Flag contradiction between sentiment polarity and trade direction
+        if direction == "long" and sentiment < -0.05:
+            parts.append("NOTE: Sentiment is negative but direction is LONG — technicals override.")
+        elif direction == "short" and sentiment > 0.05:
+            parts.append("NOTE: Sentiment is positive but direction is SHORT — technicals override.")
+
     if price is not None:
         parts.append(f"Current/reference price: {price}.")
     if risk:
         parts.append(f"Risk tier: {risk}.")
+
+    # ── Market regime (common) ────────────────────────────────────────────────
+    if market_reg:
+        parts.append(f"Market regime: {market_reg}.")
+
+    # ── Technicals (common) ──────────────────────────────────────────────────
     vol_notes = context.get("volatility_notes")
     if vol_notes:
         parts.append(f"Technicals: {vol_notes}.")
+
+    # ── Fundamentals (common, with far-horizon extension) ────────────────────
     if fundamentals:
         fparts = []
         if fundamentals.get("sector"):
@@ -78,9 +167,19 @@ def _format_user_content(context: dict[str, Any]) -> str:
             fparts.append(f"({fundamentals['short_name']})")
         if fparts:
             parts.append("Fundamentals: " + ", ".join(fparts) + ".")
-    if headlines:
-        parts.append("Headlines: " + " | ".join(headlines[:2]))
-    # Relative Strength context
+        # Far-horizon only: P/E + 52-week position
+        if horizon == "far":
+            pe = fundamentals.get("pe_ratio")
+            pos52 = fundamentals.get("position_52w")
+            if pe is not None or pos52 is not None:
+                far_f = []
+                if pe is not None:
+                    far_f.append(f"P/E: {pe}")
+                if pos52 is not None:
+                    far_f.append(f"52-week position: {pos52:.0f}%")
+                parts.append(" | ".join(far_f) + ".")
+
+    # ── Relative Strength (common) ────────────────────────────────────────────
     rs_20d = context.get("rs_20d")
     if rs_20d is not None:
         rs_60d = context.get("rs_60d")
@@ -95,23 +194,66 @@ def _format_user_content(context: dict[str, Any]) -> str:
             rs_line += f"; vs {sector_etf}: {sector_rs:.2f}x ({sector_label} its sector)"
         parts.append(rs_line + ".")
 
-    # Volume Profile context
-    vpoc = context.get("vpoc")
-    if vpoc is not None:
-        vah = context.get("vah")
-        val = context.get("val")
-        vp_bias = context.get("vp_bias", "at_vpoc")
-        vp_ext = context.get("vp_overextension")
-        in_va = context.get("in_value_area", False)
-        bias_label = {"above_vpoc": "above fair value", "below_vpoc": "below fair value"}.get(vp_bias, "at fair value")
-        vp_line = f"Volume Profile: VPOC=${vpoc:.4g} ({bias_label})"
-        if vah and val:
-            vp_line += f", Value Area ${val:.4g}–${vah:.4g}"
-        if in_va:
-            vp_line += ", price inside value area (choppy equilibrium zone)"
-        if vp_ext is not None and abs(vp_ext) > 1.3:
-            vp_line += f", overextended {abs(vp_ext):.1f}× from VPOC (mean reversion risk)"
-        parts.append(vp_line + ".")
+    # ── Horizon-specific sections ─────────────────────────────────────────────
+    if horizon == "near":
+        # Volume Profile (near only — irrelevant on far horizon)
+        vpoc = context.get("vpoc")
+        if vpoc is not None:
+            vah = context.get("vah")
+            val = context.get("val")
+            vp_bias = context.get("vp_bias", "at_vpoc")
+            vp_ext = context.get("vp_overextension")
+            in_va = context.get("in_value_area", False)
+            bias_label = {"above_vpoc": "above fair value", "below_vpoc": "below fair value"}.get(vp_bias, "at fair value")
+            vp_line = f"Volume Profile: VPOC=${vpoc:.4g} ({bias_label})"
+            if vah and val:
+                vp_line += f", Value Area ${val:.4g}–${vah:.4g}"
+            if in_va:
+                vp_line += ", price inside value area (choppy equilibrium zone)"
+            if vp_ext is not None and abs(vp_ext) > 1.3:
+                vp_line += f", overextended {abs(vp_ext):.1f}× from VPOC (mean reversion risk)"
+            parts.append(vp_line + ".")
+
+            # SL/TP vs Value Area (near only)
+            sl = context.get("stop_loss")
+            tp = context.get("take_profit")
+            if sl and tp and vah and val:
+                sl_in_va = float(val) <= float(sl) <= float(vah)
+                tp_beyond = float(tp) > float(vah) if direction == "long" else float(tp) < float(val)
+                parts.append(f"SL vs Value Area: {'INSIDE (frequently tested)' if sl_in_va else 'outside (protected)'}.")
+                parts.append(f"TP vs Value Area: {'beyond boundary (realistic target)' if tp_beyond else 'within VA (low R/R zone)'}.")
+
+        # Macro events in trade window (near only)
+        if upcoming:
+            ev_strs = [
+                f"high-impact macro event in {e['days_away']}d ({e['date']})"
+                for e in upcoming[:3]
+            ]
+            parts.append(f"Macro events in trade window: {' | '.join(ev_strs)}.")
+
+        # Headlines with age (near only — timing matters on short horizon)
+        for i, title in enumerate(headlines[:3]):
+            age = hl_ages[i] if i < len(hl_ages) else None
+            if age is not None:
+                parts.append(f"Headline ({age:.0f}h ago): {title}")
+            else:
+                parts.append(f"Headline: {title}")
+
+    else:  # far horizon
+        # DXY trend detail (far only — structural USD context matters on multi-week trades)
+        dxy_trend = context.get("dxy_trend")
+        dxy_5d = context.get("dxy_change_5d")
+        dxy_20d = context.get("dxy_change_20d")
+        if dxy_trend:
+            dxy_line = f"DXY trend: {dxy_trend}"
+            if dxy_5d is not None and dxy_20d is not None:
+                dxy_line += f" (5d: {dxy_5d:+.1f}%, 20d: {dxy_20d:+.1f}%)"
+            parts.append(dxy_line + ".")
+
+        # Headlines (no ages on far horizon — recent news less relevant)
+        if headlines:
+            parts.append("Headlines: " + " | ".join(headlines[:2]))
+
     return "\n".join(parts)
 
 
@@ -330,6 +472,76 @@ async def generate_correlation_analysis(diverging_signals: list[dict[str, Any]])
     return None
 
 
+async def _capture_metrics_at_entry_async(
+    recommendation_id: str,
+    active_trade_id: str,
+    asset_id: str,
+    asset_category: str,
+    risk_tier: str,
+    direction: str,
+    sentiment_avg: float | None,
+) -> None:
+    """
+    Fire-and-forget: capture live TechnicalSnapshot at trade entry and persist
+    to llm_rationale_logs.metrics_at_entry + active_trade_id for all matching logs.
+    """
+    try:
+        import asyncio
+        from app.core.database import AsyncSessionLocal
+        from app.models.llm_rationale_log import LLMRationaleLog
+        from app.services.recommendations.engine import get_yf_symbol, compute_sl_tp_for_symbol
+        from sqlalchemy import select
+
+        symbol = get_yf_symbol(asset_category, asset_id)
+        if not symbol and asset_category.lower() in ("stocks", "etfs", "etf", "stock"):
+            symbol = asset_id.upper()
+
+        snap = None
+        if symbol:
+            result = await asyncio.to_thread(compute_sl_tp_for_symbol, symbol, risk_tier or "moderate", direction)
+            if result:
+                _, _, _, snap = result
+
+        metrics: dict = {"captured_at": datetime.now(timezone.utc).isoformat()}
+        if snap:
+            metrics["price"] = snap.price
+            if snap.rsi is not None:
+                metrics["rsi"] = round(snap.rsi, 1)
+            if snap.macd is not None:
+                metrics["macd_histogram"] = round(snap.macd[2], 4)
+            if snap.atr is not None:
+                metrics["atr"] = round(snap.atr, 4)
+            if snap.adx is not None:
+                metrics["adx"] = round(snap.adx[0], 1)
+            if snap.vpoc is not None:
+                metrics["vpoc"] = snap.vpoc
+            if snap.vah is not None:
+                metrics["vah"] = snap.vah
+            if snap.val is not None:
+                metrics["val"] = snap.val
+            metrics["vp_bias"] = snap.vp_bias
+        if sentiment_avg is not None:
+            metrics["sentiment_avg"] = round(sentiment_avg, 4)
+
+        metrics_json = json.dumps(metrics, default=str)
+
+        async with AsyncSessionLocal() as session:
+            q = (
+                select(LLMRationaleLog)
+                .where(
+                    LLMRationaleLog.recommendation_id == recommendation_id,
+                    LLMRationaleLog.metrics_at_entry.is_(None),
+                )
+            )
+            rows = (await session.execute(q)).scalars().all()
+            for row in rows:
+                row.active_trade_id = active_trade_id
+                row.metrics_at_entry = metrics_json
+            await session.commit()
+    except Exception as exc:
+        _logger.warning("Failed to capture metrics at entry (non-fatal): %s", exc)
+
+
 async def _log_rationale_async(
     context: dict[str, Any],
     rationale_text: str,
@@ -365,7 +577,7 @@ async def _log_rationale_async(
             horizon_days=int(expiry_days),
             provider_id=provider_id,
             model=model,
-            prompt_version=PROMPT_VERSION_RATIONALE,
+            prompt_version=context.get("_prompt_version") or PROMPT_VERSION_RATIONALE,
             context_snapshot=json.dumps(snapshot, default=str),
             rationale_text=rationale_text,
             validation_flags=json.dumps(flags),
@@ -407,11 +619,38 @@ async def generate_rationale(context: dict[str, Any]) -> str | None:
     ollama_base_url = (cfg.get("ollama_base_url") or "").strip() or (settings.ollama_base_url or "http://localhost:11434")
     thinking_budget = int(cfg.get("thinking_budget") or 0)
 
+    # Select prompt template and version based on trade horizon
+    _horizon = (context.get("horizon") or "near").lower()
+    _expiry_days = int(context.get("expiry_days") or 14)
+    _direction = (context.get("direction") or "long").lower()
+    _calendar_days = round(_expiry_days * 1.4)
+
+    if _horizon == "far":
+        _calendar_weeks = round(_expiry_days / 5, 1)
+        _system_tpl = SYSTEM_PROMPT_FAR.format(
+            direction=_direction,
+            horizon_days=_expiry_days,
+            calendar_weeks=_calendar_weeks,
+            hallucination_guard="",
+        )
+        _prompt_version = "rationale_far_v1"
+    else:
+        _system_tpl = SYSTEM_PROMPT_NEAR.format(
+            direction=_direction,
+            horizon_days=_expiry_days,
+            calendar_days=_calendar_days,
+            hallucination_guard="",
+        )
+        _prompt_version = "rationale_near_v1"
+
+    # Stamp prompt version into context so _log_rationale_async can persist it
+    context = dict(context, _prompt_version=_prompt_version)
+
     all_flags: list[str] = []
     last_text: str | None = None
 
     for attempt in range(MAX_RETRIES + 1):
-        system = SYSTEM_PROMPT
+        system = _system_tpl
         user = _format_user_content(context)
         corrective = context.get("_corrective_instruction")
         if corrective:

@@ -468,6 +468,7 @@ async def mark_took_it(
     rec.status = "taken"
     now = datetime.now(timezone.utc)
     created_ids: list[str] = []
+    first_active_id: str | None = None
     for leg in legs:
         active = ActiveTrade(
             recommendation_id=rec.id,
@@ -482,6 +483,8 @@ async def mark_took_it(
         db.add(active)
         await db.flush()
         created_ids.append(active.id)
+        if first_active_id is None:
+            first_active_id = active.id
         level = ActiveTradeLevel(
             active_trade_id=active.id,
             sl=rec.stop_loss,
@@ -491,6 +494,19 @@ async def mark_took_it(
         )
         db.add(level)
     await db.commit()
+
+    # P8: capture live metrics snapshot into llm_rationale_log (fire-and-forget)
+    if first_active_id:
+        from app.services.research import capture_metrics_at_entry
+        asyncio.create_task(capture_metrics_at_entry(
+            recommendation_id=rec.id,
+            active_trade_id=first_active_id,
+            asset_id=rec.asset_id or "",
+            asset_category=rec.asset_category or "",
+            risk_tier=rec.risk_tier or "moderate",
+            direction=getattr(rec, "direction", "long") or "long",
+            sentiment_avg=None,
+        ))
     return _with_disclaimer({
         "ok": True,
         "recommendation_id": recommendation_id,

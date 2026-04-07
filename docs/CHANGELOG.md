@@ -6,7 +6,23 @@
 
 ## 2026-04-07 — `improvements_trade_builder` (sesiunea 8)
 
-### LLM — P1 (model + migrare + validator + logging) + P4 (horizon classification)
+### LLM — P1, P2, P3, P4, P7 verificate și marcate Done
+
+#### Verificare cod (sesiunea 8)
+
+Toate modificările din sesiunile 7–8 au fost verificate în cod înainte de a fi marcate ✅ Done în `LLM_IMPROVEMENT_PLAN.md`:
+
+| Plan | Fișiere verificate | Status |
+|---|---|---|
+| P1 — model + migrare | `app/models/llm_rationale_log.py`, `migrations/versions/003_llm_rationale_log.py`, `app/models/__init__.py` | ✅ |
+| P2 — validator V1–V3, V5, V7 | `app/services/research/validator.py` (toate regulile prezente + V7 wired în gap) | ✅ |
+| P3 — max_tokens + thinking budget + ierarhie config | `providers.py` (max_thinking_budget, clamp), `preferences.py` (clamp + thinking_budget_max), `llm.py` (max_tokens=400, output_buffer parametrizat, fără hardcodări) | ✅ |
+| P4 — horizon classification | `technicals.py` (max_days=60, classify_horizon), `research/__init__.py`, `scheduler.py`, `routes.py` | ✅ |
+| P7 — logging rationale fire-and-forget | `llm.py` (_log_rationale_async + asyncio.create_task în ambele ramuri) | ✅ |
+| P8 — capture metrics at entry | `llm.py` (_capture_metrics_at_entry_async), `research/__init__.py`, `routes.py` (mark_took_it) | ✅ |
+| P9 — verify outcomes + quality score | `scheduler.py` (_verify_outcomes_for_logs + _calculate_quality_score) | ✅ |
+
+> ⚠️ **Rebuild necesar** pentru a aplica migrarea 003: `make build start`
 
 #### P1 — LLMRationaleLog + Validator + Retry Loop (complet)
 
@@ -37,6 +53,36 @@
 
 **Modificat: `app/models/__init__.py`**
 - Import + export `LLMRationaleLog`
+
+#### P8 — `capture_metrics_at_entry` (fire-and-forget la took-it)
+
+**Nou: `_capture_metrics_at_entry_async()` în `app/services/research/llm.py`**
+- Capturează `TechnicalSnapshot` live via `compute_sl_tp_for_symbol` (async via `asyncio.to_thread`)
+- Salvează în `metrics_at_entry` (JSON): price, RSI, MACD histogram, ATR, ADX, VPOC, VAH, VAL, vp_bias, sentiment_avg
+- Setează `active_trade_id` pe toate `LLMRationaleLog` cu `recommendation_id` potrivit și `metrics_at_entry IS NULL`
+
+**Modificat: `app/services/research/__init__.py`**
+- Expune `capture_metrics_at_entry()` wrapper în `__all__`
+
+**Modificat: `app/api/routes.py` — `mark_took_it`**
+- Reține `first_active_id` după `db.flush()`
+- `asyncio.create_task(capture_metrics_at_entry(...))` după `db.commit()` — nu blochează răspunsul
+
+#### P9 — `_verify_outcomes_for_logs` (job periodic la finalul update_trades)
+
+**Nou: `_calculate_quality_score()` în `app/jobs/scheduler.py`**
+- Formula din plan: baseline 5 ±outcome (±3) ±metrics_accuracy ±news_verified ±flags −retry_count +pnl_r bonus
+- Degradeaza graceful când `metrics_accuracy_score` și `news_verified` sunt `None` (P10/P11 le completează ulterior)
+
+**Nou: `_verify_outcomes_for_logs(session)` în `app/jobs/scheduler.py`**
+- JOIN `active_trades` → `recommendations` → filtrare `llm_rationale_logs` unde `outcome IS NULL`
+- Copiază: `outcome`, `outcome_at`, `closing_price`
+- Calculează `pnl_r`: `(closing_price − entry) / risk` (ajustat long/short)
+- Calculează și setează `quality_score`
+- Actualizează toate log-urile cu `recommendation_id` potrivit și `outcome IS NULL`
+
+**Modificat: `app/jobs/scheduler.py` — `job_update_active_trades`**
+- Apel `await _verify_outcomes_for_logs(session)` + `await session.commit()` după commit-ul principal
 
 #### P4 — Horizon classification + estimate_expiry_days max→60
 
