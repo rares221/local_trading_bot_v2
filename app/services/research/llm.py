@@ -123,7 +123,18 @@ def _format_user_content(context: dict[str, Any]) -> str:
 
     # ── Sentiment (common) ───────────────────────────────────────────────────
     if sentiment is not None:
-        parts.append(f"Recent sentiment (weighted avg): {sentiment:.3f}.")
+        # F2-2: include sample count + reliability label so LLM can calibrate signal strength
+        count = int(context.get("sentiment_count") or 0)
+        if count < 5:
+            reliability = "low"
+        elif count < 20:
+            reliability = "medium"
+        else:
+            reliability = "high"
+        parts.append(
+            f"Recent sentiment (weighted avg): {sentiment:.3f} "
+            f"— {count} articles, reliability: {reliability}."
+        )
         if sent_trend:
             parts.append(f"Sentiment trend (24h vs 24-72h window): {sent_trend}.")
         # Flag contradiction between sentiment polarity and trade direction
@@ -136,6 +147,21 @@ def _format_user_content(context: dict[str, Any]) -> str:
         parts.append(f"Current/reference price: {price}.")
     if risk:
         parts.append(f"Risk tier: {risk}.")
+
+    # ── Risk/Reward ratio (common) ────────────────────────────────────────────
+    # F2-6: inform LLM about setup quality from a risk perspective
+    _sl = context.get("stop_loss")
+    _tp = context.get("take_profit")
+    if _sl and _tp and price:
+        try:
+            sl_dist = abs(float(price) - float(_sl))
+            tp_dist = abs(float(_tp) - float(price))
+            if sl_dist > 0:
+                rr = round(tp_dist / sl_dist, 2)
+                rr_label = "favorable" if rr >= 1.5 else "marginal" if rr >= 1.0 else "POOR (<1:1)"
+                parts.append(f"Risk/Reward: {rr:.2f}:1 ({rr_label}).")
+        except (TypeError, ValueError, ZeroDivisionError):
+            pass
 
     # ── Market regime (common) ────────────────────────────────────────────────
     if market_reg:
@@ -194,6 +220,13 @@ def _format_user_content(context: dict[str, Any]) -> str:
             rs_line += f"; vs {sector_etf}: {sector_rs:.2f}x ({sector_label} its sector)"
         parts.append(rs_line + ".")
 
+    # F2-9: Sector rotation context (sector ETF vs SPX — signals which sectors are hot/cold)
+    svs = context.get("sector_vs_spx_20d")
+    if svs is not None:
+        _setf = context.get("sector_etf", "sector ETF")
+        svs_label = "outperforming" if svs > 1.0 else "underperforming"
+        parts.append(f"Sector rotation (20d): {_setf} {svs_label} SPX ({svs:.2f}x).")
+
     # ── Horizon-specific sections ─────────────────────────────────────────────
     if horizon == "near":
         # Volume Profile (near only — irrelevant on far horizon)
@@ -223,6 +256,21 @@ def _format_user_content(context: dict[str, Any]) -> str:
                 parts.append(f"SL vs Value Area: {'INSIDE (frequently tested)' if sl_in_va else 'outside (protected)'}.")
                 parts.append(f"TP vs Value Area: {'beyond boundary (realistic target)' if tp_beyond else 'within VA (low R/R zone)'}.")
 
+        # F2-7: ATR-implied minimum days to TP (quant timing context, near only)
+        _atr_pct = context.get("atr_pct")   # % per day average move
+        _tp_ref = context.get("take_profit")
+        _pr_ref = context.get("buy_in_price")
+        if _atr_pct and _atr_pct > 0 and _tp_ref and _pr_ref:
+            try:
+                tp_dist_pct = abs(float(_tp_ref) - float(_pr_ref)) / float(_pr_ref) * 100
+                days_to_tp_est = round(tp_dist_pct / float(_atr_pct), 1)
+                parts.append(
+                    f"ATR-implied days to TP: ~{days_to_tp_est} days "
+                    f"at current {float(_atr_pct):.1f}%/day average move."
+                )
+            except (TypeError, ValueError, ZeroDivisionError):
+                pass
+
         # Macro events in trade window (near only)
         if upcoming:
             ev_strs = [
@@ -231,8 +279,8 @@ def _format_user_content(context: dict[str, Any]) -> str:
             ]
             parts.append(f"Macro events in trade window: {' | '.join(ev_strs)}.")
 
-        # Headlines with age (near only — timing matters on short horizon)
-        for i, title in enumerate(headlines[:3]):
+        # Headlines with age (near only — up to 9, filtered per asset at query level)
+        for i, title in enumerate(headlines[:9]):
             age = hl_ages[i] if i < len(hl_ages) else None
             if age is not None:
                 parts.append(f"Headline ({age:.0f}h ago): {title}")
@@ -250,6 +298,13 @@ def _format_user_content(context: dict[str, Any]) -> str:
                 dxy_line += f" (5d: {dxy_5d:+.1f}%, 20d: {dxy_20d:+.1f}%)"
             parts.append(dxy_line + ".")
 
+        # F2-5: Earnings date (far horizon — binary event risk within trade window)
+        dte = context.get("days_to_earnings")
+        if dte is not None:
+            in_win = context.get("earnings_in_window", False)
+            risk_label = "IN TRADE WINDOW — binary event risk" if in_win else "outside trade window"
+            parts.append(f"Next earnings: {dte} days away ({risk_label}).")
+
         # Extended sentiment windows (far only — 24h decay avg is near-zero on old articles)
         s5d = context.get("sentiment_5d_avg")
         s10d = context.get("sentiment_10d_avg")
@@ -258,9 +313,9 @@ def _format_user_content(context: dict[str, Any]) -> str:
         if s10d is not None:
             parts.append(f"Sentiment 10-day average: {s10d:.3f}.")
 
-        # Headlines (no ages on far horizon — recent news less relevant)
+        # Headlines (no ages on far horizon — up to 5, filtered per asset at query level)
         if headlines:
-            parts.append("Headlines: " + " | ".join(headlines[:2]))
+            parts.append("Headlines: " + " | ".join(headlines[:5]))
 
     return "\n".join(parts)
 
@@ -572,7 +627,8 @@ async def _log_rationale_async(
         expiry_days = context.get("expiry_days") or context.get("horizon_days") or 14
         horizon = "near" if int(expiry_days) <= 14 else "far"
 
-        # Slim context snapshot — exclude bulky / redundant fields.
+        # Slim context snapshot — full audit of what was sent to LLM.
+        # F2-3: extended with all fields used by _format_user_content.
         snapshot_keys = (
             "asset_id", "asset_category", "direction", "horizon", "expiry_days",
             "sentiment_avg", "sentiment_count", "sentiment_trend",
@@ -580,8 +636,11 @@ async def _log_rationale_async(
             "buy_in_price", "stop_loss", "take_profit", "risk_tier",
             "confidence_score", "volatility_notes", "market_regime",
             "dxy_trend", "dxy_change_5d", "dxy_change_20d",
-            "headlines", "headline_ages",
+            "headlines", "headline_ages", "upcoming_events",
             "vpoc", "vah", "val", "vp_bias", "vp_overextension", "in_value_area",
+            "rsi", "adx", "atr_pct", "atr", "macd_histogram",
+            "rs_20d", "rs_60d", "sector_rs", "sector_etf", "sector_vs_spx_20d",
+            "fundamentals", "days_to_earnings", "earnings_in_window",
         )
         snapshot = {k: context[k] for k in snapshot_keys if k in context}
 
@@ -1022,6 +1081,23 @@ async def generate_backtest_insight(
     parsed = _parse_backtest_insight_json(raw)
     if parsed is None:
         _logger.warning("Backtest insight JSON parse failed for %s. Raw: %r", asset_id, (raw or "")[:200])
+        return parsed
+
+    # F2-8: V6 grade consistency check — log flag if grade contradicts the metrics
+    overall_wr = metrics.get("win_rate")
+    overall_ap = metrics.get("avg_pnl_r")
+    if raw and overall_wr is not None and overall_ap is not None:
+        try:
+            from app.services.research.validator import check_backtest_grade
+            v6_flag = check_backtest_grade(raw, float(overall_wr), float(overall_ap))
+            if v6_flag:
+                _logger.warning(
+                    "[V6_GRADE_OVERRIDE] %s/%s %s: %s",
+                    asset_id, direction, parsed.get("grade", "?"), v6_flag.message,
+                )
+        except Exception:
+            pass
+
     return parsed
 
 

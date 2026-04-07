@@ -107,7 +107,9 @@ async def get_verified_few_shot_examples(
                 except Exception:
                     pass
             upper_flags = [f.upper() for f in flags]
-            if "V4A" in upper_flags or "V4B" in upper_flags:
+            # F2-1: flags are stored as full codes e.g. "V4a_price_hallucination"
+            # → upper → "V4A_PRICE_HALLUCINATION". Must use startswith, not exact match.
+            if any(f.startswith("V4A_") or f.startswith("V4B_") for f in upper_flags):
                 continue
 
             # Optional horizon filter (check prompt_version tag)

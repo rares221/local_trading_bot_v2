@@ -148,6 +148,10 @@ async def build_research_context(
                                 if sector_rs is not None:
                                     ctx["sector_rs"] = sector_rs
                                     ctx["sector_etf"] = sector_etf
+                                # F2-9: sector rotation — how the sector itself moves vs SPX
+                                sector_vs_spx = compute_relative_strength(sector_etf, "^GSPC", period=20)
+                                if sector_vs_spx is not None:
+                                    ctx["sector_vs_spx_20d"] = sector_vs_spx
                         except Exception:
                             pass
                     calculated = True
@@ -181,14 +185,24 @@ async def build_research_context(
     else:
         ctx["levels_source"] = "recommendation"
 
-    # Up to 3 recent feed headlines with ages (for near-horizon LLM context)
-    ctx["headline_ages"] = []   # parallel list: hours since fetched (float or None)
-    q = select(FeedItem).order_by(FeedItem.fetched_at.desc()).limit(200)
-    result = await session.execute(q)
-    _now_utc = datetime.now(timezone.utc)
-    for it in result.scalars().all():
-        if it.asset_tags and asset_id in it.asset_tags:
-            ctx["headlines"].append(it.title or "(no title)")
+    # Asset-specific headlines — filtered at SQL level (asset_tags @> [asset_id]).
+    # Near horizon: up to 9 headlines with age; far horizon: up to 5 (no age shown).
+    # Fetches 3× the cap to account for rows without titles.
+    _max_headlines = 9 if ctx.get("horizon") == "near" else 5
+    ctx["headlines"] = []
+    ctx["headline_ages"] = []
+    try:
+        _hq = (
+            select(FeedItem)
+            .where(FeedItem.asset_tags.contains([asset_id]))
+            .order_by(FeedItem.fetched_at.desc())
+            .limit(_max_headlines * 3)
+        )
+        _now_utc = datetime.now(timezone.utc)
+        for it in (await session.execute(_hq)).scalars().all():
+            if not it.title:
+                continue
+            ctx["headlines"].append(it.title)
             if it.fetched_at:
                 fa = it.fetched_at
                 if fa.tzinfo is None:
@@ -196,8 +210,10 @@ async def build_research_context(
                 ctx["headline_ages"].append(round((_now_utc - fa).total_seconds() / 3600, 1))
             else:
                 ctx["headline_ages"].append(None)
-            if len(ctx["headlines"]) >= 3:
+            if len(ctx["headlines"]) >= _max_headlines:
                 break
+    except Exception:
+        pass
     # Optional: yfinance .info for sector, industry, market cap (stocks/ETFs; skip on failure)
     symbol = get_yf_symbol(category, asset_id)
     if not symbol and category.lower() in ("stocks", "etfs", "etf", "stock"):
@@ -239,6 +255,32 @@ async def build_research_context(
                             pass
                     if fund:
                         ctx["fundamentals"] = fund
+
+                    # F2-5: earnings date for far-horizon trades (binary event risk)
+                    # Only fetched for stocks; requires far horizon to be worth the computation.
+                    if ctx.get("horizon") == "far":
+                        try:
+                            from datetime import date as _date
+                            _today = _date.today()
+                            raw_ed = info.get("earningsDate") or info.get("nextEarningsDate")
+                            if raw_ed is not None:
+                                # earningsDate can be a list or a single value
+                                if isinstance(raw_ed, list) and raw_ed:
+                                    raw_ed = raw_ed[0]
+                                # may be a Unix timestamp (int/float) or a pd.Timestamp / datetime
+                                ed_date = None
+                                if isinstance(raw_ed, (int, float)):
+                                    from datetime import datetime as _dt, timezone as _tz
+                                    ed_date = _dt.fromtimestamp(raw_ed, tz=_tz.utc).date()
+                                elif hasattr(raw_ed, "date"):
+                                    ed_date = raw_ed.date()
+                                if ed_date:
+                                    dte = (ed_date - _today).days
+                                    if dte >= 0:
+                                        ctx["days_to_earnings"] = dte
+                                        ctx["earnings_in_window"] = dte <= int(ctx.get("expiry_days", 60))
+                        except Exception:
+                            pass
             finally:
                 log.setLevel(old_level)
         except Exception:

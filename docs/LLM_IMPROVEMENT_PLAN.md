@@ -952,3 +952,241 @@ job_build_hallucination_profile():
 
 *Revizie 2 — 2026-04-07.*
 *Schimbări față de rev 1: adăugat near/far horizon distinction (Secțiunea 2), restructurat feedback loop cu focus anti-halucinație (Secțiunea 6), adăugat detecție halucinații V4a-V4d, news cross-reference și metrics verification ca componente centrale, extins obiecțiile la 9 (adăugat 9.7, 9.8, 9.9), adăugat diagrama flux completă în Appendix.*
+
+---
+
+## 11. Faza 2 — Audit P1-P15 + Plan de remediare
+
+**Data**: 2026-04-07 (rev 3)
+**Baza**: Audit complet al codului P1-P15 implementat. P16 și P18 se presupun în lucru.
+**Scopul**: perspectivă trader profesionist — predicție 14 zile (near) / >14 zile (far) bazată pe news, metrici de piață, calcule quant. Far horizon = context pentru trader, nu tranzacție activă.
+
+---
+
+### 11.1 Buguri critice identificate în P1-P15
+
+#### B1 — `few_shot.py:110` — Filtrare V4A/V4B mereu falsă *(critic)*
+
+**Problemă**: Flagurile din DB sunt stocate ca `"V4a_price_hallucination"`. Codul face:
+```python
+upper_flags = [f.upper() for f in flags]  # → ["V4A_PRICE_HALLUCINATION", ...]
+if "V4A" in upper_flags:                  # → verifică element exact, nu prefix
+    continue
+```
+`"V4A"` nu este niciodată element în lista de flaguri complete → filtrul este mereu `False` → **toate exemplele cu halucinații de prețuri și indicatori trec în few-shot**. P15 este non-funcțional din perspectivă de calitate.
+
+**Fișier**: `app/services/research/few_shot.py` linia 109-111
+
+**Fix**:
+```python
+if any(f.startswith("V4A") or f.startswith("V4B") for f in upper_flags):
+    continue
+```
+
+---
+
+#### B2 — `bias_detector.py:91-103` — Profilul de halucinații mereu zero *(critic)*
+
+**Problemă**: Același pattern — flagurile complete nu sunt egale cu prefixele `"V4A"`, `"V4B"` etc.:
+```python
+f = str(flag).upper()   # → "V4A_PRICE_HALLUCINATION"
+if f == "V4A":          # → niciodată True
+    b["v4a"] += 1
+```
+Toate ratele V4 din `hallucination_profile.json` sunt 0. Prin urmare, `build_hallucination_guard()` nu generează niciodată avertizări. **P13 și P14 sunt complet non-funcționale.**
+
+**Fișier**: `app/services/research/bias_detector.py` liniile 91-104
+
+**Fix**:
+```python
+if f.startswith("V4A_"):
+    b["v4a"] += 1; has_v4 = True
+elif f.startswith("V4B_"):
+    b["v4b"] += 1; has_v4 = True
+elif f.startswith("V4C_"):
+    b["v4c"] += 1; has_v4 = True
+elif f.startswith("V4D_"):
+    b["v4d"] += 1; has_v4 = True
+```
+
+---
+
+#### B3 — `validator.py` V4b — Potențial false positive ATR (unit mismatch)
+
+**Problemă**: `context["atr_pct"]` este stocat în procente (ex: `2.3` pentru 2.3%). Dacă `volatility_notes` conține ATR în dolari absolut (ex: `"ATR=$5.42"`) și LLM citează `"ATR of $5.42"`, V4b compară `5.42 vs 2.3` → delta 136% → retry incorect.
+
+**Fișier**: `app/services/research/validator.py` + `app/services/research/__init__.py`
+
+**Fix**: Adaugă `atr_abs` (valoarea absolută în $) separat în context. V4b verifică `atr_pct` numai când LLM citează `%`; verifică `atr_abs` când LLM citează valoare fără `%`.
+
+---
+
+### 11.2 Erori de logică identificate
+
+#### L1 — `sentiment_count` absent din contextul LLM
+
+**Problemă**: `sentiment_count` este disponibil în context dict dar `_format_user_content` nu îl include. Un sentiment `0.72` din 2 articole arată identic cu `0.72` din 47 articole. LLM nu poate calibra fiabilitatea semnalului de sentiment.
+
+**Fișier**: `app/services/research/llm.py` funcția `_format_user_content`
+
+**Fix**: Adaugă label de fiabilitate:
+```python
+if sentiment is not None:
+    count = context.get("sentiment_count") or 0
+    reliability = "low (n<5)" if count < 5 else "medium (n<20)" if count < 20 else "high"
+    parts.append(f"Recent sentiment (weighted avg): {sentiment:.3f} — sample: {count} articles, reliability: {reliability}.")
+```
+
+---
+
+#### L2 — `_log_rationale_async` snapshot incomplet
+
+**Problemă**: `snapshot_keys` din `llm.py` lipsesc câmpuri trimise efectiv la LLM. Nu se poate audita complet „ce a văzut LLM-ul":
+- Lipsesc: `upcoming_events`, `confidence_score`, `rs_20d`, `rs_60d`, `sector_rs`, `sector_etf`, `sentiment_count`, `atr_abs`, `fundamentals`
+
+**Fișier**: `app/services/research/llm.py` linia ~576-585
+
+**Fix**: Extinde `snapshot_keys` cu toate câmpurile noi.
+
+---
+
+#### L3 — V6 (backtest grade override) neimplementat în `validator.py`
+
+**Problemă**: Planul definește V6 ca rule FLAG_ONLY care override gradul dacă metricile contrazic gradul primit. Nu există în `validator.py`. Backtest grades incorecte (ex: win_rate=62%, A=No assigned, sau win_rate=18%, C assigned) nu sunt detectate la generare.
+
+**Fișier**: `app/services/research/validator.py`
+
+**Fix**: Adaugă `_check_v6_grade_consistency(text, context)` ca flag-only rule. Parsează gradul din JSON response și verifică față de metricile backtest din context.
+
+---
+
+### 11.3 Gaps trader profesionist
+
+#### T1 — Far horizon fără data earnings *(prioritate mare)*
+
+**Problemă**: Un trade far horizon (>14 zile) pe un stoc cu earnings în 3 săptămâni are un risk profile complet diferit față de un trade fără earnings în fereastră. LLM-ul nu știe și generează raționament structural fals-confident ignorând catalizatorul imediat.
+
+**yfinance** oferă `earningsDate` / `nextEarningsDate` din `.info`. Este disponibil.
+
+**Fix — `build_research_context` în `__init__.py`**: Adaugă pentru far horizon:
+```python
+if ctx.get("horizon") == "far":
+    next_earnings = info.get("earningsDate") or info.get("nextEarningsDate")
+    if next_earnings:
+        # next_earnings poate fi timestamp sau listă de timestamps
+        # calculează days_to_earnings față de azi
+        ctx["days_to_earnings"] = days_to_earnings
+        ctx["earnings_in_window"] = days_to_earnings <= int(ctx.get("expiry_days", 60))
+```
+
+**Fix — `_format_user_content`**: Adaugă în secțiunea far:
+```python
+dte = context.get("days_to_earnings")
+if dte is not None:
+    in_win = context.get("earnings_in_window", False)
+    risk_label = "IN TRADE WINDOW — high binary risk event" if in_win else "outside trade window"
+    parts.append(f"Next earnings: {dte} days away ({risk_label}).")
+```
+
+---
+
+#### T2 — R/R ratio absent din context
+
+**Problemă**: LLM poate genera un rationale pozitiv pentru un trade cu R/R = 0.8:1 (pierzi mai mult decât câștigi statistic). Nu există niciun câmp în context care să comunice calitatea setup-ului din perspectiva riscului.
+
+**Fix — `_format_user_content`**:
+```python
+sl = context.get("stop_loss")
+tp = context.get("take_profit")
+price = context.get("buy_in_price")
+if sl and tp and price:
+    sl_dist = abs(float(price) - float(sl))
+    tp_dist = abs(float(tp) - float(price))
+    if sl_dist > 0:
+        rr = round(tp_dist / sl_dist, 2)
+        rr_label = "favorable" if rr >= 1.5 else "marginal" if rr >= 1.0 else "POOR (<1:1)"
+        parts.append(f"Risk/Reward: {rr:.2f}:1 ({rr_label}).")
+```
+
+---
+
+#### T3 — Near horizon: estimare zile-la-TP bazată pe ATR lipsește
+
+**Problemă**: Dacă ATR = 2.3%/zi și TP este la 6.5% distanță, înseamnă ~3 zile minime la volatilitate normală. Această perspectivă quant nu e generată. LLM nu știe dacă timeframe-ul este realist pentru distanța la target.
+
+**Fix — `_format_user_content`** (near section):
+```python
+atr_pct = context.get("atr_pct")   # % per day
+tp_dist_pct = ...  # abs(tp - price) / price * 100
+if atr_pct and tp_dist_pct and atr_pct > 0:
+    days_to_tp = round(tp_dist_pct / atr_pct, 1)
+    parts.append(f"ATR-implied days to TP: ~{days_to_tp} days at current {atr_pct:.1f}%/day volatility.")
+```
+
+---
+
+#### T4 — Sector rotation context absent
+
+**Problemă**: `rs_20d` (RS asset vs SPX) este trimis — bine. Dar LLM nu știe dacă sectorul respectiv (ex: Energie / XLE) outperformează sau subperformează SPX pe 20 zile. Un stock cu RS 1.1x poate fi în cel mai slab sector din piață — context esențial pentru predicție 14 zile.
+
+**Fix — `build_research_context` în `__init__.py`**:
+```python
+# Deja avem sector_etf (ex: "XLE"). Adaugă sector performance relativ vs SPX:
+if sector_etf:
+    sector_vs_spx = compute_relative_strength(sector_etf, "^GSPC", period=20)
+    if sector_vs_spx is not None:
+        ctx["sector_vs_spx_20d"] = sector_vs_spx
+```
+
+**Fix — `_format_user_content`**:
+```python
+svs = context.get("sector_vs_spx_20d")
+if svs is not None:
+    label = "outperforming" if svs > 1.0 else "underperforming"
+    parts.append(f"Sector rotation (20d): {sector_etf} is {label} SPX ({svs:.2f}x).")
+```
+
+---
+
+### 11.4 Prioritizare Faza 2
+
+| ID | Item | Fișier | Impact | Efort | Tip |
+|---|---|---|---|---|---|
+| **F2-1** | Fix flag matching în `few_shot.py` + `bias_detector.py` | few_shot.py, bias_detector.py | **Critic** | Mic | Bug | ✅ Done 2026-04-07 |
+| **F2-2** | `sentiment_count` cu fiabilitate în `_format_user_content` | llm.py | Mediu | Mic | Logic | ✅ Done 2026-04-07 |
+| **F2-3** | Completează `snapshot_keys` în `_log_rationale_async` | llm.py | Mediu | Mic | Logic | ✅ Done 2026-04-07 |
+| **F2-4** | Fix V4b ATR unit mismatch (pct vs abs pattern separat) | validator.py | Mediu | Mic | Bug | ✅ Done 2026-04-07 |
+| **F2-5** | Earnings date (next earnings + days + in-window flag) pentru far horizon | \_\_init\_\_.py, llm.py | **Mare** | Mic-Mediu | Trader gap | ✅ Done 2026-04-07 |
+| **F2-6** | R/R ratio calculat și trimis la LLM | llm.py | Mediu | Mic | Trader gap | ✅ Done 2026-04-07 |
+| **F2-7** | ATR-days-to-TP estimate în near context | llm.py | Mediu | Mic | Trader gap / Quant | ✅ Done 2026-04-07 |
+| **F2-8** | V6 rule flag-only (backtest grade override) + `check_backtest_grade` | validator.py, llm.py | Mic | Mic | Missing | ✅ Done 2026-04-07 |
+| **F2-9** | Sector rotation context (`sector_vs_spx_20d`) | \_\_init\_\_.py, llm.py | Mediu | Mic | Trader gap | ✅ Done 2026-04-07 |
+| **F2-10** | **P16**: Grade rubric corectat în `_BACKTEST_INSIGHT_SYSTEM` | llm.py | Mediu | Mic | Pending | ✅ Done 2026-04-07 (P16) |
+| **F2-11** | **P18**: Daily briefing narativ LLM | briefing.py | Mediu | Mediu | Pending | ✅ Done 2026-04-07 (P18) |
+
+### Dependențe Faza 2
+
+```
+F2-1  → independent (fix izolat în 2 fișiere)
+F2-2  → independent
+F2-3  → independent (adaugă câmpuri în snapshot_keys)
+F2-4  → F2-3 (atr_abs trebuie să apară și în snapshot)
+F2-5  → independent (yfinance info deja fetched în build_research_context)
+F2-6  → independent (SL/TP/price deja în context)
+F2-7  → F2-6 (atr_pct + tp_dist dependente de context complet)
+F2-8  → independent (validator.py izolat)
+F2-9  → independent (refolosește compute_relative_strength deja importat)
+F2-10 → independent (prompt constant în llm.py)
+F2-11 → independent (briefing.py separat)
+```
+
+### Ordine de implementare recomandată
+
+**Batch 1 (buguri — rulăm primul)**: F2-1, F2-2, F2-3, F2-4
+**Batch 2 (trader gaps — quant)**: F2-5, F2-6, F2-7, F2-9
+**Batch 3 (features lipsă + pending)**: F2-8, F2-10, F2-11
+
+---
+
+*Revizie 3 — 2026-04-07.*
+*Schimbări față de rev 2: adăugat Secțiunea 11 — audit complet P1-P15, buguri critice B1-B3 (flag matching broken în few_shot + bias_detector, ATR unit mismatch), erori de logică L1-L3 (sentiment_count absent, snapshot incomplet, V6 lipsă), gaps trader T1-T4 (earnings far horizon, R/R ratio, ATR-days-to-TP quant, sector rotation). Plan Faza 2 cu 11 itemi prioritizați și dependențe.*

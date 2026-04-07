@@ -87,17 +87,19 @@ async def build_hallucination_profile(
 
         has_v4 = False
         for flag in flags:
+            # F2-1: flags are stored as full codes e.g. "V4a_price_hallucination"
+            # → upper → "V4A_PRICE_HALLUCINATION". Must use startswith, not exact match.
             f = str(flag).upper()
-            if f == "V4A":
+            if f.startswith("V4A_"):
                 b["v4a"] += 1
                 has_v4 = True
-            elif f == "V4B":
+            elif f.startswith("V4B_"):
                 b["v4b"] += 1
                 has_v4 = True
-            elif f == "V4C":
+            elif f.startswith("V4C_"):
                 b["v4c"] += 1
                 has_v4 = True
-            elif f == "V4D":
+            elif f.startswith("V4D_"):
                 b["v4d"] += 1
                 has_v4 = True
         if has_v4:

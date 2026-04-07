@@ -84,8 +84,19 @@ _ADX_PATTERN = re.compile(
     r"\bADX\b.*?(?:at|of|is|above|below|around|near|reading|stands?\s+at)\s+(\d{1,3}(?:\.\d{1,2})?)",
     re.IGNORECASE,
 )
-_ATR_PATTERN = re.compile(
-    r"\bATR\b.*?(?:at|of|is|around|near|stands?\s+at)\s+(\d{1,3}(?:\.\d{1,4})?)(?:\s*%)?",
+# F2-4: split ATR into two patterns to avoid unit mismatch (pct vs dollar absolute).
+# _ATR_PCT_PATTERN: matches "ATR at/of 2.3%" → cited value compared against context["atr_pct"]
+# _ATR_ABS_PATTERN: matches "ATR at/of $5.42" (no % suffix) → compared against context["atr"]
+_ATR_PCT_PATTERN = re.compile(
+    r"\bATR\b.*?(?:at|of|is|around|near|stands?\s+at)\s+(\d{1,3}(?:\.\d{1,4})?)\s*%",
+    re.IGNORECASE,
+)
+_ATR_ABS_PATTERN = re.compile(
+    # Matches "ATR at 5.42" (dollar absolute) but NOT "ATR at 2.3%".
+    # Double negative lookahead:
+    #   (?![\d.]) — number isn't cut short (e.g. "2" in "2.3%")
+    #   (?!\s*%)  — number isn't followed by %
+    r"\bATR\b.*?(?:at|of|is|around|near|stands?\s+at)\s+\$?\s*(\d{1,6}(?:\.\d{1,4})?)(?![\d.])(?!\s*%)",
     re.IGNORECASE,
 )
 
@@ -274,14 +285,16 @@ def _check_v4b_indicator_hallucination(text: str, context: dict[str, Any]) -> Va
     """
     Detect hallucinated indicator values. Only fires when context has the actual value
     AND the LLM cites a specific numeric value that differs by > 15%.
-    """
-    checks = [
-        ("rsi",           _RSI_PATTERN,  "RSI"),
-        ("adx",           _ADX_PATTERN,  "ADX"),
-        ("atr_pct",       _ATR_PATTERN,  "ATR"),
-    ]
 
-    for ctx_key, pattern, label in checks:
+    F2-4: ATR is checked in two forms to avoid unit mismatch:
+      - percentage form "ATR at 2.3%" → compared against context["atr_pct"] (e.g. 2.3)
+      - absolute dollar form "ATR at 5.42" → compared against context["atr"] (e.g. 5.42)
+    """
+    # RSI and ADX: single pattern each
+    for ctx_key, pattern, label in [
+        ("rsi", _RSI_PATTERN, "RSI"),
+        ("adx", _ADX_PATTERN, "ADX"),
+    ]:
         actual = context.get(ctx_key)
         if actual is None:
             continue
@@ -289,7 +302,6 @@ def _check_v4b_indicator_hallucination(text: str, context: dict[str, Any]) -> Va
             actual_f = float(actual)
         except (TypeError, ValueError):
             continue
-
         m = pattern.search(text)
         if not m:
             continue
@@ -297,7 +309,6 @@ def _check_v4b_indicator_hallucination(text: str, context: dict[str, Any]) -> Va
             cited_f = float(m.group(1))
         except (ValueError, IndexError):
             continue
-
         if not _within_tolerance(actual_f, cited_f):
             return ValidationFlag(
                 code="V4b_indicator_hallucination",
@@ -311,6 +322,55 @@ def _check_v4b_indicator_hallucination(text: str, context: dict[str, Any]) -> Va
                     "Use only the exact indicator values provided. Do not approximate or invent values."
                 ),
             )
+
+    # ATR percentage form → compare against atr_pct (stored as %, e.g. 2.3 for 2.3%)
+    atr_pct = context.get("atr_pct")
+    if atr_pct is not None:
+        try:
+            atr_pct_f = float(atr_pct)
+            m = _ATR_PCT_PATTERN.search(text)
+            if m:
+                cited_pct = float(m.group(1))
+                if not _within_tolerance(atr_pct_f, cited_pct):
+                    return ValidationFlag(
+                        code="V4b_indicator_hallucination",
+                        message=(
+                            f"ATR% cited as {cited_pct}% but actual is {atr_pct_f}% "
+                            f"(delta {abs(cited_pct - atr_pct_f) / max(abs(atr_pct_f), 0.001):.0%})"
+                        ),
+                        retry_message=(
+                            f"ACCURACY ERROR: You cited ATR={cited_pct:.1f}% but the actual value "
+                            f"is ATR={atr_pct_f:.1f}%. Use only the exact values provided."
+                        ),
+                    )
+        except (TypeError, ValueError):
+            pass
+
+    # ATR absolute dollar form → compare against atr (dollar value)
+    atr_abs = context.get("atr")
+    if atr_abs is not None:
+        try:
+            atr_abs_f = float(atr_abs)
+            m = _ATR_ABS_PATTERN.search(text)
+            if m:
+                cited_abs = float(m.group(1))
+                # Skip if the cited value looks like a percentage (< 100 and atr_abs > 50)
+                if not (cited_abs < 20 and atr_abs_f > 50):
+                    if not _within_tolerance(atr_abs_f, cited_abs):
+                        return ValidationFlag(
+                            code="V4b_indicator_hallucination",
+                            message=(
+                                f"ATR$ cited as {cited_abs} but actual is {atr_abs_f} "
+                                f"(delta {abs(cited_abs - atr_abs_f) / max(abs(atr_abs_f), 0.001):.0%})"
+                            ),
+                            retry_message=(
+                                f"ACCURACY ERROR: You cited ATR={cited_abs:.2f} but the actual value "
+                                f"is ATR={atr_abs_f:.2f}. Use only the exact values provided."
+                            ),
+                        )
+        except (TypeError, ValueError):
+            pass
+
     return None
 
 
@@ -446,7 +506,65 @@ def _check_v8_horizon_consistency(text: str, context: dict[str, Any]) -> Validat
     return None
 
 
+def _check_v6_grade_consistency(text: str, context: dict[str, Any]) -> ValidationFlag | None:
+    """
+    F2-8: Flag-only — detect backtest grade that contradicts the provided metrics.
+    Only fires when backtest_win_rate and backtest_avg_pnl are present in context.
+    Never blocks (is_blocking=False).
+    """
+    win_rate = context.get("backtest_win_rate")
+    avg_pnl = context.get("backtest_avg_pnl")
+    if win_rate is None or avg_pnl is None:
+        return None
+
+    # Extract grade from JSON response or inline text
+    grade_match = re.search(r'"grade"\s*:\s*"([A-F])"', text)
+    if not grade_match:
+        grade_match = re.search(r'\bGrade\s*:?\s*([A-F])\b', text, re.IGNORECASE)
+    if not grade_match:
+        return None
+
+    grade = grade_match.group(1).upper()
+
+    try:
+        wr = float(win_rate)
+        ap = float(avg_pnl)
+    except (TypeError, ValueError):
+        return None
+
+    if wr >= 0.55 and ap > 0 and grade in ("D", "F"):
+        return ValidationFlag(
+            code="V6_grade_override",
+            message=f"Grade {grade} contradicts win_rate={wr:.0%}, avg_pnl={ap:.2f}R (expected A or B)",
+            retry_message="",
+            is_blocking=False,
+        )
+    if wr < 0.25 and grade in ("A", "B", "C"):
+        return ValidationFlag(
+            code="V6_grade_override",
+            message=f"Grade {grade} contradicts win_rate={wr:.0%} <25% (expected D or F)",
+            retry_message="",
+            is_blocking=False,
+        )
+    if ap <= 0 and grade in ("A", "B"):
+        return ValidationFlag(
+            code="V6_grade_override",
+            message=f"Grade {grade} assigned with avg_pnl={ap:.2f}R ≤0 — mandatory downgrade",
+            retry_message="",
+            is_blocking=False,
+        )
+    return None
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
+
+def check_backtest_grade(text: str, win_rate: float, avg_pnl: float) -> ValidationFlag | None:
+    """
+    F2-8: Standalone V6 check for use in generate_backtest_insight.
+    Returns a ValidationFlag (is_blocking=False) or None if grade is consistent.
+    """
+    return _check_v6_grade_consistency(text, {"backtest_win_rate": win_rate, "backtest_avg_pnl": avg_pnl})
+
 
 def validate_rationale(
     text: str,
@@ -494,6 +612,7 @@ def validate_rationale(
         _check_v4c_news_hallucination(text, context),
         _check_v4d_temporal_hallucination(text, context),
         _check_v5_specificity(text),
+        _check_v6_grade_consistency(text, context),
         _check_v8_horizon_consistency(text, context),
     ]
 
