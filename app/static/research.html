@@ -697,7 +697,7 @@
     function drawHorizonChart(canvasEl, opts) {
       const DPR = window.devicePixelRatio || 1;
       const W_CSS = canvasEl.parentElement.clientWidth || 700;
-      const H_CSS = 265;
+      const H_CSS = 300;
       canvasEl.width  = W_CSS * DPR;
       canvasEl.height = H_CSS * DPR;
       canvasEl.style.width  = W_CSS + 'px';
@@ -706,136 +706,181 @@
       ctx.scale(DPR, DPR);
       const W = W_CSS, H = H_CSS;
 
-      const entry       = parseFloat(opts.entry)       || 100;
-      const sl          = parseFloat(opts.sl)          || entry * 0.97;
-      const tp          = parseFloat(opts.tp)          || entry * 1.06;
-      const expiryDays  = parseInt(opts.expiry_days)   || 14;
-      const atrPct      = parseFloat(opts.atr_pct)     || 0;
+      const entry      = parseFloat(opts.entry)      || 100;
+      const sl         = parseFloat(opts.sl)         || entry * 0.97;
+      const tp         = parseFloat(opts.tp)         || entry * 1.06;
+      const expiryDays = parseInt(opts.expiry_days)  || 14;
+      const atrPct     = parseFloat(opts.atr_pct)    || 0;
 
-      const TOTAL_DAYS = Math.max(30, expiryDays + 8);
+      const TOTAL_DAYS = Math.max(30, Math.ceil(expiryDays * 1.25));
       const WALL_DAY   = 14;
-      const ML = 64, MR = 18, MT = 28, MB = 36;
+      const ML = 70, MR = 80, MT = 32, MB = 38;
       const CW = W - ML - MR, CH = H - MT - MB;
 
-      const priceMin = Math.min(sl, entry, tp) * 0.992;
-      const priceMax = Math.max(sl, entry, tp) * 1.008;
+      // ── Centered Y around entry ──────────────────────────────────────────
+      const distUp   = Math.abs(tp - entry);
+      const distDown = Math.abs(entry - sl);
+      const maxDist  = Math.max(distUp, distDown, entry * 0.01);
+      const pad      = maxDist * 0.30;
+      const priceMin = entry - maxDist - pad;
+      const priceMax = entry + maxDist + pad;
+
+      const fmt2 = v => v < 10 ? v.toFixed(3) : v < 1000 ? v.toFixed(2) : Math.round(v) + '';
       function xd(d) { return ML + (d / TOTAL_DAYS) * CW; }
       function yp(p) { return MT + (1 - (p - priceMin) / (priceMax - priceMin)) * CH; }
 
       const wallX = xd(WALL_DAY);
 
-      // Near zone (sunshine blue)
+      // ── Backgrounds ──────────────────────────────────────────────────────
       const ng = ctx.createLinearGradient(ML, 0, wallX, 0);
       ng.addColorStop(0, '#0d3a5e'); ng.addColorStop(0.5, '#0f4c75'); ng.addColorStop(1, '#0d2e56');
       ctx.fillStyle = ng; ctx.fillRect(ML, MT, wallX - ML, CH);
-      // Sun glow
-      const sg = ctx.createRadialGradient(ML + 30, MT + 28, 0, ML + 30, MT + 28, 95);
-      sg.addColorStop(0, 'rgba(255,210,80,0.14)'); sg.addColorStop(1, 'rgba(255,210,80,0)');
+      const sg = ctx.createRadialGradient(ML + 30, MT + 28, 0, ML + 30, MT + 28, 100);
+      sg.addColorStop(0, 'rgba(255,210,80,0.13)'); sg.addColorStop(1, 'rgba(255,210,80,0)');
       ctx.fillStyle = sg; ctx.fillRect(ML, MT, wallX - ML, CH);
-      // Far zone (midnight blue)
       const fg = ctx.createLinearGradient(wallX, 0, W - MR, 0);
       fg.addColorStop(0, '#0a1020'); fg.addColorStop(1, '#050810');
       ctx.fillStyle = fg; ctx.fillRect(wallX, MT, W - MR - wallX, CH);
-      // Stars
       function rng(n) { let x = Math.sin(n * 9301 + 49297) * 233280; return x - Math.floor(x); }
       for (let i = 0; i < 55; i++) {
         const sx = wallX + rng(i*3+1)*(W-MR-wallX), sy = MT + rng(i*3+2)*CH;
-        const sr = rng(i*3)*1.4+0.3, alpha = (0.25 + rng(i*7)*0.65).toFixed(2);
+        const sr = rng(i*3)*1.4 + 0.3, alpha = (0.25 + rng(i*7)*0.65).toFixed(2);
         ctx.beginPath(); ctx.arc(sx, sy, sr, 0, Math.PI*2);
         ctx.fillStyle = `rgba(255,255,255,${alpha})`; ctx.fill();
       }
 
-      // ATR uncertainty cone
+      // ── ATR cone ─────────────────────────────────────────────────────────
       if (atrPct > 0) {
         ctx.save(); ctx.beginPath();
         for (let d = 0; d <= TOTAL_DAYS; d++) {
           const s = entry*(atrPct/100)*Math.sqrt(d), x = xd(d), y = yp(Math.min(priceMax, entry+s));
           d===0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y);
         }
-        for (let d = TOTAL_DAYS; d >= 0; d--) {
+        for (let d = TOTAL_DAYS; d >= 0; d--)
           ctx.lineTo(xd(d), yp(Math.max(priceMin, entry - entry*(atrPct/100)*Math.sqrt(d))));
-        }
         ctx.closePath(); ctx.fillStyle = 'rgba(108,99,255,0.07)'; ctx.fill(); ctx.restore();
       }
 
-      // Horizontal grid
-      ctx.save(); ctx.strokeStyle = 'rgba(255,255,255,0.05)'; ctx.lineWidth = 1;
-      for (let i=0;i<=4;i++) {
-        const y = yp(priceMin + (priceMax-priceMin)*(i/4));
-        ctx.beginPath(); ctx.moveTo(ML,y); ctx.lineTo(W-MR,y); ctx.stroke();
+      // ── Per-day vertical grid lines ───────────────────────────────────────
+      // Near zone: every day; far zone: every 3 days (less crowded)
+      ctx.save();
+      for (let d = 1; d <= TOTAL_DAYS; d++) {
+        const isMajor = d % 7 === 0 || d === 14 || d === expiryDays;
+        const isNear  = d <= WALL_DAY;
+        if (!isNear && d % 3 !== 0 && !isMajor) continue;
+        ctx.strokeStyle = isMajor ? 'rgba(255,255,255,0.10)' : 'rgba(255,255,255,0.04)';
+        ctx.lineWidth = isMajor ? 1 : 0.5;
+        ctx.beginPath(); ctx.moveTo(xd(d), MT); ctx.lineTo(xd(d), MT+CH); ctx.stroke();
       }
       ctx.restore();
 
-      // SL line
-      ctx.save(); ctx.setLineDash([5,4]); ctx.strokeStyle='rgba(255,77,109,0.7)'; ctx.lineWidth=1.5;
+      // ── Horizontal price grid ─────────────────────────────────────────────
+      ctx.save(); ctx.strokeStyle = 'rgba(255,255,255,0.05)'; ctx.lineWidth = 1;
+      for (let i = 0; i <= 6; i++) {
+        const y = yp(priceMin + (priceMax - priceMin) * (i / 6));
+        ctx.beginPath(); ctx.moveTo(ML, y); ctx.lineTo(W - MR, y); ctx.stroke();
+      }
+      ctx.restore();
+
+      // ── Entry horizontal reference ────────────────────────────────────────
+      ctx.save(); ctx.setLineDash([3,5]); ctx.strokeStyle='rgba(248,250,252,0.15)'; ctx.lineWidth=1;
+      ctx.beginPath(); ctx.moveTo(ML,yp(entry)); ctx.lineTo(W-MR,yp(entry)); ctx.stroke(); ctx.restore();
+
+      // ── SL line ───────────────────────────────────────────────────────────
+      ctx.save(); ctx.setLineDash([6,4]); ctx.strokeStyle='rgba(255,77,109,0.75)'; ctx.lineWidth=1.5;
       ctx.beginPath(); ctx.moveTo(ML,yp(sl)); ctx.lineTo(W-MR,yp(sl)); ctx.stroke(); ctx.restore();
-      // TP line
-      ctx.save(); ctx.setLineDash([5,4]); ctx.strokeStyle='rgba(0,212,170,0.7)'; ctx.lineWidth=1.5;
+
+      // ── TP line ───────────────────────────────────────────────────────────
+      ctx.save(); ctx.setLineDash([6,4]); ctx.strokeStyle='rgba(0,212,170,0.75)'; ctx.lineWidth=1.5;
       ctx.beginPath(); ctx.moveTo(ML,yp(tp)); ctx.lineTo(W-MR,yp(tp)); ctx.stroke(); ctx.restore();
 
-      // Price trend: entry → tp at expiryDays
-      ctx.save(); ctx.strokeStyle='#a78bfa'; ctx.lineWidth=2;
-      ctx.shadowColor='#a78bfa'; ctx.shadowBlur=8;
+      // ── Price trend line ──────────────────────────────────────────────────
+      ctx.save(); ctx.strokeStyle='#a78bfa'; ctx.lineWidth=2.5;
+      ctx.shadowColor='#a78bfa'; ctx.shadowBlur=10;
       ctx.beginPath(); ctx.moveTo(xd(0),yp(entry)); ctx.lineTo(xd(expiryDays),yp(tp)); ctx.stroke();
       ctx.restore();
 
-      // Heliosphere wall
-      const wg = ctx.createLinearGradient(wallX-4,0,wallX+4,0);
+      // ── Per-day dots on trend line (near zone only, or every 3d far) ─────
+      ctx.save();
+      for (let d = 1; d <= Math.min(expiryDays, TOTAL_DAYS); d++) {
+        if (d > WALL_DAY && d % 3 !== 0) continue;
+        const t = d / expiryDays;
+        const px = xd(d);
+        const py = yp(entry + (tp - entry) * t);
+        const r  = (d % 7 === 0 || d === expiryDays) ? 3.5 : 2;
+        ctx.beginPath(); ctx.arc(px, py, r, 0, Math.PI*2);
+        ctx.fillStyle = d % 7 === 0 ? 'rgba(167,139,250,0.9)' : 'rgba(167,139,250,0.45)';
+        ctx.shadowColor = '#a78bfa'; ctx.shadowBlur = d % 7 === 0 ? 6 : 0;
+        ctx.fill();
+      }
+      ctx.restore();
+
+      // ── Heliosphere wall ──────────────────────────────────────────────────
+      const wg = ctx.createLinearGradient(wallX-4, 0, wallX+4, 0);
       wg.addColorStop(0,'rgba(0,220,255,0)'); wg.addColorStop(0.5,'rgba(0,220,255,0.88)'); wg.addColorStop(1,'rgba(0,220,255,0)');
       ctx.save(); ctx.lineWidth=3; ctx.strokeStyle=wg; ctx.shadowColor='#00dcff'; ctx.shadowBlur=18;
       ctx.beginPath(); ctx.moveTo(wallX,MT); ctx.lineTo(wallX,MT+CH); ctx.stroke(); ctx.restore();
 
-      // Entry dot
-      ctx.save(); ctx.beginPath(); ctx.arc(xd(0),yp(entry),5,0,Math.PI*2);
-      ctx.fillStyle='#f8fafc'; ctx.shadowColor='#fff'; ctx.shadowBlur=10; ctx.fill(); ctx.restore();
-      // Expiry dot
+      // ── Entry dot ─────────────────────────────────────────────────────────
+      ctx.save(); ctx.beginPath(); ctx.arc(xd(0),yp(entry),5.5,0,Math.PI*2);
+      ctx.fillStyle='#f8fafc'; ctx.shadowColor='#fff'; ctx.shadowBlur=12; ctx.fill(); ctx.restore();
+      // ── Expiry dot ────────────────────────────────────────────────────────
       if (expiryDays<=TOTAL_DAYS) {
-        ctx.save(); ctx.beginPath(); ctx.arc(xd(expiryDays),yp(tp),4,0,Math.PI*2);
-        ctx.fillStyle='#00d4aa'; ctx.shadowColor='#00d4aa'; ctx.shadowBlur=8; ctx.fill(); ctx.restore();
+        ctx.save(); ctx.beginPath(); ctx.arc(xd(expiryDays),yp(tp),4.5,0,Math.PI*2);
+        ctx.fillStyle='#00d4aa'; ctx.shadowColor='#00d4aa'; ctx.shadowBlur=10; ctx.fill(); ctx.restore();
       }
 
-      // Zone labels
+      // ── Zone labels ───────────────────────────────────────────────────────
       ctx.save(); ctx.font='bold 10px Inter,sans-serif'; ctx.textAlign='center';
       ctx.fillStyle='rgba(120,220,255,0.55)';
       ctx.fillText('NEAR HORIZON  ≤14d', ML+(wallX-ML)/2, MT+14);
-      if (TOTAL_DAYS>14) {
+      if (TOTAL_DAYS > 14) {
         ctx.fillStyle='rgba(160,160,220,0.32)';
         ctx.fillText('FAR HORIZON · context', wallX+(W-MR-wallX)/2, MT+14);
       }
       ctx.restore();
 
-      // X axis labels
-      ctx.save(); ctx.fillStyle='rgba(255,255,255,0.38)'; ctx.font='10px Inter,sans-serif'; ctx.textAlign='center';
-      const stdD = new Set([0,7,14,21,30]);
-      [0,7,14,21,30].forEach(d => {
-        if (d>TOTAL_DAYS) return;
-        ctx.fillText('d'+d, xd(d), MT+CH+15);
-      });
-      if (!stdD.has(expiryDays) && expiryDays<=TOTAL_DAYS) {
-        ctx.fillStyle='rgba(0,212,170,0.6)'; ctx.fillText('d'+expiryDays, xd(expiryDays), MT+CH+15);
+      // ── X axis: per-day tick labels ───────────────────────────────────────
+      ctx.save(); ctx.font='10px Inter,sans-serif'; ctx.textAlign='center';
+      const tickStep = TOTAL_DAYS <= 20 ? 1 : TOTAL_DAYS <= 35 ? 7 : TOTAL_DAYS <= 70 ? 14 : 30;
+      for (let d = 0; d <= TOTAL_DAYS; d++) {
+        const isStep  = d % tickStep === 0;
+        const isWall  = d === 14;
+        const isExpiry = d === expiryDays;
+        if (!isStep && !isWall && !isExpiry) continue;
+        if (isWall) {
+          ctx.fillStyle = 'rgba(0,220,255,0.65)';
+        } else if (isExpiry && d !== 0) {
+          ctx.fillStyle = 'rgba(0,212,170,0.75)';
+        } else {
+          ctx.fillStyle = 'rgba(255,255,255,0.4)';
+        }
+        ctx.fillText('d' + d, xd(d), MT + CH + 16);
       }
       ctx.restore();
 
-      // Y axis labels
-      ctx.save(); ctx.fillStyle='rgba(255,255,255,0.38)'; ctx.font='10px Inter,sans-serif'; ctx.textAlign='right';
-      for (let i=0;i<=4;i++) {
-        const p = priceMin+(priceMax-priceMin)*(i/4);
-        const lbl = p<10 ? p.toFixed(2) : p<1000 ? p.toFixed(1) : Math.round(p)+'';
-        ctx.fillText(lbl, ML-5, yp(p)+3.5);
-      }
-      ctx.restore();
-
-      // SL / TP inline labels
+      // ── Y axis: price labels ──────────────────────────────────────────────
       ctx.save(); ctx.font='10px Inter,sans-serif'; ctx.textAlign='right';
-      const fmt2 = v => v<10 ? v.toFixed(3) : v<1000 ? v.toFixed(1) : Math.round(v)+'';
-      ctx.fillStyle='rgba(255,77,109,0.8)'; ctx.fillText('SL '+fmt2(sl), W-MR-5, yp(sl)-4);
-      ctx.fillStyle='rgba(0,212,170,0.8)';  ctx.fillText('TP '+fmt2(tp), W-MR-5, yp(tp)-4);
+      ctx.fillStyle='rgba(255,255,255,0.35)';
+      for (let i = 0; i <= 6; i++) {
+        const p = priceMin + (priceMax - priceMin) * (i / 6);
+        ctx.fillText(fmt2(p), ML - 6, yp(p) + 3.5);
+      }
       ctx.restore();
 
-      // Entry label
-      ctx.save(); ctx.font='10px Inter,sans-serif'; ctx.textAlign='left';
-      ctx.fillStyle='rgba(248,250,252,0.65)';
-      ctx.fillText('Entry '+fmt2(entry), xd(0)+8, yp(entry)-7); ctx.restore();
+      // ── Right-side SL / TP / Entry labels (pill style) ───────────────────
+      ctx.save(); ctx.font='bold 11px Inter,sans-serif'; ctx.textAlign='left';
+      const lx = W - MR + 6;
+      // TP
+      ctx.fillStyle='rgba(0,212,170,0.9)';
+      ctx.fillText('TP  ' + fmt2(tp), lx, yp(tp) + 4);
+      // Entry
+      ctx.fillStyle='rgba(248,250,252,0.75)';
+      ctx.fillText('▶ ' + fmt2(entry), lx, yp(entry) + 4);
+      // SL
+      ctx.fillStyle='rgba(255,77,109,0.9)';
+      ctx.fillText('SL  ' + fmt2(sl), lx, yp(sl) + 4);
+      ctx.restore();
     }
 
     function initHorizonChart(context) {
@@ -843,18 +888,26 @@
       const wrap = document.getElementById('horizon-chart-wrap');
       const canvas = document.getElementById('horizon-canvas');
       const tooltip = document.getElementById('horizon-tooltip');
-      if (!context.buy_in_price || !context.stop_loss || !context.take_profit) {
-        wrap.style.display = 'none'; return;
-      }
       wrap.style.display = 'block';
+
+      // Derive risk % from tier for fallback SL/TP
+      const riskPct = { low: 2.0, moderate: 3.5, high: 5.0 }[context.risk_tier] || 3.0;
+      const entry = parseFloat(context.buy_in_price) || 100;
+      const sl    = parseFloat(context.stop_loss)    || entry * (1 - riskPct / 100);
+      const rr    = 2.0;
+      const tp    = parseFloat(context.take_profit)  || (entry + (entry - sl) * rr);
+
+      const horizon = context.horizon || (parseInt(context.expiry_days) > 14 ? 'far' : 'near');
+      const defaultDays = horizon === 'far' ? 30 : 14;
+      const expiryDays = Math.max(defaultDays, parseInt(context.expiry_days) || defaultDays);
       drawHorizonChart(canvas, {
-        entry: context.buy_in_price,
-        sl: context.stop_loss,
-        tp: context.take_profit,
-        expiry_days: context.expiry_days,
+        entry,
+        sl,
+        tp,
+        expiry_days: expiryDays,
         direction: context.direction,
         atr_pct: context.atr_pct,
-        horizon: context.horizon,
+        horizon,
       });
       // 3-second hover tooltip
       let _hcTimer = null;
