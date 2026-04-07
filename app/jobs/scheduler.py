@@ -52,6 +52,10 @@ _gap_risk_by_symbol: dict[str, dict] = {}
 # Key: yfinance symbol, value: vpoc/vah/val/hvn_levels/lvn_levels/vp_bias/vp_overextension/in_value_area
 _vp_by_symbol: dict[str, dict] = {}
 
+# Relative Strength cache: populated by job_daily_batch()
+# Key: yfinance symbol, value: {rs_20d, rs_60d, sector_rs}
+_rs_by_symbol: dict[str, dict] = {}
+
 
 async def job_ingest_and_sentiment() -> None:
     """Fetch RSS feeds, save items, run sentiment and asset tagging."""
@@ -155,7 +159,7 @@ async def job_daily_batch() -> None:
             )
             candidates = await asyncio.to_thread(_build)
             print(f"[BATCH] Candidates built: {len(candidates)}")
-            # Populate VP cache from candidates (snap was already computed inside engine)
+            # Populate VP + RS caches from candidates (snap was already computed inside engine)
             for _c in candidates:
                 _sym = get_yf_symbol(_c.asset_category, _c.asset_id)
                 if _sym and _c.vpoc is not None:
@@ -164,6 +168,12 @@ async def job_daily_batch() -> None:
                         "hvn_levels": [], "lvn_levels": [],
                         "vp_bias": _c.vp_bias, "vp_overextension": _c.vp_overextension,
                         "in_value_area": _c.in_value_area,
+                    }
+                if _sym and (_c.rs_20d is not None or _c.rs_60d is not None):
+                    _rs_by_symbol[_sym] = {
+                        "rs_20d": _c.rs_20d,
+                        "rs_60d": _c.rs_60d,
+                        "sector_rs": _c.sector_rs,
                     }
             for c in candidates:
                 print(f"  [{c.asset_category}] {c.asset_id} dir={c.direction} conf={c.confidence_score} rr={c.risk_reward}")

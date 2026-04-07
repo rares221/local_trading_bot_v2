@@ -108,6 +108,25 @@ async def build_research_context(
                         ctx["vp_bias"] = snap.vp_bias
                         ctx["vp_overextension"] = snap.vp_overextension
                         ctx["in_value_area"] = snap.in_value_area()
+                    # Relative Strength vs SPX and sector ETF (stocks only)
+                    if category.lower() in ("stocks", "etfs", "etf", "stock"):
+                        try:
+                            from app.services.technicals import compute_relative_strength
+                            from app.services.market_context import get_sector_etf_for_asset
+                            rs_20d = compute_relative_strength(symbol, "^GSPC", period=20)
+                            rs_60d = compute_relative_strength(symbol, "^GSPC", period=60)
+                            if rs_20d is not None:
+                                ctx["rs_20d"] = rs_20d
+                            if rs_60d is not None:
+                                ctx["rs_60d"] = rs_60d
+                            sector_etf = get_sector_etf_for_asset(asset_id)
+                            if sector_etf:
+                                sector_rs = compute_relative_strength(symbol, sector_etf, period=20)
+                                if sector_rs is not None:
+                                    ctx["sector_rs"] = sector_rs
+                                    ctx["sector_etf"] = sector_etf
+                        except Exception:
+                            pass
                     calculated = True
             except Exception:
                 pass

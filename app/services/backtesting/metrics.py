@@ -133,6 +133,20 @@ def compute_metrics(trades: list[dict]) -> dict[str, Any]:
         "pct_signals_in_va": round(len(va_in) / total, 4) if total > 0 else 0.0,
     }
 
+    # Relative Strength analytics: win rate for RS strong / neutral / weak signals
+    rs_strong  = [t for t in all_outcomes if t.get("rs_20d") is not None and t["rs_20d"] > 1.2]
+    rs_weak    = [t for t in all_outcomes if t.get("rs_20d") is not None and t["rs_20d"] < 0.8]
+    rs_neutral = [t for t in all_outcomes if t.get("rs_20d") is not None and 0.8 <= t["rs_20d"] <= 1.2]
+    rs_none    = [t for t in all_outcomes if t.get("rs_20d") is None]
+    rs_metrics = {
+        "strong": _vp_stats(rs_strong),
+        "neutral": _vp_stats(rs_neutral),
+        "weak": _vp_stats(rs_weak),
+        "no_data": _vp_stats(rs_none),
+        "pct_strong": round(len(rs_strong) / total, 4) if total > 0 else 0.0,
+        "pct_weak": round(len(rs_weak) / total, 4) if total > 0 else 0.0,
+    }
+
     return {
         "total_signals": len(trades),
         "total_trades": total,
@@ -149,6 +163,7 @@ def compute_metrics(trades: list[dict]) -> dict[str, Any]:
         "by_direction": direction_stats,
         "by_symbol": symbol_stats,
         "volume_profile": vp_metrics,
+        "relative_strength": rs_metrics,
     }
 
 

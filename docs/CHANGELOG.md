@@ -4,6 +4,65 @@
 
 ---
 
+## 2026-04-07 — `improvements_trade_builder` (sesiunea 5)
+
+### Relative Strength vs Benchmark (PRIORITATE 6 — complet)
+
+**Nou: `compute_relative_strength()` în `app/services/technicals.py`**
+- Calculează RS ratio `(1 + ret_asset) / (1 + ret_benchmark)` pe N zile trading
+- >1.0 = asset outperformează benchmark; <1.0 = underperformează
+- Reutilizează `fetch_ohlcv()` cu cache existent — zero API calls extra
+- Walk-forward automat: respectă `_backtest_cutoff` prin `_apply_backtest_cutoff()`
+- Output clampat `[0.1, 10.0]` pentru date sparse/proaste; returnează `None` dacă bare insuficiente
+
+**Nou: `SECTOR_ETF_DIRECT` + `get_sector_etf_for_asset()` în `app/services/market_context.py`**
+- Dict direct asset_id → sector ETF Yahoo symbol (30+ mappings: AAPL→XLK, XOM→XLE, JPM→XLF, JNJ→XLV etc.)
+- Fallback prin `get_sector_for_asset()` → `SECTOR_ETFS` pentru assets nemapați direct
+
+**Modificat: `app/services/recommendations/engine.py`**
+- `Candidate` dataclass: câmpuri noi `rs_20d`, `rs_60d`, `sector_rs`
+- Import nou: `compute_relative_strength`, `get_sector_etf_for_asset`
+- `_build_candidate()`: calculează RS doar pentru `category == "stocks"`; confidence direction-aware:
+  - RS > 1.2 + long → +5; RS > 1.2 + short → −5
+  - RS < 0.8 + long → −8; RS < 0.8 + short → +5
+- `sector_aligned` extins: revocat dacă `sector_rs < 0.9` (stock slab față de sector), acordat dacă `sector_rs > 1.15` (stock puternic chiar dacă sectorul e neutru)
+- Constructor `Candidate(...)`: populat cu `rs_20d`, `rs_60d`, `sector_rs`
+
+**Modificat: `app/jobs/scheduler.py`**
+- Dict nou `_rs_by_symbol: dict[str, dict]` la nivel de modul
+- `job_daily_batch()`: populează `_rs_by_symbol[sym]` din câmpurile RS ale fiecărui candidat
+
+**Modificat: `app/api/routes.py`**
+- `_rec_to_item()`: importă `_rs_by_symbol`, expune `rs_20d`, `rs_60d`, `sector_rs` în JSON per recomandare
+
+**Modificat: `app/services/backtesting/replay.py`**
+- Import nou: `compute_relative_strength`
+- `run_backtest()`: pre-fetch garantat pentru `^GSPC` și sector ETFs (XLK/XLE/XLF/XLV/XLY/XLI/XLB)
+- `_build_signal()`: calculează `rs_20d` walk-forward pentru stocks; aplică aceleași ajustări confidence ca engine-ul live; adaugă `rs_20d` în signal dict
+
+**Modificat: `app/services/backtesting/metrics.py`**
+- `compute_metrics()` returnează `relative_strength`: stats RS strong (>1.2) / neutral (0.8–1.2) / weak (<0.8) / no_data + `pct_strong`, `pct_weak`
+
+**Modificat: `app/static/recommendations.html`**
+- CSS nou: `.badge--rs-strong`, `.badge--rs-weak`, `#rec-rs-tooltip` (fixed global)
+- IIFE tooltip global cu 3s delay, `initRsBadgeTooltips()` apelat la `renderComplete`
+- `rsBadge(rec)`: badge `RS+` (verde) dacă `rs_20d > 1.2`, `RS−` (roșu) dacă `rs_20d < 0.8`
+- Tooltip: explică cât a deviat față de SPX, dacă confirmă sau contrazice direcția, și impactul asupra confidence
+- Asset column formatter: badge RS adăugat după VP badge
+
+**Modificat: `app/services/research/__init__.py`**
+- `build_research_context()`: calculează `rs_20d`, `rs_60d`, `sector_rs` pentru stocks după `compute_sl_tp_for_symbol`; adaugă în `ctx`
+
+**Modificat: `app/services/research/llm.py`**
+- `_format_user_content()`: include linie RS în promptul LLM — ratio 20d/60d vs SPX, ratio vs sector ETF, label outperforming/underperforming
+
+**Modificat: `app/static/research.html`**
+- CSS nou: `.rs-rs-strip`, `.rs-rs-badge-strong/weak/neut`
+- `renderRsStrip(ctx)`: strip RS în panoul "Market Context" cu badge STRONG/WEAK/NEUTRAL, valori 20d/60d/sector, tooltip 3s (reutilizează `rs-vp-tooltip-anchor` + `initRsTooltips()`)
+- `renderContext()`: inserează RS strip înaintea VP strip
+
+---
+
 ## 2026-04-07 — `improvements_trade_builder` (sesiunea 4)
 
 ### Volume Profile — VPOC, VAH, VAL, HVN/LVN (PRIORITATE 5 — complet)

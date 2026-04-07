@@ -255,6 +255,18 @@
       padding: 4px 0;
     }
 
+    /* ── RS strip ── */
+    .rs-rs-strip {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+      background: rgba(16,185,129,.05); border: 1px solid rgba(16,185,129,.2);
+      border-radius: 8px; padding: 9px 14px;
+      font-size: 12px; color: rgba(248,250,252,.65); cursor: default;
+    }
+    .rs-rs-strip strong { color: #cbd5e1; font-size: 13px; }
+    .rs-rs-badge-strong { background: rgba(16,185,129,.15); color: #6ee7b7; border: 1px solid rgba(16,185,129,.3); border-radius: 4px; padding: 1px 6px; font-size: 10px; font-weight: 700; }
+    .rs-rs-badge-weak   { background: rgba(239,68,68,.15);  color: #fca5a5; border: 1px solid rgba(239,68,68,.3);  border-radius: 4px; padding: 1px 6px; font-size: 10px; font-weight: 700; }
+    .rs-rs-badge-neut   { background: rgba(248,250,252,.08); color: rgba(248,250,252,.5); border: 1px solid rgba(255,255,255,.1); border-radius: 4px; padding: 1px 6px; font-size: 10px; font-weight: 700; }
+
     /* ── VP strip ── */
     .rs-vp-strip {
       display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
@@ -354,6 +366,49 @@
         });
       };
     })();
+
+    // ── RS strip for research context panel ──
+    function renderRsStrip(ctx) {
+      if (ctx.rs_20d == null) return '';
+      const rs20 = ctx.rs_20d, rs60 = ctx.rs_60d, srs = ctx.sector_rs;
+      const etf = ctx.sector_etf || 'sector';
+      const dir = (ctx.direction || 'long').toLowerCase();
+
+      const isStrong = rs20 > 1.2, isWeak = rs20 < 0.8;
+      const badgeCls = isStrong ? 'rs-rs-badge-strong' : isWeak ? 'rs-rs-badge-weak' : 'rs-rs-badge-neut';
+      const badgeLabel = isStrong ? 'RS STRONG' : isWeak ? 'RS WEAK' : 'RS NEUTRAL';
+      const biasLabel = rs20 > 1.0
+        ? '↑ outperforming market'
+        : rs20 < 1.0 ? '↓ underperforming market' : 'in line with market';
+
+      let extraHtml = '';
+      if (rs60 != null) extraHtml += `<span>60d: ${rs60.toFixed(2)}×</span>`;
+      if (srs != null) {
+        const sc = srs > 1.1 ? 'color:#6ee7b7' : srs < 0.9 ? 'color:#fca5a5' : 'color:rgba(248,250,252,.5)';
+        extraHtml += `<span style="${sc}">vs ${esc(etf)}: ${srs.toFixed(2)}×</span>`;
+      }
+
+      // Tooltip
+      const confImpact = isStrong
+        ? (dir === 'long' ? 'Confidence was increased +5 pts (confirms long direction).' : 'Confidence was reduced -5 pts (strong stock is harder to short).')
+        : isWeak
+          ? (dir === 'long' ? 'Confidence was reduced -8 pts (buying a laggard carries more risk).' : 'Confidence was increased +5 pts (weak stocks tend to keep falling).')
+          : 'No confidence adjustment — RS is in neutral range (0.8–1.2×).';
+      const sectorNote = srs != null
+        ? ` vs its own sector (${esc(etf)}): <strong>${srs.toFixed(2)}×</strong> — ${srs > 1.0 ? 'outperforming peers' : 'underperforming peers'}.`
+        : '';
+      const tipHtml = `<strong>Relative Strength (RS) — 20-day</strong>`
+        + `RS measures how this stock performed <strong>compared to the S&amp;P 500</strong> over the last 20 trading days. `
+        + `A ratio of <strong>${rs20.toFixed(2)}×</strong> means it ${rs20 >= 1.0 ? 'gained ' + ((rs20-1)*100).toFixed(1) + '% MORE' : 'gained ' + ((1-rs20)*100).toFixed(1) + '% LESS'} than the index. `
+        + `${sectorNote} ${confImpact}`;
+
+      return '<div class="rs-rs-strip rs-vp-tooltip-anchor" data-tip-html="' + tipHtml.replace(/"/g, '&quot;') + '">'
+        + '<strong>RS vs SPX</strong>'
+        + `<span class="${badgeCls}">${badgeLabel}</span>`
+        + `<span>${esc(biasLabel)} · ${rs20.toFixed(2)}×</span>`
+        + extraHtml
+        + '</div>';
+    }
 
     // ── VP strip for research context panel ──
     function renderVpStrip(ctx) {
@@ -593,6 +648,10 @@
           chips.map(c => '<div class="rs-ctx-chip"><span class="rs-ctx-chip-label">' + esc(c.label) + '</span><span class="rs-ctx-chip-value">' + esc(c.value) + '</span></div>').join('') +
         '</div>');
       }
+
+      // Relative Strength strip
+      const rsHtml = renderRsStrip(ctx);
+      if (rsHtml) parts.push(rsHtml);
 
       // Volume Profile strip
       const vpHtml = renderVpStrip(ctx);

@@ -222,9 +222,10 @@ def _rec_to_item(r: Recommendation) -> dict:
         get_asset_class_policy,
     )
     from app.services.recommendations.engine import get_yf_symbol as _get_yf_sym
-    from app.jobs.scheduler import _vp_by_symbol
+    from app.jobs.scheduler import _vp_by_symbol, _rs_by_symbol
     _sym = _get_yf_sym(r.asset_category or "", r.asset_id or "")
     _vp = _vp_by_symbol.get(_sym, {}) if _sym else {}
+    _rs = _rs_by_symbol.get(_sym, {}) if _sym else {}
 
     score = getattr(r, "confidence_score", None)
     
@@ -269,6 +270,9 @@ def _rec_to_item(r: Recommendation) -> dict:
         "vp_bias": _vp.get("vp_bias", "at_vpoc"),
         "vp_overextension": _vp.get("vp_overextension"),
         "in_value_area": _vp.get("in_value_area", False),
+        "rs_20d": _rs.get("rs_20d"),
+        "rs_60d": _rs.get("rs_60d"),
+        "sector_rs": _rs.get("sector_rs"),
         "engine_policy": engine_policy_to_dict(
             get_asset_class_policy(r.asset_category or "", r.asset_id or "")
         ),

@@ -141,6 +141,45 @@ def get_return_correlation(symbol_a: str, symbol_b: str, period_days: int = 60) 
         return None
 
 
+def compute_relative_strength(symbol: str, benchmark: str, period: int = 20) -> Optional[float]:
+    """
+    Relative Strength ratio of symbol vs benchmark over N trading days.
+
+    Returns (1 + cumulative_return_symbol) / (1 + cumulative_return_benchmark).
+    > 1.0  = symbol outperforms benchmark (strong)
+    < 1.0  = symbol underperforms benchmark (weak)
+    = 1.0  = in line with benchmark
+
+    Uses the existing fetch_ohlcv() cache and respects backtest mode cutoff.
+    Returns None if data is insufficient or an error occurs.
+    Output is clamped to [0.1, 10.0] to avoid extreme values from bad data.
+    """
+    if not symbol or not benchmark or symbol == benchmark:
+        return None
+    min_bars = period + 1
+    fetch_period = "250d" if period > 60 else "90d"
+    df_sym = fetch_ohlcv(symbol, period=fetch_period)
+    df_bm  = fetch_ohlcv(benchmark, period=fetch_period)
+    if df_sym is None or df_bm is None:
+        return None
+    if len(df_sym) < min_bars or len(df_bm) < min_bars:
+        return None
+    try:
+        close_sym = df_sym["Close"].dropna()
+        close_bm  = df_bm["Close"].dropna()
+        if len(close_sym) < min_bars or len(close_bm) < min_bars:
+            return None
+        ret_sym = float(close_sym.iloc[-1]) / float(close_sym.iloc[-period]) - 1
+        ret_bm  = float(close_bm.iloc[-1]) / float(close_bm.iloc[-period]) - 1
+        if close_sym.iloc[-period] <= 0 or close_bm.iloc[-period] <= 0:
+            return None
+        rs = (1 + ret_sym) / (1 + ret_bm)
+        # Clamp to avoid extreme values from bad/sparse data
+        return round(max(0.1, min(10.0, rs)), 4)
+    except Exception:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Core indicators
 # ---------------------------------------------------------------------------

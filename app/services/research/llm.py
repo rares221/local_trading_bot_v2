@@ -72,6 +72,21 @@ def _format_user_content(context: dict[str, Any]) -> str:
             parts.append("Fundamentals: " + ", ".join(fparts) + ".")
     if headlines:
         parts.append("Headlines: " + " | ".join(headlines[:2]))
+    # Relative Strength context
+    rs_20d = context.get("rs_20d")
+    if rs_20d is not None:
+        rs_60d = context.get("rs_60d")
+        sector_rs = context.get("sector_rs")
+        sector_etf = context.get("sector_etf", "sector ETF")
+        rs_label = "outperforming" if rs_20d > 1.0 else "underperforming"
+        rs_line = f"Relative Strength vs S&P 500 (20d): {rs_20d:.2f}x ({rs_label} the market)"
+        if rs_60d is not None:
+            rs_line += f"; 60d: {rs_60d:.2f}x"
+        if sector_rs is not None:
+            sector_label = "outperforming" if sector_rs > 1.0 else "underperforming"
+            rs_line += f"; vs {sector_etf}: {sector_rs:.2f}x ({sector_label} its sector)"
+        parts.append(rs_line + ".")
+
     # Volume Profile context
     vpoc = context.get("vpoc")
     if vpoc is not None:

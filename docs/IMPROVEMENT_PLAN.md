@@ -184,18 +184,24 @@ Volume Profile arata ceva diferit si mai util: unde a stat pretul cel mai mult t
 
 ---
 
-### PRIORITATE 6 — Relative Strength vs benchmark
+### ✅ PRIORITATE 6 — Relative Strength vs benchmark — DONE 2026-04-07 (complet)
 
 **De ce e problema:**
 Sistemul judeca un asset in mod absolut: RSI de 55, MACD bullish, ADX de 30 → long. Dar nu conteaza doar daca un asset e bullish in absolut — conteaza daca e mai puternic sau mai slab decat piata. Intr-o piata bullish generala (SPX +1.5% pe zi), o actiune care face +0.3% e de fapt slaba relativ la piata. Sa mergi long pe ea inseamna sa cumperi cel mai slab asset intr-o zi in care restul pietei e puternic — exact ceea ce fac traderii care pierd.
 
 Sector rotation e un fenomen real: banii se muta din tech in energy, din growth in value, in cicluri clare. Un sistem care ignora acest lucru va recomanda long pe tech chiar cand banii ies din tech spre alta parte.
 
-**Ce trebuie construit:**
-- `relative_strength(symbol, benchmark, period)`: return cumulativ al asset-ului vs SPX/sector ETF pe 20 si 60 zile
-- RS ratio integrat in confidence score: RS > 1.2 → +5 pts, RS < 0.8 → -8 pts
-- Sector ETF mapping: AAPL/MSFT → XLK, XOM/CVX → XLE, JPM/GS → XLF, JNJ → XLV etc.
-- `sector_aligned` flag extins: nu doar directie, ci si RS relativ la sector
+**Ce s-a implementat:**
+- `compute_relative_strength(symbol, benchmark, period)` în `technicals.py` — RS ratio `(1+ret_asset)/(1+ret_benchmark)`, walk-forward automat prin cache-ul existent, clamp `[0.1, 10.0]`
+- `SECTOR_ETF_DIRECT` + `get_sector_etf_for_asset()` în `market_context.py` — mapping direct ticker → sector ETF (XLK/XLE/XLF/XLV/XLY/XLI/XLB) cu fallback prin `get_sector_for_asset()`
+- Confidence ajustat direction-aware: RS>1.2 long →+5, RS>1.2 short →−5, RS<0.8 long →−8, RS<0.8 short →+5
+- `sector_aligned` extins: revocat dacă `sector_rs < 0.9`, acordat dacă `sector_rs > 1.15`
+- Cache `_rs_by_symbol` în `scheduler.py`, populat din candidați la `job_daily_batch()`
+- API `/api/recommendations` expune `rs_20d`, `rs_60d`, `sector_rs` per recomandare
+- RS walk-forward în backtesting cu pre-fetch `^GSPC` + sector ETFs garantat
+- Analytics `relative_strength` în `compute_metrics()`: win rate / avg_pnl_r pentru RS strong / neutral / weak
+- Badge `RS+` (verde) / `RS−` (roșu) în `recommendations.html` cu tooltip 3s (explică ce înseamnă, cât a deviat față de SPX, confirmă sau contrazice direcția)
+- RS în research pipeline: `research/__init__.py` extrage `rs_20d/rs_60d/sector_rs`, `llm.py` include RS în promptul LLM, `research.html` afișează strip RS în Market Context cu tooltip 3s
 
 **Efort:** Mediu | **Impact:** Mediu-mare — filtreaza candidate slabe in sectoare out-of-favor
 

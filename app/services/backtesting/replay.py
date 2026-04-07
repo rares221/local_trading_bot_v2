@@ -25,6 +25,7 @@ from app.services.technicals import (
     build_snapshot,
     compute_atr_levels,
     compute_confidence,
+    compute_relative_strength,
     calc_risk_reward,
 )
 from app.services.backtesting.data_provider import (
@@ -85,6 +86,9 @@ def run_backtest(
     # Step 1: Pre-fetch all historical data into technicals cache
     tech.clear_cache()
     ohlcv_data = prefetch_symbols(symbols, period=period)
+    # Also pre-fetch ^GSPC and common sector ETFs for RS calculation
+    for _rs_sym in ["^GSPC", "XLK", "XLE", "XLF", "XLV", "XLY", "XLI", "XLB"]:
+        tech.fetch_ohlcv(_rs_sym, period=period)
 
     if not ohlcv_data:
         return {"error": "no_data_fetched", "signals": [], "metrics": {}}
@@ -233,6 +237,23 @@ def _build_signal(
            (direction == "short" and snap.vp_bias == "above_vpoc"):
             confidence = min(100, confidence + 4)
 
+    # Relative Strength walk-forward (fetch_ohlcv respects _backtest_cutoff)
+    rs_20d = None
+    category = _guess_category(symbol)
+    if category == "stocks":
+        try:
+            rs_20d = compute_relative_strength(symbol, "^GSPC", period=20)
+            if rs_20d is not None:
+                if rs_20d > 1.2:
+                    rs_adj = +5 if direction == "long" else -5
+                elif rs_20d < 0.8:
+                    rs_adj = -8 if direction == "long" else +5
+                else:
+                    rs_adj = 0
+                confidence = max(0, min(100, confidence + rs_adj))
+        except Exception:
+            pass
+
     if confidence < min_confidence:
         return None
 
@@ -264,6 +285,8 @@ def _build_signal(
         "vp_bias": snap.vp_bias,
         "vp_flag": vp_flag,  # what VP adjustment fired (for analytics)
         "in_value_area": snap.in_value_area(),
+        # Relative Strength walk-forward data
+        "rs_20d": rs_20d,
         # Outcome fields (populated later)
         "outcome": None,
         "closing_price": None,

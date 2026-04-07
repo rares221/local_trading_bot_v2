@@ -247,6 +247,24 @@
     /* Gap risk badges */
     .badge--gap-high   { background: rgba(239,68,68,.15);  color: #fca5a5; border: 1px solid rgba(239,68,68,.35);  font-size:9px; padding:1px 4px; border-radius:4px; font-weight:700; letter-spacing:.03em; }
     .badge--gap-medium { background: rgba(245,158,11,.15); color: #fcd34d; border: 1px solid rgba(245,158,11,.35); font-size:9px; padding:1px 4px; border-radius:4px; font-weight:700; letter-spacing:.03em; }
+    .badge--rs-strong  { background: rgba(16,185,129,.15); color: #6ee7b7; border: 1px solid rgba(16,185,129,.35); font-size:9px; padding:1px 4px; border-radius:4px; font-weight:700; letter-spacing:.03em; cursor:default; }
+    .badge--rs-weak    { background: rgba(239,68,68,.15);  color: #fca5a5; border: 1px solid rgba(239,68,68,.35);  font-size:9px; padding:1px 4px; border-radius:4px; font-weight:700; letter-spacing:.03em; cursor:default; }
+
+    /* ── Global fixed tooltip (RS badges) ── */
+    #rec-rs-tooltip {
+      display: none; position: fixed; z-index: 9999;
+      width: 260px; background: #1e293b; border: 1px solid rgba(255,255,255,.12);
+      border-radius: 10px; padding: 12px 14px;
+      font-size: 12.5px; line-height: 1.6; color: rgba(248,250,252,.85);
+      box-shadow: 0 8px 32px rgba(0,0,0,.5); pointer-events: none;
+    }
+    #rec-rs-tooltip::after {
+      content: ''; position: absolute; bottom: -7px;
+      left: var(--arrow-left, 50%); transform: translateX(-50%);
+      border: 6px solid transparent; border-bottom: none;
+      border-top-color: #1e293b;
+    }
+    #rec-rs-tooltip strong { color: #fde68a; display: block; margin-bottom: 4px; }
     /* Volume Profile badges */
     .badge--vp-va      { background: rgba(148,163,184,.13); color: #94a3b8; border: 1px solid rgba(148,163,184,.3); font-size:9px; padding:1px 4px; border-radius:4px; font-weight:700; letter-spacing:.03em; }
     .badge--vp-ext     { background: rgba(168,85,247,.13);  color: #c4b5fd; border: 1px solid rgba(168,85,247,.3);  font-size:9px; padding:1px 4px; border-radius:4px; font-weight:700; letter-spacing:.03em; }
@@ -450,6 +468,69 @@
     }
 
     /* ── Gap risk badge ── */
+    /* ── RS tooltip: global fixed, 3s hover delay ── */
+    (function() {
+      const TIP_DELAY = 3000;
+      let _timer = null, _tip = null;
+      function ensureTip() {
+        if (_tip) return _tip;
+        _tip = document.createElement('div');
+        _tip.id = 'rec-rs-tooltip';
+        document.body.appendChild(_tip);
+        return _tip;
+      }
+      function showTip(anchor) {
+        const tip = ensureTip();
+        tip.innerHTML = anchor.dataset.rsTip || '';
+        tip.style.display = 'block';
+        const r = anchor.getBoundingClientRect();
+        const tw = 260;
+        let left = r.left + r.width / 2 - tw / 2;
+        left = Math.max(8, Math.min(left, window.innerWidth - tw - 8));
+        const top = r.top - tip.offsetHeight - 10;
+        tip.style.left = left + 'px';
+        tip.style.top  = (top < 8 ? r.bottom + 10 : top) + 'px';
+        tip.style.setProperty('--arrow-left', ((r.left + r.width / 2) - left) + 'px');
+      }
+      function hideTip() { if (_tip) _tip.style.display = 'none'; }
+      window.initRsBadgeTooltips = function() {
+        document.querySelectorAll('.rs-badge-anchor').forEach(el => {
+          const fresh = el.cloneNode(true);
+          el.parentNode.replaceChild(fresh, el);
+          fresh.addEventListener('mouseenter', () => { _timer = setTimeout(() => showTip(fresh), TIP_DELAY); });
+          fresh.addEventListener('mouseleave', () => { clearTimeout(_timer); hideTip(); });
+        });
+      };
+    })();
+
+    /* ── Relative Strength badge ── */
+    function rsBadge(rec) {
+      const rs = rec.rs_20d;
+      if (rs == null) return '';
+      const dir = (rec.direction || 'long').toLowerCase();
+      if (rs > 1.2) {
+        const confirms = dir === 'long';
+        const tipHtml = `<strong>RS Strong — ${rs.toFixed(2)}× vs S&amp;P 500 (20 days)</strong>`
+          + `This stock returned <strong>${((rs - 1) * 100).toFixed(1)}% more than the S&amp;P 500</strong> over the last 20 trading days. `
+          + `It is outperforming the broad market — institutions are actively buying this name. `
+          + (confirms
+            ? `For a <strong>LONG</strong> trade, this is a <strong>positive signal</strong>: you are buying strength, not fighting the current. Confidence was increased +5 pts.`
+            : `For a <strong>SHORT</strong> trade, this is a <strong>warning</strong>: you are shorting a stock that is outperforming the market. Confidence was reduced -5 pts.`);
+        return `<span class="badge--rs-strong rs-badge-anchor" data-rs-tip="${tipHtml.replace(/"/g, '&quot;')}">RS+</span>`;
+      }
+      if (rs < 0.8) {
+        const confirms = dir === 'short';
+        const tipHtml = `<strong>RS Weak — ${rs.toFixed(2)}× vs S&amp;P 500 (20 days)</strong>`
+          + `This stock returned <strong>${((1 - rs) * 100).toFixed(1)}% less than the S&amp;P 500</strong> over the last 20 trading days. `
+          + `It is underperforming the broad market — money is flowing out of this name. `
+          + (confirms
+            ? `For a <strong>SHORT</strong> trade, this is a <strong>positive signal</strong>: weak stocks tend to continue underperforming. Confidence was increased +5 pts.`
+            : `For a <strong>LONG</strong> trade, this is a <strong>warning</strong>: you are buying a stock that lags the market. Confidence was reduced -8 pts.`);
+        return `<span class="badge--rs-weak rs-badge-anchor" data-rs-tip="${tipHtml.replace(/"/g, '&quot;')}">RS−</span>`;
+      }
+      return '';
+    }
+
     function gapBadge(rec) {
       const lvl = rec.gap_risk_level;
       if (!lvl || lvl === 'low') return '';
@@ -951,6 +1032,8 @@
           if (gapB) badges += gapB;
           const vpB = vpBadge(rec);
           if (vpB) badges += vpB;
+          const rsB = rsBadge(rec);
+          if (rsB) badges += rsB;
           const tip = escapeAttr((rec.volatility_notes || '') + (rec.status !== 'pending' ? ' [' + rec.status + ']' : ''));
           return `<span class="font-semibold rec-asset-link" title="${tip}">${escHtml(rec.asset_id)}${badges ? '<span class="indicator-badges">' + badges + '</span>' : ''}</span>`;
         },
@@ -1101,6 +1184,7 @@
           if (s === 'taken' || s === 'skipped') row.getElement().style.opacity = '.55';
         },
         placeholder: 'No recommendations',
+        renderComplete() { initRsBadgeTooltips(); },
       });
       // Event delegation for action buttons
       document.getElementById(tableId).addEventListener('click', async e => {

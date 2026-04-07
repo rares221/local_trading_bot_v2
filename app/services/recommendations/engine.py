@@ -55,6 +55,7 @@ from app.services.technicals import (
     compute_atr_levels,
     compute_confidence,
     compute_technical_score,
+    compute_relative_strength,
     determine_direction,
     estimate_expiry_days,
     get_cached_price,
@@ -68,6 +69,7 @@ from app.services.market_context import (
     check_trend_alignment,
     TrendAlignment,
     get_sector_for_asset,
+    get_sector_etf_for_asset,
     SectorRegime,
 )
 from app.services.macro_calendar import MACRO_DAY_CONFIDENCE_PENALTY, is_high_impact_day
@@ -509,6 +511,10 @@ class Candidate:
     vp_bias: str = "at_vpoc"          # above_vpoc | below_vpoc | at_vpoc
     vp_overextension: Optional[float] = None
     in_value_area: bool = False        # True = choppy equilibrium zone
+    # Relative Strength vs SPX and sector ETF (stocks only)
+    rs_20d: Optional[float] = None    # RS ratio vs ^GSPC over 20 trading days
+    rs_60d: Optional[float] = None    # RS ratio vs ^GSPC over 60 trading days
+    sector_rs: Optional[float] = None # RS ratio vs sector ETF (XLK/XLE/XLF/…) over 20 days
 
 
 # ---------------------------------------------------------------------------
@@ -1301,6 +1307,42 @@ def _build_candidate(
         suffix = f"indicator conflict penalty: {conflict_penalty} (skip if ≥{pol.conflict_skip_threshold})"
         vol_notes = f"{vol_notes}; {suffix}" if vol_notes else suffix
 
+    # ── Relative Strength vs SPX and sector ETF (stocks only) ───────────────
+    rs_20d: Optional[float] = None
+    rs_60d: Optional[float] = None
+    sector_rs: Optional[float] = None
+
+    if category == "stocks":
+        symbol_for_rs = get_yf_symbol(category, asset_id) or asset_id.upper()
+        try:
+            rs_20d = compute_relative_strength(symbol_for_rs, "^GSPC", period=20)
+            rs_60d = compute_relative_strength(symbol_for_rs, "^GSPC", period=60)
+            sector_etf = get_sector_etf_for_asset(asset_id)
+            if sector_etf:
+                sector_rs = compute_relative_strength(symbol_for_rs, sector_etf, period=20)
+        except Exception:
+            pass
+
+        if rs_20d is not None:
+            # Direction-aware: strong RS confirms long, denies short — and vice versa
+            if rs_20d > 1.2:
+                rs_adj = +5 if direction == "long" else -5
+                rs_note = f"RS strong ({rs_20d:.2f}× SPX 20d)"
+            elif rs_20d < 0.8:
+                rs_adj = -8 if direction == "long" else +5
+                rs_note = f"RS weak ({rs_20d:.2f}× SPX 20d)"
+            else:
+                rs_adj = 0
+                rs_note = None
+            if rs_adj != 0:
+                confidence = max(0, min(100, confidence + rs_adj))
+                logger.debug("[ENGINE] %s: RS adj=%d (rs_20d=%.2f, dir=%s) → conf=%d",
+                             asset_id, rs_adj, rs_20d, direction, confidence)
+                if rs_note and regime_note:
+                    regime_note = f"{regime_note}; {rs_note}"
+                elif rs_note:
+                    regime_note = rs_note
+
     # Determine if sector is aligned with trade direction
     sector_aligned = False
     if sector_regime:
@@ -1308,6 +1350,16 @@ def _build_candidate(
             sector_aligned = True
         elif sector_regime.regime == "risk_off" and direction == "short":
             sector_aligned = True
+
+    # Extend sector_aligned with per-stock RS vs sector ETF
+    if sector_aligned and sector_rs is not None and sector_rs < 0.9:
+        # Sector is bullish but this stock is weak relative to its peers — not truly aligned
+        sector_aligned = False
+        logger.debug("[ENGINE] %s: sector_aligned revoked — sector_rs=%.2f < 0.9", asset_id, sector_rs)
+    elif not sector_aligned and sector_rs is not None and sector_rs > 1.15:
+        # Stock is outperforming its sector even if sector regime is neutral — grant alignment
+        sector_aligned = True
+        logger.debug("[ENGINE] %s: sector_aligned granted — sector_rs=%.2f > 1.15", asset_id, sector_rs)
     
     # Gap risk: compute from overnight gap distribution + holding period + timing
     from app.core.preferences import get_gap_risk_config
@@ -1370,6 +1422,9 @@ def _build_candidate(
         vp_bias=snap.vp_bias if snap else "at_vpoc",
         vp_overextension=snap.vp_overextension if snap else None,
         in_value_area=snap.in_value_area() if snap else False,
+        rs_20d=rs_20d,
+        rs_60d=rs_60d,
+        sector_rs=sector_rs,
     )
 
 
