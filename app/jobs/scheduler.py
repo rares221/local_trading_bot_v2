@@ -625,13 +625,28 @@ async def _verify_outcomes_for_logs(session: AsyncSession) -> None:
                 else:
                     pnl_r = round((entry_price - closing_price) / risk, 3)
 
+            # P12: verify metrics claims if metrics_at_entry is available
+            metrics_accuracy: float | None = log.metrics_accuracy_score
+            metrics_verification: str | None = log.metrics_verification
+            if log.metrics_at_entry and metrics_accuracy is None:
+                try:
+                    from app.services.research.hallucination import verify_metrics_claims
+                    import json as _json
+                    metrics_dict = log.get_metrics_at_entry()
+                    if metrics_dict:
+                        mc_result = verify_metrics_claims(log.rationale_text, metrics_dict)
+                        metrics_accuracy = mc_result.get("accuracy_score")
+                        metrics_verification = _json.dumps(mc_result, default=str)
+                except Exception as _me:
+                    print(f"[VERIFY_OUTCOMES] metrics claims check failed (non-fatal): {_me}")
+
             flags = log.get_validation_flags()
             quality = _calculate_quality_score(
                 outcome=trade.outcome,
                 validation_flags=flags,
                 retry_count=log.retry_count or 0,
                 pnl_r=pnl_r,
-                metrics_accuracy_score=log.metrics_accuracy_score,
+                metrics_accuracy_score=metrics_accuracy,
                 news_verified=log.news_verified,
             )
 
@@ -639,6 +654,8 @@ async def _verify_outcomes_for_logs(session: AsyncSession) -> None:
             log.outcome_at = trade.outcome_at
             log.closing_price = closing_price or None
             log.pnl_r = pnl_r
+            log.metrics_accuracy_score = metrics_accuracy
+            log.metrics_verification = metrics_verification
             log.quality_score = quality
             updated += 1
 
@@ -647,6 +664,18 @@ async def _verify_outcomes_for_logs(session: AsyncSession) -> None:
             print(f"[VERIFY_OUTCOMES] Updated {updated} rationale log(s) with outcome data")
     except Exception as exc:
         print(f"[VERIFY_OUTCOMES] Failed (non-fatal): {exc}")
+
+
+async def job_build_hallucination_profile() -> None:
+    """P13: Weekly aggregation of V4 flag rates per provider/model."""
+    async with async_session_factory() as session:
+        try:
+            from app.services.research.bias_detector import build_hallucination_profile
+            profile = await build_hallucination_profile(session, days_back=30)
+            entries = len(profile.get("entries") or [])
+            print(f"[HALLUCINATION_PROFILE] Built profile with {entries} provider/model entries")
+        except Exception as exc:
+            print(f"[HALLUCINATION_PROFILE] Failed (non-fatal): {exc}")
 
 
 async def job_daily_briefing() -> None:
@@ -706,6 +735,14 @@ def start_scheduler() -> AsyncIOScheduler:
         hour=4,
         minute=0,
         id="cleanup_feed_items",
+    )
+    scheduler.add_job(
+        job_build_hallucination_profile,
+        "cron",
+        day_of_week="sun",
+        hour=6,
+        minute=0,
+        id="build_hallucination_profile",
     )
     scheduler.start()
     return scheduler

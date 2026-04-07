@@ -811,20 +811,56 @@ Report the initial grade and any adjustments in grade_reason.
 | **2** | Validator V1-V3, V5, V7 (structural, fără halucinații) | ✅ Done 2026-04-07 | Mic-Mediu | Critic | — |
 | **3** | `max_tokens` fix + THINKING_BUDGET hardcodat + ierarhie config | ✅ Done 2026-04-07 | Mic | Mediu | — |
 | **4** | Horizon classification + `estimate_expiry_days` max→60 | ✅ Done 2026-04-07 | Mic | Mare | — |
-| **5** | `_format_user_content` extins (horizon, confidence, sentiment_trend, regime, events) | ⬜ Pending | Mediu | Mare | P4 |
-| **6** | `SYSTEM_PROMPT_NEAR` + `SYSTEM_PROMPT_FAR` | ⬜ Pending | Mediu | Mare | P4, P5 |
+| **5** | `_format_user_content` extins (horizon, confidence, sentiment_trend, regime, events) | ✅ Done 2026-04-07 | Mediu | Mare | P4 |
+| **6** | `SYSTEM_PROMPT_NEAR` + `SYSTEM_PROMPT_FAR` | ✅ Done 2026-04-07 | Mediu | Mare | P4, P5 |
 | **7** | Logging rationale în `llm_rationale_log` (fără feedback încă) | ✅ Done 2026-04-07 | Mic | Critic | P1 |
 | **8** | `capture_metrics_at_entry` (inline la ActiveTrade create) | ✅ Done 2026-04-07 | Mic | Critic | P1, P7 |
 | **9** | `job_verify_outcomes` (copiere outcome + quality score) | ✅ Done 2026-04-07 | Mic | Critic | P1, P7, P8 |
-| **10** | Validator V4a–V4d (halucinații numerice + news) | ⬜ Pending | Mediu | Mare | P7 |
-| **11** | `verify_news_references` (news cross-ref job) | ⬜ Pending | Mediu | Mediu | P1, P7 |
-| **12** | `verify_metrics_claims` (post-outcome) | ⬜ Pending | Mediu | Mare | P8, P9 |
-| **13** | Hallucination profile builder (weekly job) | ⬜ Pending | Mediu | Mare | P10, P12 |
-| **14** | `hallucination_guard` injection în prompts | ⬜ Pending | Mic | Mare | P13 |
-| **15** | Few-shot selection + injecție (cu verificare metrică) | ⬜ Pending | Mare | Mare | P7, P12, P13 |
-| **16** | Grade rubric corectat în `_BACKTEST_INSIGHT_SYSTEM` | ⬜ Pending | Mic | Mediu | — |
-| **17** | Sentiment window extinsă 5-10 zile pentru far horizon | ⬜ Pending | Mediu | Mediu | P4 |
-| **18** | Daily briefing LLM prompt (morning brief narativ) | ⬜ Pending | Mediu | Mediu | — |
+| **10** | Validator V4a–V4d (halucinații numerice + news) | ✅ Done 2026-04-07 | Mediu | Mare | P7 |
+| **11** | `verify_news_references` (news cross-ref job) | ✅ Done 2026-04-07 | Mediu | Mediu | P1, P7 |
+| **12** | `verify_metrics_claims` (post-outcome) | ✅ Done 2026-04-07 | Mediu | Mare | P8, P9 |
+| **13** | Hallucination profile builder (weekly job) | ✅ Done 2026-04-07 | Mediu | Mare | P10, P12 |
+| **14** | `hallucination_guard` injection în prompts | ✅ Done 2026-04-07 | Mic | Mare | P13 |
+| **15** | Few-shot selection + injecție (cu verificare metrică) | ✅ Done 2026-04-07 | Mare | Mare | P7, P12, P13 |
+| **16** | Grade rubric corectat în `_BACKTEST_INSIGHT_SYSTEM` | ✅ Done 2026-04-07 | Mic | Mediu | — |
+| **17** | Sentiment window extinsă 5-10 zile pentru far horizon | ✅ Done 2026-04-07 | Mediu | Mediu | P4 |
+| **18** | Daily briefing LLM prompt (morning brief narativ) | ✅ Done 2026-04-07 | Mediu | Mediu | — |
+
+### Detalii P5 + P6 + P17 — implementat 2026-04-07
+
+**P5 — `_format_user_content` extins + `build_research_context` enrichment**
+
+Câmpuri noi adăugate în `build_research_context()` (`__init__.py`):
+- `sentiment_trend` — citit din `analysis.payload["by_asset_sentiment"][asset]["sentiment_trend"]`
+- `headline_ages: list[float]` — vârstă în ore per headline (din `FeedItem.fetched_at`); headlines extinse de la 2 la 3
+- `market_regime` — `detect_market_regime().regime` (`risk_on | risk_off | cautious`)
+- `dxy_trend`, `dxy_change_5d`, `dxy_change_20d` — `detect_dxy_macro()`
+- `upcoming_events` — `get_upcoming_events(days_ahead=expiry_days)` (FOMC/CPI/NFP în fereastra trade-ului)
+- `fundamentals["pe_ratio"]` — `yfinance info["trailingPE"]` (stocuri)
+- `fundamentals["position_52w"]` — calcul din `fiftyTwoWeekHigh/Low` + `buy_in_price`
+
+`_format_user_content()` restructurat complet cu ramuri near/far:
+- **Common**: horizon + expiry_days, confidence/100, sentiment cu trend + notă contradicție, market_regime
+- **Near**: VPOC + SL/TP vs Value Area (compute inline), macro events cu zile rămase, headlines cu vârstă
+- **Far**: DXY detaliat (5d/20d), P/E + 52w position, headlines fără vârstă; VPOC omis
+
+`snapshot_keys` în `_log_rationale_async` extins cu: `horizon`, `expiry_days`, `sentiment_trend`, `sentiment_5d_avg`, `sentiment_10d_avg`, `dxy_*`, `headline_ages`.
+
+**P6 — `SYSTEM_PROMPT_NEAR` + `SYSTEM_PROMPT_FAR`**
+
+- `SYSTEM_PROMPT` vechi înlocuit cu două constante format-string în `llm.py`
+- `SYSTEM_PROMPT_NEAR`: orientat tactic — direcție în `{horizon_days}` zile, referință ≥2 indicatori, macro events, SL/TP vs VA
+- `SYSTEM_PROMPT_FAR`: orientat structural — trend EMA/SMA, macro (DXY/regime), incertitudine explicită pe `{calendar_weeks}` săptămâni
+- Ambele cu `{hallucination_guard}` placeholder — formatat dinamic prin `build_hallucination_guard()` din P14 (implementat)
+- `generate_rationale()` selectează promptul bazat pe `context["horizon"]`, `.format()` cu valorile reale
+- Versioning: `rationale_near_v1` / `rationale_far_v1` persistat în `llm_rationale_logs`
+
+**P17 — Sentiment window 5-10 zile pentru far horizon**
+
+- Query dedicat în `build_research_context()` (`.limit(500)`, últimele 10 zile) — executat **doar când `horizon == "far"`**
+- Filtrare `asset_id in asset_tags` în Python (portabil, fără SQL JSON dialect issues)
+- `ctx["sentiment_5d_avg"]` și `ctx["sentiment_10d_avg"]` — simple averages, opționale
+- `_format_user_content()` far section: afișează ambele dacă există date
 
 ### Detalii P2 — implementat 2026-04-07
 

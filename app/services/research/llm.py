@@ -250,6 +250,14 @@ def _format_user_content(context: dict[str, Any]) -> str:
                 dxy_line += f" (5d: {dxy_5d:+.1f}%, 20d: {dxy_20d:+.1f}%)"
             parts.append(dxy_line + ".")
 
+        # Extended sentiment windows (far only — 24h decay avg is near-zero on old articles)
+        s5d = context.get("sentiment_5d_avg")
+        s10d = context.get("sentiment_10d_avg")
+        if s5d is not None:
+            parts.append(f"Sentiment 5-day average: {s5d:.3f}.")
+        if s10d is not None:
+            parts.append(f"Sentiment 10-day average: {s10d:.3f}.")
+
         # Headlines (no ages on far horizon — recent news less relevant)
         if headlines:
             parts.append("Headlines: " + " | ".join(headlines[:2]))
@@ -511,6 +519,8 @@ async def _capture_metrics_at_entry_async(
                 metrics["macd_histogram"] = round(snap.macd[2], 4)
             if snap.atr is not None:
                 metrics["atr"] = round(snap.atr, 4)
+            if snap.atr_pct is not None:
+                metrics["atr_pct"] = round(snap.atr_pct * 100, 2)  # stored as % (e.g. 2.3)
             if snap.adx is not None:
                 metrics["adx"] = round(snap.adx[0], 1)
             if snap.vpoc is not None:
@@ -550,7 +560,11 @@ async def _log_rationale_async(
     flags: list[str],
     retry_count: int,
 ) -> None:
-    """Fire-and-forget: persist rationale + validation result to llm_rationale_logs."""
+    """
+    Fire-and-forget: persist rationale + validation result to llm_rationale_logs.
+    After logging, runs P11 news cross-reference in the same task.
+    """
+    log_id: str | None = None
     try:
         from app.core.database import AsyncSessionLocal
         from app.models.llm_rationale_log import LLMRationaleLog
@@ -560,9 +574,13 @@ async def _log_rationale_async(
 
         # Slim context snapshot — exclude bulky / redundant fields.
         snapshot_keys = (
-            "asset_id", "asset_category", "direction", "sentiment_avg", "sentiment_count",
-            "sentiment_trend", "buy_in_price", "stop_loss", "take_profit", "risk_tier",
-            "confidence_score", "volatility_notes", "market_regime", "headlines",
+            "asset_id", "asset_category", "direction", "horizon", "expiry_days",
+            "sentiment_avg", "sentiment_count", "sentiment_trend",
+            "sentiment_5d_avg", "sentiment_10d_avg",
+            "buy_in_price", "stop_loss", "take_profit", "risk_tier",
+            "confidence_score", "volatility_notes", "market_regime",
+            "dxy_trend", "dxy_change_5d", "dxy_change_20d",
+            "headlines", "headline_ages",
             "vpoc", "vah", "val", "vp_bias", "vp_overextension", "in_value_area",
         )
         snapshot = {k: context[k] for k in snapshot_keys if k in context}
@@ -586,8 +604,47 @@ async def _log_rationale_async(
         async with AsyncSessionLocal() as session:
             session.add(entry)
             await session.commit()
+            await session.refresh(entry)
+            log_id = entry.id
     except Exception as exc:
         _logger.warning("Failed to log rationale to DB (non-fatal): %s", exc)
+
+    # P11: news cross-reference — runs in same task after log is committed
+    if log_id:
+        await _verify_news_for_log(
+            log_id=log_id,
+            rationale_text=rationale_text,
+            headlines=context.get("headlines") or [],
+            asset_id=str(context.get("asset_id") or ""),
+        )
+
+
+async def _verify_news_for_log(
+    log_id: str,
+    rationale_text: str,
+    headlines: list[str],
+    asset_id: str,
+) -> None:
+    """P11: run news cross-reference and persist result to llm_rationale_log."""
+    try:
+        from app.core.database import AsyncSessionLocal
+        from app.models.llm_rationale_log import LLMRationaleLog
+        from app.services.research.hallucination import verify_news_references
+
+        async with AsyncSessionLocal() as session:
+            result = await verify_news_references(
+                rationale_text=rationale_text,
+                context_headlines=headlines,
+                session=session,
+                asset_id=asset_id,
+            )
+            log = await session.get(LLMRationaleLog, log_id)
+            if log:
+                log.news_verified = result["verified"]
+                log.news_verification_detail = json.dumps(result, default=str)
+                await session.commit()
+    except Exception as exc:
+        _logger.warning("Failed to verify news references (non-fatal): %s", exc)
 
 
 async def generate_rationale(context: dict[str, Any]) -> str | None:
@@ -625,13 +682,17 @@ async def generate_rationale(context: dict[str, Any]) -> str | None:
     _direction = (context.get("direction") or "long").lower()
     _calendar_days = round(_expiry_days * 1.4)
 
+    # P14: personalised hallucination guard from bias profile
+    from app.services.research.bias_detector import build_hallucination_guard
+    _guard = build_hallucination_guard(provider_id, model)
+
     if _horizon == "far":
         _calendar_weeks = round(_expiry_days / 5, 1)
         _system_tpl = SYSTEM_PROMPT_FAR.format(
             direction=_direction,
             horizon_days=_expiry_days,
             calendar_weeks=_calendar_weeks,
-            hallucination_guard="",
+            hallucination_guard=_guard,
         )
         _prompt_version = "rationale_far_v1"
     else:
@@ -639,12 +700,24 @@ async def generate_rationale(context: dict[str, Any]) -> str | None:
             direction=_direction,
             horizon_days=_expiry_days,
             calendar_days=_calendar_days,
-            hallucination_guard="",
+            hallucination_guard=_guard,
         )
         _prompt_version = "rationale_near_v1"
 
     # Stamp prompt version into context so _log_rationale_async can persist it
     context = dict(context, _prompt_version=_prompt_version)
+
+    # P15: few-shot examples from verified historical rationales
+    _few_shot_block = ""
+    try:
+        from app.core.database import AsyncSessionLocal
+        from app.services.research.few_shot import get_verified_few_shot_examples
+        async with AsyncSessionLocal() as _fs_session:
+            _few_shot_block = await get_verified_few_shot_examples(
+                _fs_session, provider_id, model, horizon=_horizon
+            )
+    except Exception as _fse:
+        _logger.debug("[FEW_SHOT] Failed to fetch examples (non-fatal): %s", _fse)
 
     all_flags: list[str] = []
     last_text: str | None = None
@@ -652,6 +725,8 @@ async def generate_rationale(context: dict[str, Any]) -> str | None:
     for attempt in range(MAX_RETRIES + 1):
         system = _system_tpl
         user = _format_user_content(context)
+        if _few_shot_block:
+            user = _few_shot_block + "\n\n" + user
         corrective = context.get("_corrective_instruction")
         if corrective:
             user = user + f"\n\n[CORRECTION REQUIRED]: {corrective}"
@@ -792,13 +867,23 @@ _BACKTEST_INSIGHT_SYSTEM = (
     '  "grade": "A"|"B"|"C"|"D"|"F",\n'
     '  "grade_reason": "one short sentence explaining the grade",\n'
     '  "key_insights": ["insight 1", "insight 2", "insight 3"],\n'
-    '  "recommendation": "one concrete actionable recommendation for the next 14 days"\n'
+    '  "recommendation": "one concrete actionable recommendation for the next {horizon_days} trading days"\n'
     "}\n\n"
-    "Grade rubric: A = win rate ≥55% AND positive avg P&L AND sharpe >1; "
-    "B = win rate 45-54% OR solid avg P&L; C = win rate 35-44%; D = win rate 25-34%; F = below 25% or losing avg P&L.\n"
-    "key_insights: exactly 3 bullet strings — one about recent signal quality (last 90 days), "
-    "one about risk metrics (drawdown/sharpe), one about what TODAY's signal and current conditions imply for the next 14 days.\n"
-    "The third insight MUST reference the current signal confidence and sentiment if provided. "
+    "Grade rubric (apply strictly in order — first matching rule wins):\n"
+    "  A = win_rate ≥55% AND avg_pnl >0.3R AND sharpe >1.0 AND max_drawdown <4R\n"
+    "  B = (win_rate ≥45% AND avg_pnl >0.2R AND max_drawdown <5R) "
+    "OR (win_rate ≥55% but fails exactly one A criterion)\n"
+    "  C = win_rate 35-44% OR (win_rate ≥45% AND avg_pnl 0–0.2R) OR max_drawdown 5–8R\n"
+    "  D = win_rate 25-34% OR avg_pnl negative but > -0.2R per trade\n"
+    "  F = win_rate <25% OR avg_pnl ≤ -0.2R per trade\n"
+    "IMPORTANT: a high win rate does NOT override a dangerous drawdown. "
+    "A system with max_drawdown >8R must be graded D or F regardless of win rate.\n\n"
+    "key_insights: exactly 3 bullet strings:\n"
+    "  1. Signal quality in last 90 days (win rate trend, consistency, any regime bias)\n"
+    "  2. Risk profile: reference sharpe ratio AND max drawdown R-value explicitly — "
+    "flag if drawdown >5R as 'high drawdown risk'\n"
+    "  3. Forward outlook: what TODAY's signal + current conditions imply for the next {horizon_days} days — "
+    "MUST reference confidence score and sentiment if provided\n"
     "Write for a mixed audience: plain enough for a beginner, precise enough for a pro trader. No disclaimers."
 )
 
@@ -911,19 +996,22 @@ async def generate_backtest_insight(
     # Backtest insight JSON can be verbose — use 1500 token output buffer.
     _BACKTEST_OUTPUT_BUFFER = 1500
 
+    # Inject horizon_days into the system prompt
+    _system = _BACKTEST_INSIGHT_SYSTEM.replace("{horizon_days}", str(horizon_days))
+
     try:
         if provider_id == "openai":
-            raw = await _call_openai(model, _BACKTEST_INSIGHT_SYSTEM, user_content, api_key or "", max_tokens=1500)
+            raw = await _call_openai(model, _system, user_content, api_key or "", max_tokens=1500)
         elif provider_id == "anthropic":
             raw = await _call_anthropic(
-                model, _BACKTEST_INSIGHT_SYSTEM, user_content, api_key or "",
+                model, _system, user_content, api_key or "",
                 max_tokens=1500, thinking_budget=thinking_budget, output_buffer=_BACKTEST_OUTPUT_BUFFER,
             )
         elif provider_id == "ollama":
-            combined = f"{_BACKTEST_INSIGHT_SYSTEM.strip()}\n\n---\n\n{user_content.strip()}"
+            combined = f"{_system.strip()}\n\n---\n\n{user_content.strip()}"
             raw = await _call_ollama(model, "", combined, ollama_base_url, num_predict=600, timeout=120.0)
         elif provider_id == "openrouter":
-            raw = await _call_openrouter(model, _BACKTEST_INSIGHT_SYSTEM, user_content, api_key or "", max_tokens=1200)
+            raw = await _call_openrouter(model, _system, user_content, api_key or "", max_tokens=1200)
         else:
             return None
     except Exception as exc:
@@ -935,6 +1023,102 @@ async def generate_backtest_insight(
     if parsed is None:
         _logger.warning("Backtest insight JSON parse failed for %s. Raw: %r", asset_id, (raw or "")[:200])
     return parsed
+
+
+# ── Morning Brief Narrator ───────────────────────────────────────────────────
+
+_BRIEF_NARRATIVE_SYSTEM = (
+    "You are a senior trading desk morning analyst. "
+    "Given today's market data, write a 3-5 sentence morning brief for a systematic trader.\n\n"
+    "Structure (flowing prose, no headers, no bullet points, no markdown):\n"
+    "1. Macro environment: what VIX level + SPX move signal about today's risk regime (risk-on / risk-off / neutral). "
+    "If VIX >30, warn explicitly about tail risk.\n"
+    "2. Implications for active positions and new entries: sizing, direction bias, key risk to watch. "
+    "If SPX move >1.5% flag as a significant session.\n"
+    "3. Today's recommendation context: number of signals, direction skew, whether they align with the macro regime. "
+    "Give a clear directional bias for the day (longs preferred / shorts preferred / stay flat).\n\n"
+    "Rules: reference specific numbers from the data. No disclaimers. Plain text only."
+)
+
+
+async def generate_brief_narrative(
+    checklist_items: list[dict],
+    recs_count: int,
+    recs_long: int,
+    recs_short: int,
+    active_trades_count: int,
+    market_regime: str | None = None,
+    dxy_trend: str | None = None,
+    dxy_change_5d: float | None = None,
+) -> str | None:
+    """
+    P18: Generate a 3-5 sentence morning brief narrative from daily briefing data.
+    Returns plain text or None if LLM unavailable.
+    """
+    from app.core.config import settings
+    from app.core.preferences import get_research_llm_config
+
+    cfg = get_research_llm_config()
+    provider_id = (cfg.get("research_llm_provider") or "openai").strip().lower()
+    provider = get_provider_by_id(provider_id)
+    if not provider:
+        provider_id = "openai"
+        provider = get_provider_by_id("openai")
+
+    api_key = _get_api_key_for_provider(provider_id)
+    if not is_available(provider_id, api_key):
+        return None
+
+    model = (cfg.get("research_llm_model") or "").strip() or provider.default_model
+    if not model:
+        return None
+
+    ollama_base_url = (cfg.get("ollama_base_url") or "").strip() or (settings.ollama_base_url or "http://localhost:11434")
+
+    # Build user message from checklist data
+    from datetime import date
+    checklist_lines = "\n".join(
+        f"  {item.get('label', item.get('id', ''))}: {item.get('result', '—')}"
+        + (" [NOTABLE]" if item.get("highlight") else "")
+        for item in checklist_items
+    )
+    direction_str = []
+    if recs_long:
+        direction_str.append(f"{recs_long} long")
+    if recs_short:
+        direction_str.append(f"{recs_short} short")
+    recs_str = f"{recs_count} ({', '.join(direction_str)})" if direction_str else str(recs_count)
+
+    user_lines = [
+        f"Date: {date.today().isoformat()}",
+        f"\nMarket data:",
+        checklist_lines,
+        f"\nActive recommendations today: {recs_str}",
+        f"Open trades: {active_trades_count}",
+    ]
+    if market_regime:
+        user_lines.append(f"Market regime: {market_regime}")
+    if dxy_trend:
+        dxy_line = f"DXY: {dxy_trend}"
+        if dxy_change_5d is not None:
+            dxy_line += f" ({dxy_change_5d:+.1f}% 5d)"
+        user_lines.append(dxy_line)
+
+    user = "\n".join(user_lines)
+
+    try:
+        if provider_id == "openai":
+            return await _call_openai(model, _BRIEF_NARRATIVE_SYSTEM, user, api_key or "", max_tokens=250)
+        if provider_id == "anthropic":
+            return await _call_anthropic(model, _BRIEF_NARRATIVE_SYSTEM, user, api_key or "", max_tokens=250)
+        if provider_id == "ollama":
+            combined = f"{_BRIEF_NARRATIVE_SYSTEM.strip()}\n\n---\n\n{user.strip()}"
+            return await _call_ollama(model, "", combined, ollama_base_url, num_predict=200, timeout=90.0)
+        if provider_id == "openrouter":
+            return await _call_openrouter(model, _BRIEF_NARRATIVE_SYSTEM, user, api_key or "", max_tokens=250)
+    except Exception as exc:
+        _logger.warning("Brief narrative LLM call failed (%s/%s): %s", provider_id, model, exc)
+    return None
 
 
 # ── Gap Risk Advisor ──────────────────────────────────────────────────────────

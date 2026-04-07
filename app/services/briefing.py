@@ -161,18 +161,69 @@ def format_briefing(items: list[dict[str, Any]]) -> str:
 
 
 async def run_briefing(session: AsyncSession) -> DailyBriefing:
-    """Evaluate checklist, format, save to daily_briefings, return the row."""
+    """Evaluate checklist, generate LLM narrative, save to daily_briefings, return the row."""
+    from app.models.recommendation import ActiveTrade, Recommendation
     items = await evaluate_checklist(session)
-    # Fix: evaluate_checklist currently calls _evaluate_item for non-recs items; _evaluate_item is sync.
-    # So we need evaluate_checklist to actually run _evaluate_item for non-DB items. Let me fix evaluate_checklist to do both sync and async parts.
-    # I already have _evaluate_item_async that only does recs_count async and delegates rest to _evaluate_item. So evaluate_checklist should use _evaluate_item_async. Let me fix that.
     content = format_briefing(items)
+
+    # Count today's recommendations by direction for narrative context
+    batch_id = date.today().isoformat()
+    recs_q = await session.execute(
+        select(Recommendation).where(Recommendation.batch_id == batch_id)
+    )
+    recs_today = recs_q.scalars().all()
+    recs_long  = sum(1 for r in recs_today if getattr(r, "direction", "long") == "long")
+    recs_short = sum(1 for r in recs_today if getattr(r, "direction", "long") == "short")
+
+    # Count open trades
+    trades_q = await session.execute(
+        select(ActiveTrade).where(ActiveTrade.outcome.is_(None))
+    )
+    active_count = len(trades_q.scalars().all())
+
+    # Fetch market regime and DXY from market_context (cached yfinance, non-fatal)
+    market_regime: str | None = None
+    dxy_trend: str | None = None
+    dxy_change_5d: float | None = None
+    try:
+        from app.services.market_context import detect_market_regime, detect_dxy_macro
+        import asyncio
+        _regime = await asyncio.to_thread(detect_market_regime)
+        market_regime = _regime.regime
+        _dxy = await asyncio.to_thread(detect_dxy_macro)
+        if _dxy.available:
+            dxy_trend = _dxy.trend
+            dxy_change_5d = _dxy.change_5d_pct
+    except Exception:
+        pass
+
+    # P18: LLM narrative (fire-and-forget style — non-fatal if fails)
+    narrative: str | None = None
+    try:
+        from app.services.research.llm import generate_brief_narrative
+        narrative = await generate_brief_narrative(
+            checklist_items=items,
+            recs_count=len(recs_today),
+            recs_long=recs_long,
+            recs_short=recs_short,
+            active_trades_count=active_count,
+            market_regime=market_regime,
+            dxy_trend=dxy_trend,
+            dxy_change_5d=dxy_change_5d,
+        )
+    except Exception:
+        pass
+
     now = datetime.now(timezone.utc)
+    payload: dict = {"items": items}
+    if narrative:
+        payload["narrative"] = narrative
+
     row = DailyBriefing(
         id=str(uuid4()),
         created_at=now,
         content_text=content,
-        payload={"items": items},
+        payload=payload,
     )
     session.add(row)
     return row

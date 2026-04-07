@@ -9,7 +9,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from app.models.feed_item import FeedItem
 from app.services.analysis import get_latest_analysis
@@ -108,6 +108,15 @@ async def build_research_context(
                         ctx["buy_in_price"] = live_price
                     ctx["levels_source"] = "calculated"
                     ctx["atr"] = snap.atr if snap and snap.atr else None
+                    # Individual indicator values — used by V4b hallucination validator
+                    if snap.rsi is not None:
+                        ctx["rsi"] = round(snap.rsi, 1)
+                    if snap.atr_pct is not None:
+                        ctx["atr_pct"] = round(snap.atr_pct * 100, 2)  # stored as % (e.g. 2.3)
+                    if snap.adx is not None:
+                        ctx["adx"] = round(snap.adx[0], 1)
+                    if snap.macd is not None:
+                        ctx["macd_histogram"] = round(snap.macd[2], 4)
                     # Horizon from estimated expiry (only if not already set from rec)
                     if "expiry_days" not in ctx and live_price and tp:
                         from app.services.technicals import classify_horizon, estimate_expiry_days
@@ -262,6 +271,46 @@ async def build_research_context(
         ctx["upcoming_events"] = get_upcoming_events(days_ahead=_expiry_days)
     except Exception:
         ctx["upcoming_events"] = []
+
+    # Far-horizon extended sentiment windows (5d and 10d simple averages).
+    # The 24h decay-weighted avg in sentiment_avg is near-useless on multi-week trades
+    # (a 3-day-old article has weight ≈ 0.12); unweighted windows over 5-10 days are
+    # a better structural signal.  Only executed when horizon is "far" to avoid the
+    # extra DB round-trip on every near-horizon research call.
+    if ctx.get("horizon") == "far":
+        try:
+            _now = datetime.now(timezone.utc)
+            _cutoff_5d  = _now - timedelta(days=5)
+            _cutoff_10d = _now - timedelta(days=10)
+            _q_sent = (
+                select(
+                    FeedItem.sentiment_score,
+                    FeedItem.fetched_at,
+                    FeedItem.asset_tags,
+                )
+                .where(
+                    FeedItem.fetched_at >= _cutoff_10d,
+                    FeedItem.sentiment_score.isnot(None),
+                )
+                .limit(500)
+            )
+            _sent_rows = (await session.execute(_q_sent)).all()
+            _scores_5d: list[float] = []
+            _scores_10d: list[float] = []
+            for _score, _fa, _tags in _sent_rows:
+                if not _tags or asset_id not in _tags:
+                    continue
+                if _fa.tzinfo is None:
+                    _fa = _fa.replace(tzinfo=timezone.utc)
+                _scores_10d.append(float(_score))
+                if _fa >= _cutoff_5d:
+                    _scores_5d.append(float(_score))
+            if _scores_5d:
+                ctx["sentiment_5d_avg"] = round(sum(_scores_5d) / len(_scores_5d), 4)
+            if _scores_10d:
+                ctx["sentiment_10d_avg"] = round(sum(_scores_10d) / len(_scores_10d), 4)
+        except Exception:
+            pass
 
     return ctx
 

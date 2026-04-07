@@ -10,6 +10,36 @@ All notable changes to this project will be documented here.
 
 ---
 
+### Added — LLM Context Enrichment + Horizon-Aware Prompts (P5, P6, P17 din LLM_IMPROVEMENT_PLAN)
+
+#### `app/services/research/__init__.py` — `build_research_context()` extins
+
+- **Sentiment trend**: citit din `analysis.payload["by_asset_sentiment"][asset]["sentiment_trend"]` (`improving | worsening | neutral`)
+- **Headline ages**: headlines extinse de la 2 la 3; fiecare cu vârstă în ore din `FeedItem.fetched_at` (`ctx["headline_ages"]`)
+- **Market regime**: `detect_market_regime().regime` adăugat în context (`risk_on | risk_off | cautious`)
+- **DXY macro**: `detect_dxy_macro()` → `ctx["dxy_trend"]`, `ctx["dxy_change_5d"]`, `ctx["dxy_change_20d"]`
+- **Macro events**: `get_upcoming_events(days_ahead=expiry_days)` → `ctx["upcoming_events"]` (FOMC/CPI/NFP în fereastra trade-ului)
+- **P/E ratio**: `yfinance info["trailingPE"]` → `ctx["fundamentals"]["pe_ratio"]` (stocuri/ETF)
+- **52-week position**: calcul din `fiftyTwoWeekHigh/Low` + `buy_in_price` → `ctx["fundamentals"]["position_52w"]`
+- **Sentiment 5d/10d** (far horizon only): query dedicat pe FeedItem (`.limit(500)`, últimele 10 zile) → `ctx["sentiment_5d_avg"]`, `ctx["sentiment_10d_avg"]`; executat doar când `horizon == "far"` pentru a evita round-trip inutil pe near-horizon
+
+#### `app/services/research/llm.py` — `_format_user_content()` restructurat
+
+- Secțiuni **Common** (near + far): horizon + expiry_days, engine confidence/100, sentiment cu trend + notă contradicție direcție, market regime
+- Secțiune **Near**: VPOC, SL/TP vs Value Area (compute inline), macro events cu zile rămase, headlines cu vârstă în ore
+- Secțiune **Far**: DXY trend cu 5d/20d%, P/E + 52-week position, sentiment 5d/10d avg, headlines fără vârstă; VPOC omis (irelevant pe horizon lung)
+- `snapshot_keys` în `_log_rationale_async` extins cu: `horizon`, `expiry_days`, `sentiment_trend`, `sentiment_5d_avg`, `sentiment_10d_avg`, `dxy_trend`, `dxy_change_5d`, `dxy_change_20d`, `headline_ages`
+
+#### `app/services/research/llm.py` — `SYSTEM_PROMPT_NEAR` + `SYSTEM_PROMPT_FAR`
+
+- `SYSTEM_PROMPT` vechi înlocuit cu două constante format-string
+- `SYSTEM_PROMPT_NEAR`: tactic — direcție pe `{horizon_days}` zile, ≥2 indicatori specifici, macro events, SL/TP vs VA; interzis limbaj pe termen lung
+- `SYSTEM_PROMPT_FAR`: structural — trend EMA/SMA + ADX, context macro DXY/regime, incertitudine explicită pe `{calendar_weeks}` săptămâni; interzis limbaj intraday
+- `{hallucination_guard}` placeholder formatat cu `""` până la P14
+- `generate_rationale()` selectează promptul bazat pe `context["horizon"]`; `_prompt_version` (`rationale_near_v1` / `rationale_far_v1`) persistat în `llm_rationale_logs`
+
+---
+
 ### Added — LLM Rationale Validator (P2 din LLM_IMPROVEMENT_PLAN)
 
 #### `app/services/research/validator.py` — Strat de validare V1–V7
@@ -33,6 +63,62 @@ All notable changes to this project will be documented here.
 #### `app/services/research/llm.py`
 
 - **Bug corrective instruction**: `_corrective_instruction` era setat în `context` dar `_format_user_content()` nu îl citea → fiecare retry trimitea exact același mesaj la LLM; rezolvat prin append explicit la `user` după `_format_user_content()`
+
+---
+
+### Added — Backtest Grade Rubric + Daily Briefing Narrative (P16, P18 din LLM_IMPROVEMENT_PLAN)
+
+#### `app/services/research/llm.py` — `_BACKTEST_INSIGHT_SYSTEM` rubric rescris (P16)
+
+- Grade rubric complet rescris cu criterii cantitative stricte (first-match wins):
+  - **A**: `win_rate ≥55%` AND `avg_pnl >0.3R` AND `sharpe >1.0` AND `max_drawdown <4R`
+  - **B**: `(win_rate ≥45% AND avg_pnl >0.2R AND max_drawdown <5R)` OR `(≥55% dar ratează un criteriu A)`
+  - **C**: `win_rate 35-44%` OR `(≥45% AND avg_pnl 0-0.2R)` OR `max_drawdown 5-8R`
+  - **D**: `win_rate 25-34%` OR `avg_pnl negativ > -0.2R`
+  - **F**: `win_rate <25%` OR `avg_pnl ≤ -0.2R`
+  - Override: `max_drawdown >8R` forțează minim D indiferent de win_rate
+- `{horizon_days}` placeholder injectat în system prompt înainte de fiecare apel provider
+
+#### `app/services/research/llm.py` — `generate_brief_narrative()` (P18)
+
+- `_BRIEF_NARRATIVE_SYSTEM`: prompt senior trading desk analyst — brief matinal 3-5 propoziții; focus pe VIX+SPX regime, implicații poziționale, directional bias cu numere specifice; fără disclaimer; perspectivă trader experimentat
+- `generate_brief_narrative(checklist_items, recs_count, recs_long, recs_short, active_trades_count, market_regime, dxy_trend, dxy_change_5d)`: construiește user message din checklist + regime; `max_tokens=250`; returnează `str | None`
+
+#### `app/services/briefing.py` — `run_briefing()` actualizat (P18)
+
+- Numără recs_today per direcție (`recs_long`, `recs_short`)
+- Numără `active_trades_count` (trades deschise fără outcome)
+- Fetches `market_regime` și DXY via `asyncio.to_thread` (non-fatal)
+- Apelează `generate_brief_narrative()` (non-fatal)
+- Stochează narrativa în `payload["narrative"]`; `content_text` nemodificat (backward compatible)
+
+#### `app/static/briefing.html` — render narrativă (P18)
+
+- CSS: `.briefing-narrative` (border-left albastru, background muted), `.briefing-narrative-label`
+- `<div id="briefing-narrative">` adăugat deasupra secțiunii de metrici
+- `showBriefing()` actualizat: renderizează `data.payload.narrative` în `#briefing-narrative` dacă present; ascunde div-ul dacă lipsește
+
+---
+
+### Added — Hallucination Bias Profile + Guard + Few-Shot (P13, P14, P15 din LLM_IMPROVEMENT_PLAN)
+
+#### `app/services/research/bias_detector.py` (nou)
+
+- **P13 — `build_hallucination_profile(session, days_back=30)`**: interogare async `llm_rationale_logs`; agregare per `(provider_id, model)` — `v4a_rate`, `v4b_rate`, `v4c_rate`, `v4d_rate`, `any_v4_rate`, `retry_rate`; scriere atomică (`.tmp` → rename) în `data/hallucination_profile.json` (path configurabil via `HALLUCINATION_PROFILE_PATH`)
+- **P14 — `build_hallucination_guard(provider_id, model)`**: citește profilul; dacă `sample_size < 10` sau niciun flag rate ≥ 25%, returnează `""`; altfel generează bloc de avertizare personalizat per indicator (preț, valori numerice, news, temporal)
+
+#### `app/services/research/few_shot.py` (nou)
+
+- **P15 — `get_verified_few_shot_examples(session, provider_id, model, horizon, limit=2)`**: bootstrap guard — returnează `""` dacă total logs cu outcome < `MIN_OUTCOMES=10`; selecție în 3 pași: exact match provider+model+horizon → same horizon → orice; filtre: `outcome IS NOT NULL`, `metrics_accuracy_score > 0.8`, fără V4a/V4b în flags; formatare bloc `--- VERIFIED EXAMPLES ---` injectat înainte de contextul curent în user message
+
+#### `app/services/research/llm.py` — `generate_rationale()` actualizat
+
+- **P14**: `build_hallucination_guard(provider_id, model)` apelat sincron înainte de construirea system prompt; rezultatul înlocuiește `hallucination_guard=""` hardcodat în ambele `SYSTEM_PROMPT_NEAR.format()` și `SYSTEM_PROMPT_FAR.format()`
+- **P15**: `get_verified_few_shot_examples()` apelat async (sesiune proprie `AsyncSessionLocal`) înainte de loop; bloc injectat la început de user message dacă non-empty
+
+#### `app/jobs/scheduler.py` — job nou
+
+- **`job_build_hallucination_profile()`**: wrapper async ce apelează `build_hallucination_profile()`; înregistrat ca job cron `day_of_week="sun"`, `hour=6`, `minute=0` (duminică 06:00)
 
 ---
 

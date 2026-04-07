@@ -4,9 +4,94 @@
 
 ---
 
-## 2026-04-07 — `improvements_trade_builder` (sesiunea 8)
+## 2026-04-07 — `improvements_trade_builder` (sesiunea 9)
 
-### LLM — P1, P2, P3, P4, P7 verificate și marcate Done
+### LLM — P16, P18 implementate și verificate
+
+#### P16 — Grade rubric corectat în `_BACKTEST_INSIGHT_SYSTEM`
+
+**Modificat: `app/services/research/llm.py`**
+- `_BACKTEST_INSIGHT_SYSTEM` rescris cu rubric strict cantitativ (first-match wins):
+  - **A**: win_rate ≥55% AND avg_pnl >0.3R AND sharpe >1.0 AND max_drawdown <4R
+  - **B**: (win_rate ≥45% AND avg_pnl >0.2R AND max_drawdown <5R) OR (≥55% ratează exact un criteriu A)
+  - **C**: win_rate 35–44% OR (≥45% AND avg_pnl 0–0.2R) OR max_drawdown 5–8R
+  - **D**: win_rate 25–34% OR avg_pnl negativ > -0.2R
+  - **F**: win_rate <25% OR avg_pnl ≤ -0.2R
+  - Override: max_drawdown >8R forțează minim D indiferent de win_rate
+- `{horizon_days}` placeholder injectat înainte de fiecare apel provider: `_system = _BACKTEST_INSIGHT_SYSTEM.replace("{horizon_days}", str(horizon_days))`
+
+#### P18 — Daily briefing LLM prompt (morning brief narativ)
+
+**Modificat: `app/services/research/llm.py`**
+- `_BRIEF_NARRATIVE_SYSTEM`: prompt senior trading desk analyst — brief matinal 3–5 propoziții; structură: (1) macro environment VIX+SPX → risk regime, (2) implicații poziții + sizing, (3) biasul direcțional al zilei; numere specifice obligatorii, fără disclaimers
+- `generate_brief_narrative(checklist_items, recs_count, recs_long, recs_short, active_trades_count, market_regime, dxy_trend, dxy_change_5d)`: user message construit din checklist + regime + DXY; max_tokens=250; toate cele 4 providere acoperite; returnează `str | None`
+
+**Modificat: `app/services/briefing.py` — `run_briefing()`**
+- Numără recs_today per direcție (`recs_long`, `recs_short`)
+- Numără `active_trades_count` (ActiveTrade cu outcome IS NULL)
+- Fetch market_regime și DXY via `asyncio.to_thread` (non-fatal)
+- Apelează `generate_brief_narrative()` non-fatal; stochează în `payload["narrative"]`
+- `content_text` nemodificat — backward compatible
+
+**Modificat: `app/static/briefing.html`**
+- CSS: `.briefing-narrative` (border-left albastru, background muted), `.briefing-narrative-label`
+- `<div id="briefing-narrative" style="display:none;">` adăugat deasupra secțiunii de metrici
+- `showBriefing()` actualizat: renderizează `data.payload.narrative` → `#briefing-narrative`; ascunde div-ul dacă narrative lipsește
+
+---
+
+## 2026-04-07 — `improvements_trade_builder` (sesiunea 8-b)
+
+### LLM — P5, P6, P13, P14, P15, P17 implementate
+
+#### P5 + P6 + P17 — Context enrichment + Horizon-aware prompts + Sentiment window extinsă
+
+**Modificat: `app/services/research/__init__.py` — `build_research_context()`**
+- `sentiment_trend`: citit din `analysis.payload["by_asset_sentiment"][asset]["sentiment_trend"]`
+- `headline_ages: list[float]`: vârstă în ore per headline din `FeedItem.fetched_at`; headlines extinse de la 2 la 3
+- `market_regime`: `detect_market_regime().regime` (`risk_on | risk_off | cautious`)
+- `dxy_trend`, `dxy_change_5d`, `dxy_change_20d`: `detect_dxy_macro()`
+- `upcoming_events`: `get_upcoming_events(days_ahead=expiry_days)` — FOMC/CPI/NFP în fereastra trade-ului
+- `pe_ratio`: `yfinance info["trailingPE"]` pentru stocuri/ETF
+- `position_52w`: calcul din `fiftyTwoWeekHigh/Low` + `buy_in_price`
+- `sentiment_5d_avg`, `sentiment_10d_avg` (far horizon only): query FeedItem ultimele 10 zile; omis pe near pentru eficiență
+
+**Modificat: `app/services/research/llm.py`**
+- `SYSTEM_PROMPT` înlocuit cu `SYSTEM_PROMPT_NEAR` + `SYSTEM_PROMPT_FAR` format-strings
+  - Near: tactic — direcție în `{horizon_days}` zile, ≥2 indicatori, macro events, SL/TP vs VA; interzis limbaj pe termen lung
+  - Far: structural — trend EMA/SMA + ADX, context macro DXY/regime, incertitudine pe `{calendar_weeks}` săptămâni; interzis limbaj intraday
+- `_format_user_content()` restructurat cu secțiuni Common / Near / Far
+- `generate_rationale()`: selectează promptul bazat pe `context["horizon"]`; persistă `_prompt_version` în logs
+- `snapshot_keys` extins cu: horizon, expiry_days, sentiment_trend, dxy_trend, dxy_change_5d/20d, headline_ages, sentiment_5d_avg/10d_avg
+
+#### P13 — Hallucination profile builder (job săptămânal)
+
+**Nou: `app/services/research/bias_detector.py`**
+- `build_hallucination_profile(session, days_back=30)`: agregare async per `(provider_id, model)` — v4a_rate, v4b_rate, v4c_rate, v4d_rate, any_v4_rate, retry_rate; scriere atomică `.tmp → rename` în `data/hallucination_profile.json`
+
+**Modificat: `app/jobs/scheduler.py`**
+- `job_build_hallucination_profile()`: wrapper async; cron duminică 06:00
+
+#### P14 — `hallucination_guard` injectat în prompts
+
+**Modificat: `app/services/research/bias_detector.py`**
+- `build_hallucination_guard(provider_id, model)`: citește profilul; returnează `""` dacă sample_size < 10 sau niciun flag rate ≥ 25%; altfel generează bloc de avertizare personalizat per indicator
+
+**Modificat: `app/services/research/llm.py` — `generate_rationale()`**
+- `build_hallucination_guard(provider_id, model)` apelat înainte de construirea system prompt
+- Rezultatul înlocuiește `{hallucination_guard}` în `SYSTEM_PROMPT_NEAR.format()` și `SYSTEM_PROMPT_FAR.format()`
+
+#### P15 — Few-shot selection + injecție
+
+**Nou: `app/services/research/few_shot.py`**
+- `get_verified_few_shot_examples(session, provider_id, model, horizon, limit=2)`: bootstrap guard (returnează `""` dacă total logs cu outcome < 10); selecție în 3 pași: exact match provider+model+horizon → same horizon → orice; filtre: outcome IS NOT NULL, metrics_accuracy_score > 0.8, fără V4a/V4b în flags; formatare bloc `--- VERIFIED EXAMPLES ---`
+
+**Modificat: `app/services/research/llm.py` — `generate_rationale()`**
+- `get_verified_few_shot_examples()` apelat async (sesiune proprie); bloc injectat la start de user message dacă non-empty
+
+---
+
+## 2026-04-07 — `improvements_trade_builder` (sesiunea 8)
 
 #### Verificare cod (sesiunea 8)
 
@@ -21,6 +106,9 @@ Toate modificările din sesiunile 7–8 au fost verificate în cod înainte de a
 | P7 — logging rationale fire-and-forget | `llm.py` (_log_rationale_async + asyncio.create_task în ambele ramuri) | ✅ |
 | P8 — capture metrics at entry | `llm.py` (_capture_metrics_at_entry_async), `research/__init__.py`, `routes.py` (mark_took_it) | ✅ |
 | P9 — verify outcomes + quality score | `scheduler.py` (_verify_outcomes_for_logs + _calculate_quality_score) | ✅ |
+| P10 — validator V4a–V4d + V8 | `validator.py` (reguli noi), `research/__init__.py` (câmpuri rsi/atr_pct/adx/macd_histogram) | ✅ |
+| P11 — verify_news_references | `hallucination.py` (funcție nouă), `llm.py` (_verify_news_for_log în same task după log) | ✅ |
+| P12 — verify_metrics_claims | `hallucination.py` (funcție nouă), `scheduler.py` (_verify_outcomes_for_logs, inline la outcome) | ✅ |
 
 > ⚠️ **Rebuild necesar** pentru a aplica migrarea 003: `make build start`
 
@@ -53,6 +141,78 @@ Toate modificările din sesiunile 7–8 au fost verificate în cod înainte de a
 
 **Modificat: `app/models/__init__.py`**
 - Import + export `LLMRationaleLog`
+
+#### P11 — `verify_news_references` (cross-ref news imediat după generare)
+
+**Nou: `app/services/research/hallucination.py`** — modul nou
+
+`verify_news_references(rationale_text, context_headlines, session, asset_id, hours_back=72)`:
+- Extrage propoziții cu verbe de raportare (`announced/reported/said/following/after X said`)
+- Verifică față de context headlines (fuzzy threshold 0.35) și față de `feed_items` din DB (72h, threshold 0.40)
+- Clasificare per citare: `verified` / `found_in_db_only` (context leak) / `hallucinated` (invenție pură)
+- Returnează: `verified` (bool), `citations_found`, `missing_from_context`, `found_in_db_only`, `pure_hallucinations`, `detail` (per-sentence)
+
+**Modificat: `app/services/research/llm.py`**
+- `_log_rationale_async` returnează acum `log_id` intern după `session.refresh(entry)`
+- Funcție nouă `_verify_news_for_log(log_id, rationale_text, headlines, asset_id)` — deschide sesiune proprie, rulează `verify_news_references`, persistă `news_verified` + `news_verification_detail` (JSON)
+- `_log_rationale_async` apelează `_verify_news_for_log` în același task, după commit — fără impact pe latența generate_rationale
+
+#### P12 — `verify_metrics_claims` (post-outcome, inline la job_update_active_trades)
+
+**Nou în `app/services/research/hallucination.py`**
+
+`verify_metrics_claims(rationale_text, metrics_at_entry)`:
+- Pattern-uri dedicate: `_RSI_CLAIM`, `_ADX_CLAIM`, `_ATR_CLAIM`, `_MACD_BULL`/`_MACD_BEAR`
+- Compară valori citate cu actuale din `metrics_at_entry` (±15% toleranță)
+- MACD: verificare direcție calitativă (bullish/bearish vs histogram pozitiv/negativ)
+- Returnează: `claims` (per indicator: cited, actual, delta_pct, is_hallucination), `accuracy_score` (0-1), `hallucinated_indicators`
+- No-op dacă `metrics_at_entry` e gol sau nu există claims detectabile
+
+**Modificat: `app/jobs/scheduler.py` — `_verify_outcomes_for_logs`**
+- Rulează `verify_metrics_claims` inline la outcome (dacă `metrics_at_entry` e populat și `metrics_accuracy_score` e NULL)
+- Persistă `metrics_accuracy_score` și `metrics_verification` (JSON detaliat)
+- `quality_score` calculat cu `metrics_accuracy_score` real (nu mai e None ca în P9)
+
+**Fix post-verificare: `app/services/research/llm.py` — `_capture_metrics_at_entry_async`**
+- Bug: `atr_pct` nu era stocat în `metrics_at_entry` (se stoca doar `atr` absolut)
+- Fix: adăugat `metrics["atr_pct"] = round(snap.atr_pct * 100, 2)` — P12 caută `atr_pct` (ca %) în `metrics_at_entry`, fără fix ATR claims erau întotdeauna skipped
+
+#### P10 — Validator V4a–V4d + V8
+
+**Modificat: `app/services/research/validator.py`** — rescris complet
+
+- `BLOCKING_RULES` extins: `{"V1","V2","V3","V4a","V4b","V5","V7","V8"}`
+- `FLAG_ONLY_RULES = {"V4c","V4d"}` (nu blochează retry, doar loghează)
+- Helper `_within_tolerance(actual, cited, tol=0.15)` — comparație relativă ±15%
+- Helper `_fuzzy_match(text, candidates, threshold=0.35)` — `difflib.SequenceMatcher`, fără dependențe extra
+
+**V4a — price hallucination** (blocking)
+- Regex `_PRICE_CONTEXT`: extrage numere din context de preț (support/resistance/target/entry/$)
+- Ignoră valori < 5% din prețul minim cunoscut (evită false positives pe RSI/ADX/%)
+- Fail: număr citat > 15% față de TOATE prețurile din context (buy_in, SL, TP, VPOC, VAH, VAL)
+
+**V4b — indicator value hallucination** (blocking)
+- Regex-uri separate: `_RSI_PATTERN`, `_ADX_PATTERN`, `_ATR_PATTERN`
+- Verifică doar dacă context conține valoarea actuală (`rsi`, `adx`, `atr_pct`)
+- Fail: valoare citată > 15% față de actual; retry message include valoarea corectă explicit
+
+**V4c — news hallucination** (flag-only)
+- Regex `_NEWS_REPORTING`: propoziții cu verbe de raportare (announced/reported/said/following)
+- Fuzzy match față de `context["headlines"]` (threshold 0.35 — lax, flag-only)
+- No-op dacă nu există headlines în context
+
+**V4d — temporal hallucination** (flag-only)
+- Regex `_TEMPORAL_RECENT`: yesterday/last week/this morning/just announced/hours ago
+- Cross-ref cu `context["headline_ages"]` (introdus în sesiunea curentă)
+- Threshold: "yesterday/this morning" → min headline < 48h; "last week" → < 168h
+
+**V8 — horizon consistency** (blocking)
+- Near (≤14d): blochează `long-term / over the months / structural / fundamental`
+- Far (>14d): blochează `this week / by Friday / intraday / today's session`
+- Retry message include `horizon_days` din context
+
+**Modificat: `app/services/research/__init__.py`**
+- Adăugat în context din snapshot: `rsi`, `atr_pct` (ca %, ex. 2.3), `adx`, `macd_histogram` — folosite de V4b
 
 #### P8 — `capture_metrics_at_entry` (fire-and-forget la took-it)
 
