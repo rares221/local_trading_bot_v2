@@ -160,18 +160,25 @@ ATR zilnic masoara volatilitatea intrazilnica si de la o zi la alta in conditii 
 
 ---
 
-### PRIORITATE 5 — Volume Profile (VPOC, VAH, VAL)
+### ✅ PRIORITATE 5 — Volume Profile (VPOC, VAH, VAL) — DONE 2026-04-07 (complet)
 
 **De ce e problema:**
 Support/Resistance curent e detectat pe swing highs/lows: preturile la care piata s-a intors in trecut. Problema e ca swing highs/lows sunt evident vizibile pe grafic si toata lumea le stie. Pietele tind sa "testeze" aceste niveluri tocmai ca sa ia stop-urile plasate acolo, inainte sa continue directia initiala.
 
 Volume Profile arata ceva diferit si mai util: unde a stat pretul cel mai mult timp, adica unde au tranzactionat cei mai multi participanti. Aceste niveluri sunt mai "adevarate" pentru ca reprezinta pretul de echilibru al pietei, nu doar punctele de intoarcere vizibile. Un VPOC este mult mai greu de spart decat un simplu swing high.
 
-**Ce trebuie construit:**
+**Ce s-a implementat:**
 - VPOC (Volume Point of Control): pretul cu cel mai mare volum tranzactionat in perioada lookback
 - VAH/VAL (Value Area High/Low): zona cu 70% din volumul total
+- HVN/LVN (High/Low Volume Nodes): niveluri de clustering si goluri de volum
 - Integrare in `TechnicalSnapshot`: VPOC ca nivel S/R prioritar fata de swing levels
 - Snap SL/TP la VPOC/VAH/VAL: mai intai verifica Volume Profile, abia apoi swing S/R
+- Confidence adjustments: `in_value_area` −8, near LVN +5, overextension >2× −10, >1.3× −5, VP confirma directia +4
+- VP walk-forward in backtesting: automat corect prin `set_backtest_mode(cutoff)` → OHLCV slice
+- VP analytics in metrici backtesting: win rate / avg_pnl_r inside vs outside value area
+- UI complet: VP strip in active-trades (VPOC, bias, dist%, IN VA, overextension) + tooltip 3s
+- VP badges in recommendations (VA ZONE, VP EXT)
+- VP in research pipeline: context dict + LLM prompt + VP strip in Market Context cu tooltip 3s
 
 **Efort:** Mediu | **Impact:** Mare — imbunatateste fundamental calitatea nivelurilor S/R
 

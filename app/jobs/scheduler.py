@@ -48,6 +48,10 @@ from app.services.regime_monitor import (
 # Key: yfinance symbol (e.g. "AAPL"), value: {"level": "low"|"medium"|"high", "note": str}
 _gap_risk_by_symbol: dict[str, dict] = {}
 
+# Volume Profile cache: populated by job_update_active_trades() + job_daily_batch()
+# Key: yfinance symbol, value: vpoc/vah/val/hvn_levels/lvn_levels/vp_bias/vp_overextension/in_value_area
+_vp_by_symbol: dict[str, dict] = {}
+
 
 async def job_ingest_and_sentiment() -> None:
     """Fetch RSS feeds, save items, run sentiment and asset tagging."""
@@ -151,6 +155,16 @@ async def job_daily_batch() -> None:
             )
             candidates = await asyncio.to_thread(_build)
             print(f"[BATCH] Candidates built: {len(candidates)}")
+            # Populate VP cache from candidates (snap was already computed inside engine)
+            for _c in candidates:
+                _sym = get_yf_symbol(_c.asset_category, _c.asset_id)
+                if _sym and _c.vpoc is not None:
+                    _vp_by_symbol[_sym] = {
+                        "vpoc": _c.vpoc, "vah": _c.vah, "val": _c.val,
+                        "hvn_levels": [], "lvn_levels": [],
+                        "vp_bias": _c.vp_bias, "vp_overextension": _c.vp_overextension,
+                        "in_value_area": _c.in_value_area,
+                    }
             for c in candidates:
                 print(f"  [{c.asset_category}] {c.asset_id} dir={c.direction} conf={c.confidence_score} rr={c.risk_reward}")
             if not candidates:
@@ -332,6 +346,19 @@ async def job_update_active_trades() -> None:
             if not snap or snap.price <= 0:
                 trade.last_updated = now
                 continue
+
+            # Volume Profile cache: store VP data from snap (already computed, zero extra cost)
+            if symbol not in _vp_by_symbol and snap.vpoc is not None:
+                _vp_by_symbol[symbol] = {
+                    "vpoc": snap.vpoc,
+                    "vah": snap.vah,
+                    "val": snap.val,
+                    "hvn_levels": snap.hvn_levels,
+                    "lvn_levels": snap.lvn_levels,
+                    "vp_bias": snap.vp_bias,
+                    "vp_overextension": snap.vp_overextension,
+                    "in_value_area": snap.in_value_area(),
+                }
 
             # Gap risk: compute once per symbol while snap is available (no extra API call)
             if symbol not in _gap_risk_by_symbol:

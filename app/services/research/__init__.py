@@ -100,6 +100,14 @@ async def build_research_context(
                         ctx["buy_in_price"] = live_price
                     ctx["levels_source"] = "calculated"
                     ctx["atr"] = snap.atr if snap and snap.atr else None
+                    # Volume Profile fields from snapshot
+                    if snap and snap.vpoc is not None:
+                        ctx["vpoc"] = snap.vpoc
+                        ctx["vah"] = snap.vah
+                        ctx["val"] = snap.val
+                        ctx["vp_bias"] = snap.vp_bias
+                        ctx["vp_overextension"] = snap.vp_overextension
+                        ctx["in_value_area"] = snap.in_value_area()
                     calculated = True
             except Exception:
                 pass

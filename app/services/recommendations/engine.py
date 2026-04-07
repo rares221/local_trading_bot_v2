@@ -502,6 +502,13 @@ class Candidate:
     # Gap risk: overnight/weekend gap exposure vs SL distance
     gap_risk_level: str = "low"   # low | medium | high
     gap_risk_note: str = ""       # human-readable factors that fired
+    # Volume Profile snapshot (daily approximation, 60-day lookback)
+    vpoc: Optional[float] = None
+    vah: Optional[float] = None
+    val: Optional[float] = None
+    vp_bias: str = "at_vpoc"          # above_vpoc | below_vpoc | at_vpoc
+    vp_overextension: Optional[float] = None
+    in_value_area: bool = False        # True = choppy equilibrium zone
 
 
 # ---------------------------------------------------------------------------
@@ -1357,6 +1364,12 @@ def _build_candidate(
         days_to_earnings=days_to_earnings,
         gap_risk_level=gap_risk_level,
         gap_risk_note=gap_risk_note,
+        vpoc=snap.vpoc if snap else None,
+        vah=snap.vah if snap else None,
+        val=snap.val if snap else None,
+        vp_bias=snap.vp_bias if snap else "at_vpoc",
+        vp_overextension=snap.vp_overextension if snap else None,
+        in_value_area=snap.in_value_area() if snap else False,
     )
 
 

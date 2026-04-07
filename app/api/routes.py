@@ -221,6 +221,10 @@ def _rec_to_item(r: Recommendation) -> dict:
         engine_policy_to_dict,
         get_asset_class_policy,
     )
+    from app.services.recommendations.engine import get_yf_symbol as _get_yf_sym
+    from app.jobs.scheduler import _vp_by_symbol
+    _sym = _get_yf_sym(r.asset_category or "", r.asset_id or "")
+    _vp = _vp_by_symbol.get(_sym, {}) if _sym else {}
 
     score = getattr(r, "confidence_score", None)
     
@@ -259,6 +263,12 @@ def _rec_to_item(r: Recommendation) -> dict:
         "days_to_earnings": getattr(r, "days_to_earnings", None),
         "gap_risk_level": getattr(r, "gap_risk_level", "low"),
         "gap_risk_note": getattr(r, "gap_risk_note", ""),
+        "vpoc": _vp.get("vpoc"),
+        "vah": _vp.get("vah"),
+        "val": _vp.get("val"),
+        "vp_bias": _vp.get("vp_bias", "at_vpoc"),
+        "vp_overextension": _vp.get("vp_overextension"),
+        "in_value_area": _vp.get("in_value_area", False),
         "engine_policy": engine_policy_to_dict(
             get_asset_class_policy(r.asset_category or "", r.asset_id or "")
         ),
@@ -751,7 +761,7 @@ async def list_active_trades(
     from app.services.earnings_calendar import is_near_earnings as _is_near_earnings
     from app.core.preferences import get_earnings_calendar_config, get_gap_risk_config
     from app.services.recommendations.engine import _compute_gap_risk
-    from app.jobs.scheduler import _gap_risk_by_symbol
+    from app.jobs.scheduler import _gap_risk_by_symbol, _vp_by_symbol
     _earnings_cfg = get_earnings_calendar_config()
     _earnings_window = _earnings_cfg["earnings_window_days"]
     _gap_cfg = get_gap_risk_config()
@@ -770,6 +780,25 @@ async def list_active_trades(
         if rec and (rec.asset_category or "") == "stocks" and _earnings_window > 0 and symbol:
             try:
                 near_earnings, days_to_earnings = _is_near_earnings(symbol, _earnings_window)
+            except Exception:
+                pass
+
+        # Volume Profile: read from scheduler cache (populated every 2h)
+        _vp = _vp_by_symbol.get(symbol, {}) if symbol else {}
+        vp_data = {
+            "vpoc": _vp.get("vpoc"),
+            "vah": _vp.get("vah"),
+            "val": _vp.get("val"),
+            "vp_bias": _vp.get("vp_bias", "at_vpoc"),
+            "vp_overextension": _vp.get("vp_overextension"),
+            "in_value_area": _vp.get("in_value_area", False),
+        }
+        # VPOC distance %: how far current price is from fair value
+        vp_distance_pct = None
+        if vp_data["vpoc"] and rec:
+            try:
+                _cur = float(rec.buy_in_price)  # use entry as proxy if no live price
+                vp_distance_pct = round((_cur - vp_data["vpoc"]) / vp_data["vpoc"] * 100, 2)
             except Exception:
                 pass
 
@@ -844,6 +873,13 @@ async def list_active_trades(
             "days_to_earnings": days_to_earnings,
             "gap_risk_level": gap_risk_level,
             "gap_risk_note": gap_risk_note,
+            "vpoc": vp_data["vpoc"],
+            "vah": vp_data["vah"],
+            "val": vp_data["val"],
+            "vp_bias": vp_data["vp_bias"],
+            "vp_overextension": vp_data["vp_overextension"],
+            "in_value_area": vp_data["in_value_area"],
+            "vp_distance_pct": vp_distance_pct,
             "levels": [
                 {"sl": L.sl, "tp": L.tp, "created_at": L.created_at.isoformat(), "source": L.source}
                 for L in levels_sorted

@@ -72,6 +72,23 @@ def _format_user_content(context: dict[str, Any]) -> str:
             parts.append("Fundamentals: " + ", ".join(fparts) + ".")
     if headlines:
         parts.append("Headlines: " + " | ".join(headlines[:2]))
+    # Volume Profile context
+    vpoc = context.get("vpoc")
+    if vpoc is not None:
+        vah = context.get("vah")
+        val = context.get("val")
+        vp_bias = context.get("vp_bias", "at_vpoc")
+        vp_ext = context.get("vp_overextension")
+        in_va = context.get("in_value_area", False)
+        bias_label = {"above_vpoc": "above fair value", "below_vpoc": "below fair value"}.get(vp_bias, "at fair value")
+        vp_line = f"Volume Profile: VPOC=${vpoc:.4g} ({bias_label})"
+        if vah and val:
+            vp_line += f", Value Area ${val:.4g}–${vah:.4g}"
+        if in_va:
+            vp_line += ", price inside value area (choppy equilibrium zone)"
+        if vp_ext is not None and abs(vp_ext) > 1.3:
+            vp_line += f", overextended {abs(vp_ext):.1f}× from VPOC (mean reversion risk)"
+        parts.append(vp_line + ".")
     return "\n".join(parts)
 
 

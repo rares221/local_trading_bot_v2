@@ -216,10 +216,27 @@ def _build_signal(
         direction=direction,
     )
 
+    # Volume Profile walk-forward adjustments (same logic as live engine)
+    # snap.vpoc is computed from OHLCV sliced to sim_date — fully walk-forward.
+    vp_flag = "none"
+    if snap.vpoc is not None:
+        if snap.in_value_area():
+            confidence = max(0, confidence - 8)
+            vp_flag = "in_value_area"
+        ext = abs(snap.vp_overextension or 0)
+        if ext > 2.0:
+            confidence = max(0, confidence - 10)
+            vp_flag = vp_flag + "+overextended" if vp_flag != "none" else "overextended"
+        elif ext > 1.3:
+            confidence = max(0, confidence - 5)
+        if (direction == "long" and snap.vp_bias == "below_vpoc") or \
+           (direction == "short" and snap.vp_bias == "above_vpoc"):
+            confidence = min(100, confidence + 4)
+
     if confidence < min_confidence:
         return None
 
-    # SL/TP
+    # SL/TP (VP-aware via compute_atr_levels — uses snap.hvn_levels/val/vah)
     sl, tp = compute_atr_levels(snap.price, risk_tier, snapshot=snap, direction=direction)
     rr = calc_risk_reward(snap.price, sl, tp)
 
@@ -240,6 +257,13 @@ def _build_signal(
         "volatility_regime": snap.volatility_regime,
         "trend_bias": snap.trend_bias,
         "atr_pct": round(snap.atr_pct, 6) if snap.atr_pct else None,
+        # Volume Profile walk-forward data (for analysis/metrics)
+        "vpoc": snap.vpoc,
+        "vah": snap.vah,
+        "val": snap.val,
+        "vp_bias": snap.vp_bias,
+        "vp_flag": vp_flag,  # what VP adjustment fired (for analytics)
+        "in_value_area": snap.in_value_area(),
         # Outcome fields (populated later)
         "outcome": None,
         "closing_price": None,

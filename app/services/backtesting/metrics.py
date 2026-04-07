@@ -113,6 +113,26 @@ def compute_metrics(trades: list[dict]) -> dict[str, Any]:
         ss["win_rate"] = round(ss["wins"] / n, 4) if n > 0 else 0.0
         ss["avg_pnl_r"] = round(ss["pnl_r_sum"] / n, 4) if n > 0 else 0.0
 
+    # Volume Profile analytics: compare performance inside vs outside value area
+    va_in = [t for t in all_outcomes if t.get("in_value_area")]
+    va_out = [t for t in all_outcomes if not t.get("in_value_area") and t.get("vpoc") is not None]
+    def _vp_stats(subset: list[dict]) -> dict:
+        if not subset:
+            return {}
+        w = sum(1 for t in subset if t.get("outcome") == "hit_tp")
+        pnls = [t["pnl_r"] for t in subset if t.get("pnl_r") is not None]
+        return {
+            "total": len(subset),
+            "win_rate": round(w / len(subset), 4),
+            "avg_pnl_r": round(sum(pnls) / len(pnls), 4) if pnls else 0.0,
+        }
+
+    vp_metrics = {
+        "in_value_area": _vp_stats(va_in),
+        "outside_value_area": _vp_stats(va_out),
+        "pct_signals_in_va": round(len(va_in) / total, 4) if total > 0 else 0.0,
+    }
+
     return {
         "total_signals": len(trades),
         "total_trades": total,
@@ -128,6 +148,7 @@ def compute_metrics(trades: list[dict]) -> dict[str, Any]:
         "by_confidence_bucket": bucket_stats,
         "by_direction": direction_stats,
         "by_symbol": symbol_stats,
+        "volume_profile": vp_metrics,
     }
 
 

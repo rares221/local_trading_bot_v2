@@ -4,6 +4,74 @@
 
 ---
 
+## 2026-04-07 — `improvements_trade_builder` (sesiunea 4)
+
+### Volume Profile — VPOC, VAH, VAL, HVN/LVN (PRIORITATE 5 — complet)
+
+**Nou: `compute_volume_profile()` în `app/services/technicals.py`**
+- Distribuie volumul zilnic uniform pe range-ul High–Low în 120 de bin-uri (lookback 60 zile)
+- VPOC = bin-ul cu volumul maxim (pretul de echilibru al pietei)
+- Value Area (VAH/VAL): expansiune de la VPOC pana la 70% din volumul total
+- HVN: bin-uri > percentila 65 (clustere de volum — magnet de pret); LVN: bin-uri < percentila 25 (goluri — miscare rapida)
+- `_cluster()`: mergeaza niveluri aflate la < 0.5% distanta intre ele
+
+**Modificat: `TechnicalSnapshot` în `app/services/technicals.py`**
+- Câmpuri noi: `vpoc`, `vah`, `val`, `hvn_levels`, `lvn_levels`, `vp_bias`, `vp_overextension`
+- Metode noi: `in_value_area()`, `nearest_hvn_below()`, `nearest_hvn_above()`, `nearest_lvn_below()`, `nearest_lvn_above()`
+- `build_snapshot()` apeleaza `compute_volume_profile(df)` si populeaza toate campurile VP
+
+**Modificat: `compute_atr_levels()` în `app/services/technicals.py`**
+- VP prioritar fata de swing S/R pentru plasarea SL si TP
+- Long SL: `nearest_hvn_below()` → `snap.val` → 0.2% sub nivel; fallback la swing S/R
+- Long TP: capsat la HVN deasupra pretului sau la VAH daca e in cale (`vah * 0.998`)
+- Short: logica simetrica cu HVN/VAL
+
+**Modificat: `app/services/recommendations/engine.py`**
+- `Candidate` dataclass: câmpuri noi `vpoc`, `vah`, `val`, `vp_bias`, `vp_overextension`, `in_value_area`
+- `_build_candidate()`: ajustari confidence VP — `in_value_area` −8, near LVN +5, overextension >2× −10, >1.3× −5, VP confirma directia +4
+- Return: câmpuri VP populati din `snap`
+
+**Modificat: `app/services/backtesting/replay.py`**
+- `_build_signal()`: aceleasi ajustari confidence VP ca engine-ul live (walk-forward corect automat)
+- Signal dict include: `vpoc`, `vah`, `val`, `vp_bias`, `vp_flag`, `in_value_area`
+
+**Modificat: `app/services/backtesting/metrics.py`**
+- `compute_metrics()` returneaza `volume_profile`: `in_value_area` / `outside_value_area` stats (total, win_rate, avg_pnl_r) + `pct_signals_in_va`
+
+**Modificat: `app/jobs/scheduler.py`**
+- Dict nou `_vp_by_symbol: dict[str, dict]` la nivel de modul
+- `job_update_active_trades()` — populeaza `_vp_by_symbol[symbol]` din `snap` deja fetched
+- `job_daily_batch()` — populeaza `_vp_by_symbol` din câmpurile VP ale fiecarui candidat
+
+**Modificat: `app/api/routes.py`**
+- `/api/active-trades` — câmpuri noi per trade: `vpoc`, `vah`, `val`, `vp_bias`, `vp_overextension`, `in_value_area`, `vp_distance_pct`
+- `/api/recommendations` — câmpuri noi per recomandare: `vpoc`, `vah`, `val`, `vp_bias`, `vp_overextension`, `in_value_area`
+
+**Modificat: `app/static/active-trades.html`**
+- `vpStrip(t)`: bara VP cu VPOC, bias (↑/↓ fair value), VA range, distanta % vs VPOC, badge IN VA, indicator overextension
+- Tooltip global fix (3s hover delay): explica VPOC, Value Area, fair value, dist% unui newbie
+- CSS: `.vp-strip`, `.vp-badge-va`, `.vp-dist-pos/.neg`
+
+**Modificat: `app/static/recommendations.html`**
+- `vpBadge(rec)`: badge `VA ZONE` (gri) daca `in_value_area`; badge `VP EXT N×` (mov) daca overextension > 1.3×
+- Coloana Asset: badge VP afisat langa gap badge
+- Coloana Size: VPOC price + bias ca subtext sub pozitionare
+
+**Modificat: `app/services/research/__init__.py`**
+- `build_research_context()`: extrage `vpoc`, `vah`, `val`, `vp_bias`, `vp_overextension`, `in_value_area` din `snap` returnat de `compute_sl_tp_for_symbol`
+
+**Modificat: `app/services/research/llm.py`**
+- `_format_user_content()`: include linie VP in promptul LLM — VPOC, bias, value area range, in_value_area, overextension
+- Modelul refera VP in rationale-ul generat
+
+**Modificat: `app/static/research.html`**
+- `renderVpStrip(ctx)`: bara VP in panoul "Market Context" (aceeasi informatie ca active-trades)
+- Tooltip global fix (3s hover delay, independent de gap tooltip)
+- `renderContext()`: insereaza VP strip + apeleaza `initRsTooltips()` dupa render
+- CSS: `.rs-vp-strip`, `.rs-vp-badge-va`, `#rs-tooltip-global`
+
+---
+
 ## 2026-04-07 — `improvements_trade_builder`
 
 ### Earnings Calendar (PRIORITATE 2)
