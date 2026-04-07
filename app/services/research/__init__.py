@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import cast, select, Text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from datetime import date, datetime, timedelta, timezone
@@ -194,7 +194,7 @@ async def build_research_context(
     try:
         _hq = (
             select(FeedItem)
-            .where(FeedItem.asset_tags.contains([asset_id]))
+            .where(cast(FeedItem.asset_tags, Text).like(f'%"{asset_id}"%'))
             .order_by(FeedItem.fetched_at.desc())
             .limit(_max_headlines * 3)
         )
@@ -213,7 +213,7 @@ async def build_research_context(
             if len(ctx["headlines"]) >= _max_headlines:
                 break
     except Exception:
-        pass
+        await session.rollback()
     # Optional: yfinance .info for sector, industry, market cap (stocks/ETFs; skip on failure)
     symbol = get_yf_symbol(category, asset_id)
     if not symbol and category.lower() in ("stocks", "etfs", "etf", "stock"):

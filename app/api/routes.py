@@ -603,7 +603,7 @@ async def trade_builder_from_asset(
             ctx["horizon"] = _classify_horizon(_ed)
         rationale_text = await generate_rationale(ctx)
     except Exception:
-        pass
+        await db.rollback()
 
     now = datetime.now(timezone.utc)
     batch_id = date.today().isoformat()
