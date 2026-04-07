@@ -372,6 +372,9 @@ class TechnicalSnapshot:
     trend_strength: str = "weak"  # "weak" | "moderate" | "strong"
     vwap: Optional[float] = None  # volume-weighted average price (e.g. 20d)
     volatility_regime: str = "stable"  # "expanding" | "contracting" | "stable" (ATR slope)
+    # Gap risk metrics: computed from Open vs prev Close across OHLCV history
+    overnight_gap_pct_avg: Optional[float] = None  # mean |Open - prev_Close| / prev_Close
+    overnight_gap_pct_p95: Optional[float] = None  # 95th percentile gap (tail risk)
 
     @property
     def price_above_vwap(self) -> bool:
@@ -523,6 +526,19 @@ def build_snapshot(symbol: str) -> Optional[TechnicalSnapshot]:
     vwap = calc_vwap(df, period=20)
     vol_regime = calc_atr_regime(df, lookback=10)
 
+    # Overnight gap distribution: |Open[t] - Close[t-1]| / Close[t-1]
+    overnight_gap_pct_avg: Optional[float] = None
+    overnight_gap_pct_p95: Optional[float] = None
+    if "Open" in df.columns and len(df) >= 5:
+        try:
+            gaps = (df["Open"] - df["Close"].shift(1)).abs() / df["Close"].shift(1)
+            gaps = gaps.dropna()
+            if len(gaps) >= 3:
+                overnight_gap_pct_avg = float(gaps.mean())
+                overnight_gap_pct_p95 = float(gaps.quantile(0.95))
+        except Exception:
+            pass
+
     # Trend bias from all indicators
     bull, bear = 0, 0
 
@@ -602,6 +618,8 @@ def build_snapshot(symbol: str) -> Optional[TechnicalSnapshot]:
         trend_strength=trend_strength,
         vwap=_r(vwap, 4) if vwap is not None else None,
         volatility_regime=vol_regime,
+        overnight_gap_pct_avg=_r(overnight_gap_pct_avg, 6),
+        overnight_gap_pct_p95=_r(overnight_gap_pct_p95, 6),
     )
 
 

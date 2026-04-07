@@ -1,0 +1,3 @@
+- app is in python. Dockerized. new packages go in requirements.txt, don't install them manually in the container use the requirements.txt file. 
+- use `make build start` to rebuild and restart containers with changes.
+- use docker logs when debugging

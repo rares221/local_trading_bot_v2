@@ -91,6 +91,34 @@
 
 ---
 
+### Gap Risk — Active Trades + Backtesting (PRIORITATE 4 — sesiunea 3 — 2026-04-07)
+
+**Bug fix: `app/services/backtesting/simulator.py` — gap slippage realist**
+- Înainte: la `sl_hit` fără `tp_hit`, `closing = min(bar_low, stop_loss)` → folosea bar_low (worst case, prea pesimist)
+- Acum: dacă `bar_open <= stop_loss` (gap down la deschidere) → `closing = bar_open` (fill realist la open)
+- Dacă `bar_open > stop_loss` (stop atins intraday) → `closing = stop_loss` (fill normal)
+- Același fix pentru short: `bar_open >= stop_loss` → `closing = bar_open`
+- Rezultat: P&L în R-multipli mai realist; nu mai penalizează cu worst intraday price când gap-ul e la open
+
+**Modificat: `app/jobs/scheduler.py`**
+- Dict nou la nivel de modul: `_gap_risk_by_symbol: dict[str, dict]`
+- `job_update_active_trades()` — calculează gap risk per simbol (folosind `snap` deja fetched, zero API calls extra)
+- Rezultatul e stocat în `_gap_risk_by_symbol[symbol] = {"level": ..., "note": ...}`
+- Populat o dată per simbol per run (cache în memorie, refresh la fiecare run de 2h)
+
+**Modificat: `app/api/routes.py`**
+- `/api/active-trades` — câmpuri noi: `gap_risk_level` ("low"/"medium"/"high") și `gap_risk_note` per trade
+- Import `_gap_risk_by_symbol` din scheduler; citit din cache (nu face apeluri blocking în route async)
+- `get_yf_symbol()` acum chemat o singură dată per trade (eliminată duplicarea din blocul earnings)
+
+**Modificat: `app/static/active-trades.html`**
+- Badge `GAP MEDIUM` (amber) / `GAP HIGH` (roșu) în row-ul de badge-uri din header-ul cardului
+- Strip de avertizare `gap-strip` (galben) sub earnings strip, cu mesaj specific din engine
+- CSS: `.badge--gap-high`, `.badge--gap-medium`, `.gap-strip`
+- JS: `gapBadge(level)`, `gapStrip(level, note)`
+
+---
+
 ## 2026-04-06 — `improvements_trade_builder`
 
 ### Backtesting — Quick Backtest (PRIORITATE 1)

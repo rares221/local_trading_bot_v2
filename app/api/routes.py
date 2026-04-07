@@ -234,6 +234,8 @@ def _rec_to_item(r: Recommendation) -> dict:
         "instrument_type": getattr(r, "instrument_type", None),
         "near_earnings": getattr(r, "near_earnings", False),
         "days_to_earnings": getattr(r, "days_to_earnings", None),
+        "gap_risk_level": getattr(r, "gap_risk_level", "low"),
+        "gap_risk_note": getattr(r, "gap_risk_note", ""),
         "engine_policy": engine_policy_to_dict(
             get_asset_class_policy(r.asset_category or "", r.asset_id or "")
         ),
@@ -720,10 +722,12 @@ async def list_active_trades(
     trades = result.scalars().unique().all()
     items = []
     from app.services.trade_strategies import strategy_label_for_leg
+    from app.services.recommendations.engine import get_yf_symbol
 
     # Earnings proximity: cached per-ticker, safe to call for every trade
     from app.services.earnings_calendar import is_near_earnings as _is_near_earnings
     from app.core.preferences import get_earnings_calendar_config
+    from app.jobs.scheduler import _gap_risk_by_symbol
     _earnings_cfg = get_earnings_calendar_config()
     _earnings_window = _earnings_cfg["earnings_window_days"]
 
@@ -733,16 +737,21 @@ async def list_active_trades(
         conf_score = getattr(rec, "confidence_score", None) if rec else None
         strat_leg = getattr(t, "strategy_leg", None) or "vanilla"
 
+        symbol = get_yf_symbol(rec.asset_category, rec.asset_id) if rec else None
+
         # Earnings check for stocks (cached 24h — no performance concern)
         near_earnings = False
         days_to_earnings = None
-        if rec and (rec.asset_category or "") == "stocks" and _earnings_window > 0:
+        if rec and (rec.asset_category or "") == "stocks" and _earnings_window > 0 and symbol:
             try:
-                symbol = get_yf_symbol(rec.asset_category, rec.asset_id)
-                if symbol:
-                    near_earnings, days_to_earnings = _is_near_earnings(symbol, _earnings_window)
+                near_earnings, days_to_earnings = _is_near_earnings(symbol, _earnings_window)
             except Exception:
                 pass
+
+        # Gap risk: read from scheduler cache (populated every 2h by job_update_active_trades)
+        _gap_data = _gap_risk_by_symbol.get(symbol, {}) if symbol else {}
+        gap_risk_level = _gap_data.get("level", "low")
+        gap_risk_note = _gap_data.get("note", "")
 
         items.append({
             "id": t.id,
@@ -775,6 +784,8 @@ async def list_active_trades(
             "closing_price": getattr(t, "closing_price", None),
             "near_earnings": near_earnings,
             "days_to_earnings": days_to_earnings,
+            "gap_risk_level": gap_risk_level,
+            "gap_risk_note": gap_risk_note,
             "levels": [
                 {"sl": L.sl, "tp": L.tp, "created_at": L.created_at.isoformat(), "source": L.source}
                 for L in levels_sorted

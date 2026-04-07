@@ -325,20 +325,116 @@ def _all_assets() -> list[tuple[str, str, str, str]]:
 # Candidate with direction + expiry + technicals
 # ---------------------------------------------------------------------------
 
+def _compute_gap_risk(
+    snap,
+    expiry_days: int,
+    near_earnings: bool,
+    category: str,
+    today,
+    max_penalty: float = 0.50,
+) -> tuple[str, float, str]:
+    """
+    Compute gap risk level and sizing multiplier from technical snapshot + trade context.
+
+    Gap risk = probability that an overnight/weekend price gap blows past the SL,
+    causing an actual loss larger than the modeled 1R.
+
+    Returns:
+        level: "low" | "medium" | "high"
+        sizing_mult: float in [max_penalty, 1.0] — multiply suggested_risk_pct by this
+        note: human-readable explanation of active risk factors
+
+    Design:
+    - Penalties are multiplicative (compound when multiple factors fire)
+    - max_penalty caps the floor so sizing never collapses to zero
+    - No changes to SL/TP geometry — only sizing is adjusted
+    """
+    factors: list[str] = []
+    mult = 1.0
+
+    # ── Factor 1: SL distance vs typical overnight gap ───────────────────────
+    # If avg gap is >40% of SL distance, a single bad night can eat most of the risk buffer.
+    avg_gap = getattr(snap, "overnight_gap_pct_avg", None)
+    p95_gap = getattr(snap, "overnight_gap_pct_p95", None)
+    atr_pct = getattr(snap, "atr_pct", None)
+    if avg_gap and atr_pct and atr_pct > 0:
+        # ATR multiplier for moderate tier is 2.0 → SL distance ≈ 2× ATR ≈ 2× atr_pct
+        sl_dist_est = atr_pct * 2.0
+        ratio = avg_gap / sl_dist_est
+        if ratio > 0.5:
+            mult *= 0.80
+            factors.append(f"gap avg {avg_gap*100:.1f}% vs SL ~{sl_dist_est*100:.1f}%")
+        elif ratio > 0.35:
+            mult *= 0.90
+            factors.append(f"gap avg {avg_gap*100:.1f}%")
+    # 95th-pct gap exceeds SL entirely → tail risk is real
+    if p95_gap and atr_pct and atr_pct > 0:
+        sl_dist_est = atr_pct * 2.0
+        if p95_gap > sl_dist_est:
+            mult *= 0.85
+            factors.append(f"p95 gap {p95_gap*100:.1f}% > SL (tail)")
+
+    # ── Factor 2: Holding period — overnight gap exposure compounds ──────────
+    if expiry_days >= 14:
+        mult *= 0.75
+        factors.append(f"{expiry_days}d hold")
+    elif expiry_days >= 7:
+        mult *= 0.85
+        factors.append(f"{expiry_days}d hold")
+    elif expiry_days >= 3:
+        mult *= 0.92
+        factors.append(f"{expiry_days}d hold")
+
+    # ── Factor 3: Weekend gap (65h exposure vs 17h overnight) ───────────────
+    weekday = today.weekday()  # 0=Mon, 4=Fri
+    if weekday == 4:  # Friday entry — first gap is 65h
+        mult *= 0.80
+        factors.append("weekend gap (Friday entry)")
+    elif weekday == 3 and expiry_days >= 2:  # Thursday, hold covers weekend
+        mult *= 0.90
+        factors.append("weekend exposure (Thu entry)")
+
+    # ── Factor 4: Earnings proximity — gap can be catastrophic ──────────────
+    # Already penalized confidence; also reduce sizing (independent risk dimension)
+    if near_earnings:
+        mult *= 0.70
+        factors.append("earnings window")
+
+    # ── Factor 5: Category — stocks gap more than indices/commodities ────────
+    if category == "stocks":
+        mult *= 0.95
+
+    # Apply floor: sizing can't drop below max_penalty of original
+    mult = max(max_penalty, round(mult, 4))
+
+    # Classify level
+    if mult <= 0.70:
+        level = "high"
+    elif mult <= 0.87:
+        level = "medium"
+    else:
+        level = "low"
+
+    note = "; ".join(factors)
+    return level, mult, note
+
+
 def _suggested_risk_pct(
     confidence: int,
     risk_reward: Optional[float],
     trend_aligned: bool = False,
     sector_aligned: bool = False,
+    gap_sizing_mult: float = 1.0,
+    gap_max_penalty: float = 0.50,
 ) -> float:
     """
     Suggested risk per trade as % of capital (half-Kelly style when R:R known; else tier-based).
-    
-    Adjustments:
-    - Trend aligned: +20% size boost (multi-timeframe confirmation)
-    - Sector aligned: +10% size boost (sector supports direction)
-    - Both aligned: +30% total boost
-    
+
+    Adjustments applied in order:
+    1. Trend aligned: +20% size boost
+    2. Sector aligned: +10% size boost
+    3. Gap risk multiplier: reduces sizing for high overnight/weekend gap exposure
+
     Capped at 2.5%, floored at 0.1%.
     """
     p = (confidence or 0) / 100.0
@@ -360,18 +456,23 @@ def _suggested_risk_pct(
             base_pct = _tier_fallback()
     else:
         base_pct = _tier_fallback()
-    
-    # Apply alignment boosts
+
+    # Alignment boosts
     multiplier = 1.0
     if trend_aligned:
-        multiplier += 0.20  # +20% for multi-TF alignment
+        multiplier += 0.20
     if sector_aligned:
-        multiplier += 0.10  # +10% for sector alignment
-    
-    final_pct = base_pct * multiplier
-    
-    # Cap at 2.5%, floor at 0.1%
-    return round(min(2.5, max(0.1, final_pct)), 2)
+        multiplier += 0.10
+
+    # Cap first (Kelly gives large raw values; cap represents portfolio discipline)
+    capped_pct = min(2.5, max(0.1, base_pct * multiplier))
+
+    # Gap risk reduction applied to the already-capped value so it always has effect
+    gap_mult = max(gap_max_penalty, float(gap_sizing_mult))
+    final_pct = capped_pct * gap_mult
+
+    # Reapply floor only (cap already applied above)
+    return round(max(0.1, final_pct), 2)
 
 
 @dataclass
@@ -398,6 +499,9 @@ class Candidate:
     # Earnings proximity flag (stocks only)
     near_earnings: bool = False
     days_to_earnings: Optional[int] = None
+    # Gap risk: overnight/weekend gap exposure vs SL distance
+    gap_risk_level: str = "low"   # low | medium | high
+    gap_risk_note: str = ""       # human-readable factors that fired
 
 
 # ---------------------------------------------------------------------------
@@ -1152,7 +1256,41 @@ def _build_candidate(
         elif sector_regime.regime == "risk_off" and direction == "short":
             sector_aligned = True
     
-    suggested_risk = _suggested_risk_pct(confidence, rr, trend_aligned=trend_aligned, sector_aligned=sector_aligned)
+    # Gap risk: compute from overnight gap distribution + holding period + timing
+    from app.core.preferences import get_gap_risk_config
+    gap_cfg = get_gap_risk_config()
+    gap_risk_level = "low"
+    gap_risk_note = ""
+    gap_sizing_mult = 1.0
+    if gap_cfg["gap_risk_enabled"]:
+        gap_risk_level, gap_sizing_mult, gap_risk_note = _compute_gap_risk(
+            snap=snap,
+            expiry_days=expiry_days,
+            near_earnings=near_earnings,
+            category=category,
+            today=date.today(),
+            max_penalty=gap_cfg["gap_risk_max_penalty"],
+        )
+        if gap_risk_level != "low":
+            logger.debug(
+                "[ENGINE] %s: gap_risk=%s mult=%.2f note=%s",
+                asset_id, gap_risk_level, gap_sizing_mult, gap_risk_note,
+            )
+            suffix = f"gap risk {gap_risk_level}"
+            if gap_risk_note:
+                suffix = f"gap risk {gap_risk_level} ({gap_risk_note})"
+            if regime_note:
+                regime_note = f"{regime_note}; {suffix}"
+            else:
+                regime_note = suffix
+
+    suggested_risk = _suggested_risk_pct(
+        confidence, rr,
+        trend_aligned=trend_aligned,
+        sector_aligned=sector_aligned,
+        gap_sizing_mult=gap_sizing_mult,
+        gap_max_penalty=gap_cfg["gap_risk_max_penalty"],
+    )
     return Candidate(
         asset_category=category,
         asset_id=asset_id,
@@ -1171,6 +1309,8 @@ def _build_candidate(
         suggested_risk_pct=suggested_risk,
         near_earnings=near_earnings,
         days_to_earnings=days_to_earnings,
+        gap_risk_level=gap_risk_level,
+        gap_risk_note=gap_risk_note,
     )
 
 

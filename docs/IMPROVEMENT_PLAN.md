@@ -146,18 +146,15 @@ Momentan nu exista nicio protectie dincolo de confidence threshold si risk budge
 
 ---
 
-### PRIORITATE 4 — Gap risk modeling
+### ✅ PRIORITATE 4 — Gap risk modeling — DONE 2026-04-07 (complet)
 
 **De ce e problema:**
 ATR zilnic masoara volatilitatea intrazilnica si de la o zi la alta in conditii normale. Nu modeleaza gap-urile — diferente bruste de pret care apar la deschidere cand piata e inchisa. Pe actiuni, un earnings surprise sau o stire macro overnight poate deschide piata cu 5-10% diferenta fata de inchiderea precedenta. Daca SL-ul e la -3%, un gap de -7% inseamna ca iesi din pozitie cu -7%, nu cu -3%. Asta rupe complet calculul R:R si Half-Kelly care presupun ca SL-ul e executat la pretul setat.
 
-Weekendurile pe crypto sunt si ele o sursa majora de gap risk — piata functioneaza 24/7 dar lichiditatea scade substantial sambata-duminica.
-
-**Ce trebuie construit:**
-- Detectie pozitii overnight cu exposure la gap (holding period > 1 zi, sau pozitii deschise vineri seara)
-- Penalizare sizing pentru pozitii multi-day: reduce `suggested_risk_pct` cu 20-30%
-- Integrare cu earnings calendar (PRIORITATE 2): sizing redus automat cu inca 20% daca earnings in fereastra
-- `overnight_risk_factor` in SL/TP computation: ATR multiplier mai mare pentru pozitii multi-day
+**Ce s-a implementat:**
+- **Recomandari (sizing)**: `_compute_gap_risk()` cu 5 factori multiplicativi → `gap_risk_level` + `sizing_mult`; cap 2.5% aplicat ÎNAINTE de `gap_mult` (fix bug: altfel gap mult nu aveau efect)
+- **Active trades (avertizare)**: gap risk calculat în `job_update_active_trades()` din `snap` deja fetched → stocat în `_gap_risk_by_symbol`; `/api/active-trades` expune `gap_risk_level` + `gap_risk_note`; UI: badge `GAP HIGH/MEDIUM` + strip de avertizare amber
+- **Backtesting (slippage realist)**: `simulator.py` — dacă `bar_open <= stop_loss` (gap la deschidere) → exit la `bar_open` nu la `bar_low` (worst case); același fix pentru short
 
 **Efort:** Mediu | **Impact:** Mare pentru equity si crypto
 

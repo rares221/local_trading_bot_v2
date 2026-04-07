@@ -44,6 +44,11 @@ from app.services.regime_monitor import (
 )
 
 
+# Gap risk cache: populated by job_update_active_trades(), consumed by /api/active-trades
+# Key: yfinance symbol (e.g. "AAPL"), value: {"level": "low"|"medium"|"high", "note": str}
+_gap_risk_by_symbol: dict[str, dict] = {}
+
+
 async def job_ingest_and_sentiment() -> None:
     """Fetch RSS feeds, save items, run sentiment and asset tagging."""
     from app.services.ticker_resolver import reset_run_counter
@@ -327,6 +332,26 @@ async def job_update_active_trades() -> None:
             if not snap or snap.price <= 0:
                 trade.last_updated = now
                 continue
+
+            # Gap risk: compute once per symbol while snap is available (no extra API call)
+            if symbol not in _gap_risk_by_symbol:
+                try:
+                    from app.services.recommendations.engine import _compute_gap_risk
+                    from app.core.preferences import get_gap_risk_config
+                    _gap_cfg = get_gap_risk_config()
+                    if _gap_cfg["gap_risk_enabled"]:
+                        _expiry_days = (trade.expiry - date.today()).days if trade.expiry else 7
+                        _gap_lvl, _, _gap_note = _compute_gap_risk(
+                            snap=snap,
+                            expiry_days=max(0, _expiry_days),
+                            near_earnings=False,
+                            category=rec.asset_category,
+                            today=date.today(),
+                            max_penalty=_gap_cfg["gap_risk_max_penalty"],
+                        )
+                        _gap_risk_by_symbol[symbol] = {"level": _gap_lvl, "note": _gap_note}
+                except Exception as _gap_err:
+                    print(f"[UPDATE_TRADES] Gap risk compute failed for {symbol}: {_gap_err}")
 
             direction = getattr(rec, "direction", "long") or "long"
             current_price = snap.price

@@ -76,7 +76,11 @@ def simulate_outcome(
                 # Assume SL hit first (intraday wick down before rally)
                 return SimulatedOutcome("hit_sl", stop_loss, bar_date, bars_held, -1.0)
             elif sl_hit:
-                closing = min(bar_low, stop_loss)
+                # Gap slippage: if market opened past SL, exit at open (realistic fill)
+                if bar_open <= stop_loss:
+                    closing = bar_open
+                else:
+                    closing = stop_loss  # normal intraday stop trigger
                 pnl = _pnl_r(-1.0, entry_price, closing, stop_loss, risk)
                 return SimulatedOutcome("hit_sl", closing, bar_date, bars_held, pnl)
             elif tp_hit:
@@ -93,7 +97,11 @@ def simulate_outcome(
                     return SimulatedOutcome("hit_sl", closing, bar_date, bars_held, pnl)
                 return SimulatedOutcome("hit_sl", stop_loss, bar_date, bars_held, -1.0)
             elif sl_hit:
-                closing = max(bar_high, stop_loss)
+                # Gap slippage: if market opened past SL, exit at open (realistic fill)
+                if bar_open >= stop_loss:
+                    closing = bar_open
+                else:
+                    closing = stop_loss  # normal intraday stop trigger
                 pnl = _pnl_r(-1.0, entry_price, closing, stop_loss, risk)
                 return SimulatedOutcome("hit_sl", closing, bar_date, bars_held, pnl)
             elif tp_hit:

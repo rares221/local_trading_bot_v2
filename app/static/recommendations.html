@@ -244,6 +244,9 @@
     .tab-section-count { font-size:12px; color:var(--muted-foreground); background:var(--secondary); border:1px solid var(--border); border-radius:99px; padding:2px 9px; }
     /* Earnings proximity badge */
     .badge--earnings { background: rgba(251,191,36,.15); color: #fbbf24; border: 1px solid rgba(251,191,36,.35); font-size:9px; padding:1px 4px; border-radius:4px; font-weight:700; letter-spacing:.03em; }
+    /* Gap risk badges */
+    .badge--gap-high   { background: rgba(239,68,68,.15);  color: #fca5a5; border: 1px solid rgba(239,68,68,.35);  font-size:9px; padding:1px 4px; border-radius:4px; font-weight:700; letter-spacing:.03em; }
+    .badge--gap-medium { background: rgba(245,158,11,.15); color: #fcd34d; border: 1px solid rgba(245,158,11,.35); font-size:9px; padding:1px 4px; border-radius:4px; font-weight:700; letter-spacing:.03em; }
     /* Circuit breaker banner */
     .alert--cb-defensive { background: rgba(251,191,36,.12); border: 1px solid rgba(251,191,36,.4); color: #fbbf24; border-radius: var(--radius); padding: 10px 14px; font-size: 13px; }
     .alert--cb-paused    { background: rgba(239,68,68,.12);  border: 1px solid rgba(239,68,68,.4);  color: #ef4444; border-radius: var(--radius); padding: 10px 14px; font-size: 13px; }
@@ -441,6 +444,17 @@
       if (v >= 1e9)  return '$' + (v/1e9).toFixed(1) + 'B';
       if (v >= 1e6)  return '$' + (v/1e6).toFixed(1) + 'M';
       return '$' + v;
+    }
+
+    /* ── Gap risk badge ── */
+    function gapBadge(rec) {
+      const lvl = rec.gap_risk_level;
+      if (!lvl || lvl === 'low') return '';
+      const note = rec.gap_risk_note ? rec.gap_risk_note : '';
+      const tip = escapeAttr('Gap risk: ' + lvl.toUpperCase() + (note ? ' — ' + note : '') + '. Sizing reduced automatically.');
+      if (lvl === 'high')   return `<span class="badge--gap-high"   title="${tip}">GAP HIGH</span>`;
+      if (lvl === 'medium') return `<span class="badge--gap-medium" title="${tip}">GAP MED</span>`;
+      return '';
     }
 
     /* ── Direction badge ── */
@@ -915,6 +929,8 @@
             const eLabel = eDays != null ? (eDays === 0 ? '±0d' : (eDays > 0 ? '+' + eDays + 'd' : eDays + 'd')) : '';
             badges += `<span class="badge--earnings" title="Earnings within ±${rec.days_to_earnings ?? '?'} days — confidence penalised">EARNINGS${eLabel ? ' ' + eLabel : ''}</span>`;
           }
+          const gapB = gapBadge(rec);
+          if (gapB) badges += gapB;
           const tip = escapeAttr((rec.volatility_notes || '') + (rec.status !== 'pending' ? ' [' + rec.status + ']' : ''));
           return `<span class="font-semibold rec-asset-link" title="${tip}">${escHtml(rec.asset_id)}${badges ? '<span class="indicator-badges">' + badges + '</span>' : ''}</span>`;
         },
@@ -999,9 +1015,19 @@
         formatter: cell => `<span class="badge badge--gray">${cell.getValue() || '—'}</span>`,
       },
       {
-        title: 'Size', field: 'suggested_risk_pct', minWidth: 58, hozAlign: 'right', sorter: 'number',
-        headerTooltip: 'Suggested position size — % of your total portfolio to risk on this trade, based on your risk stance.',
-        formatter: cell => cell.getValue() != null ? `<span class="num">${Number(cell.getValue()).toFixed(2)}%</span>` : '—',
+        title: 'Size', field: 'suggested_risk_pct', minWidth: 68, hozAlign: 'right', sorter: 'number',
+        headerTooltip: 'Suggested position size — % of your total portfolio to risk on this trade. Reduced automatically for gap risk (overnight/weekend/earnings exposure).',
+        formatter(cell) {
+          const rec = cell.getRow().getData();
+          const v = cell.getValue();
+          if (v == null) return '—';
+          const sizeStr = `<span class="num">${Number(v).toFixed(2)}%</span>`;
+          const lvl = rec.gap_risk_level;
+          if (!lvl || lvl === 'low') return sizeStr;
+          const col = lvl === 'high' ? '#fca5a5' : '#fcd34d';
+          const tip = escapeAttr('Sizing reduced for gap risk: ' + (rec.gap_risk_note || lvl));
+          return sizeStr + `<div style="font-size:9px;color:${col};margin-top:1px;" title="${tip}">gap ${lvl}</div>`;
+        },
       },
       {
         title: 'Expiry', field: 'expiry_date', minWidth: 120, sorter: 'string',

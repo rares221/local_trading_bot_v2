@@ -505,3 +505,44 @@ def set_circuit_breaker_config(
         data["drawdown_gate_r"] = max(1.0, float(drawdown_gate_r))
     _save_prefs(data)
     return get_circuit_breaker_config()
+
+
+# ---------------------------------------------------------------------------
+# Gap Risk config
+# ---------------------------------------------------------------------------
+_DEFAULT_GAP_RISK_ENABLED = True
+_DEFAULT_GAP_RISK_MAX_PENALTY = 0.50  # sizing can't drop below 50% of calculated value
+
+
+def get_gap_risk_config() -> dict[str, Any]:
+    """
+    Return gap risk settings:
+    - gap_risk_enabled: master switch (default True)
+    - gap_risk_max_penalty: floor for the gap sizing multiplier (default 0.50)
+      i.e. sizing is never reduced by more than 50% due to gap risk alone
+    """
+    data = _load_prefs()
+    enabled = bool(data.get("gap_risk_enabled", _DEFAULT_GAP_RISK_ENABLED))
+    try:
+        max_pen = float(data.get("gap_risk_max_penalty", _DEFAULT_GAP_RISK_MAX_PENALTY))
+        max_pen = max(0.1, min(1.0, max_pen))
+    except (TypeError, ValueError):
+        max_pen = _DEFAULT_GAP_RISK_MAX_PENALTY
+    return {
+        "gap_risk_enabled": enabled,
+        "gap_risk_max_penalty": max_pen,
+    }
+
+
+def set_gap_risk_config(
+    enabled: bool | None = None,
+    max_penalty: float | None = None,
+) -> dict[str, Any]:
+    """Persist gap risk settings. Returns current config."""
+    data = _load_prefs()
+    if enabled is not None:
+        data["gap_risk_enabled"] = bool(enabled)
+    if max_penalty is not None:
+        data["gap_risk_max_penalty"] = max(0.1, min(1.0, float(max_penalty)))
+    _save_prefs(data)
+    return get_gap_risk_config()

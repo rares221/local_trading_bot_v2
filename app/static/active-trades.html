@@ -60,6 +60,26 @@
       font-size: 12px; color: #fca5a5;
     }
 
+    /* Gap risk badge */
+    .badge--gap-high {
+      background: rgba(239,68,68,.15); color: #fca5a5;
+      border: 1px solid rgba(239,68,68,.35);
+      font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 5px; letter-spacing: .03em;
+    }
+    .badge--gap-medium {
+      background: rgba(234,179,8,.13); color: #fde68a;
+      border: 1px solid rgba(234,179,8,.3);
+      font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 5px; letter-spacing: .03em;
+    }
+    /* Gap risk strip below earnings strip */
+    .gap-strip {
+      display: flex; align-items: center; gap: 8px;
+      padding: 7px 16px;
+      background: rgba(234,179,8,.07);
+      border-bottom: 1px solid rgba(234,179,8,.18);
+      font-size: 12px; color: #fde68a;
+    }
+
     /* ── Levels 4-column grid ── */
     .trade-levels {
       display: grid; grid-template-columns: 1fr 1fr 1fr 1fr;
@@ -603,6 +623,18 @@
       </div>`;
     }
 
+    function gapBadge(level) {
+      if (!level || level === 'low') return '';
+      const cls = level === 'high' ? 'badge--gap-high' : 'badge--gap-medium';
+      return `<span class="${cls}" title="Gap risk: overnight price gaps may cause slippage beyond your stop loss">GAP ${level.toUpperCase()}</span>`;
+    }
+    function gapStrip(level, note) {
+      if (!level || level === 'low') return '';
+      const icon = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>`;
+      const msg = note || 'This asset has elevated overnight gap risk. Price may open significantly past your stop loss.';
+      return `<div class="gap-strip">${icon}<strong>Gap risk ${level}.</strong> ${msg}</div>`;
+    }
+
     // ── Lightweight Charts: state ──────────────────────────────────────────────
     let tradesData = [];
     const chartInstances = {};
@@ -823,9 +855,11 @@
             <span class="badge-sep"></span>
             ${phaseBadge(t.trade_phase)}${be}
             ${t.near_earnings ? '<span class="badge-sep"></span>' + earningsBadge(t.near_earnings, t.days_to_earnings) : ''}
+            ${t.gap_risk_level && t.gap_risk_level !== 'low' ? '<span class="badge-sep"></span>' + gapBadge(t.gap_risk_level) : ''}
           </div>
         </div>
-        ${earningsStrip(t.near_earnings, t.days_to_earnings)}`;
+        ${earningsStrip(t.near_earnings, t.days_to_earnings)}
+        ${gapStrip(t.gap_risk_level, t.gap_risk_note)}`;
 
       /* Levels grid */
       h += `<div class="trade-levels">`;
