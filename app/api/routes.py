@@ -19,6 +19,29 @@ from app.models.daily_briefing import DailyBriefing
 
 logger = logging.getLogger(__name__)
 
+# Module-level cache for yfinance short names (persists for process lifetime; names rarely change)
+_yf_short_name_cache: dict[str, str] = {}
+
+def _get_short_name(symbol: str | None, asset_id: str) -> str | None:
+    """Fetch instrument short name from yfinance with in-memory caching. Never raises."""
+    if not symbol:
+        symbol = asset_id.upper()
+    if symbol in _yf_short_name_cache:
+        return _yf_short_name_cache[symbol]
+    try:
+        import yfinance as yf
+        info = yf.Ticker(symbol).fast_info
+        name = getattr(info, "description", None) or None
+        # fast_info doesn't have shortName; fall back to .info (cached by yfinance internally)
+        if not name:
+            full = yf.Ticker(symbol).info
+            name = full.get("shortName") or full.get("longName") or None
+        if name:
+            _yf_short_name_cache[symbol] = name
+        return name
+    except Exception:
+        return None
+
 DISCLAIMER = (
     "This analysis is for educational and research purposes only. Not financial advice. "
     "Past performance does not guarantee future results. Consult qualified financial professionals "
@@ -726,10 +749,12 @@ async def list_active_trades(
 
     # Earnings proximity: cached per-ticker, safe to call for every trade
     from app.services.earnings_calendar import is_near_earnings as _is_near_earnings
-    from app.core.preferences import get_earnings_calendar_config
+    from app.core.preferences import get_earnings_calendar_config, get_gap_risk_config
+    from app.services.recommendations.engine import _compute_gap_risk
     from app.jobs.scheduler import _gap_risk_by_symbol
     _earnings_cfg = get_earnings_calendar_config()
     _earnings_window = _earnings_cfg["earnings_window_days"]
+    _gap_cfg = get_gap_risk_config()
 
     for t in trades:
         rec = t.recommendation
@@ -748,10 +773,42 @@ async def list_active_trades(
             except Exception:
                 pass
 
-        # Gap risk: read from scheduler cache (populated every 2h by job_update_active_trades)
-        _gap_data = _gap_risk_by_symbol.get(symbol, {}) if symbol else {}
-        gap_risk_level = _gap_data.get("level", "low")
-        gap_risk_note = _gap_data.get("note", "")
+        # Gap risk: use scheduler cache when available (full computation with snap data);
+        # fall back to lightweight inline computation (factors 2-5, no snap needed).
+        # getattr(None, ..., None) is safe — Factor 1 simply won't fire without snap.
+        _gap_cached = _gap_risk_by_symbol.get(symbol) if symbol else None
+        if _gap_cached:
+            gap_risk_level = _gap_cached["level"]
+            gap_risk_note = _gap_cached["note"]
+        elif rec and _gap_cfg.get("gap_risk_enabled", True):
+            try:
+                _expiry_days = (t.expiry - date.today()).days if t.expiry else 7
+                gap_risk_level, _, gap_risk_note = _compute_gap_risk(
+                    snap=None,  # no snap in route context; Factor 1 skipped
+                    expiry_days=max(0, _expiry_days),
+                    near_earnings=near_earnings,
+                    category=rec.asset_category,
+                    today=date.today(),
+                    max_penalty=_gap_cfg.get("gap_risk_max_penalty", 0.50),
+                )
+            except Exception:
+                gap_risk_level = "low"
+                gap_risk_note = ""
+        else:
+            gap_risk_level = "low"
+            gap_risk_note = ""
+
+        # Short name: use cache-first lookup (non-blocking for cached entries)
+        short_name = None
+        if rec:
+            cached_sym = symbol or rec.asset_id.upper()
+            if cached_sym in _yf_short_name_cache:
+                short_name = _yf_short_name_cache[cached_sym]
+            else:
+                try:
+                    short_name = await asyncio.to_thread(_get_short_name, symbol, rec.asset_id)
+                except Exception:
+                    pass
 
         items.append({
             "id": t.id,
@@ -761,6 +818,7 @@ async def list_active_trades(
             "position_fraction": getattr(t, "position_fraction", 1.0) or 1.0,
             "asset_id": rec.asset_id if rec else None,
             "asset_category": rec.asset_category if rec else None,
+            "short_name": short_name,
             "buy_in_price": rec.buy_in_price if rec else None,
             "direction": getattr(rec, "direction", "long") if rec else "long",
             "risk_tier": rec.risk_tier if rec else None,

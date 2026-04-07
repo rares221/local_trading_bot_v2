@@ -39,6 +39,7 @@
     }
     .trade-header-left { display: flex; align-items: center; gap: 10px; }
     .trade-asset { font-size: 1.25rem; font-weight: 700; letter-spacing: -.025em; color: #f8fafc; }
+    .trade-asset-name { font-size: 12px; color: rgba(248,250,252,.4); font-weight: 400; margin-top: 1px; }
     .trade-header-badges { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
     .badge-sep { width: 1px; height: 16px; background: rgba(255,255,255,.12); flex-shrink: 0; }
     /* Earnings warning badge */
@@ -59,6 +60,36 @@
       border-bottom: 1px solid rgba(239,68,68,.2);
       font-size: 12px; color: #fca5a5;
     }
+
+    /* ── Delayed tooltip ─────────────────────────────────────────────────────── */
+    .gap-tooltip-anchor { position: relative; display: inline-block; }
+    .gap-tooltip {
+      display: none;
+      position: absolute;
+      bottom: calc(100% + 8px);
+      left: 50%;
+      transform: translateX(-50%);
+      width: 260px;
+      background: #1e293b;
+      border: 1px solid rgba(234,179,8,.35);
+      border-radius: 8px;
+      padding: 10px 13px;
+      font-size: 12px; line-height: 1.5; color: #cbd5e1;
+      z-index: 999;
+      pointer-events: none;
+      box-shadow: 0 8px 24px rgba(0,0,0,.5);
+    }
+    .gap-tooltip::after {
+      content: '';
+      position: absolute;
+      top: 100%; left: 50%;
+      transform: translateX(-50%);
+      border: 6px solid transparent;
+      border-top-color: rgba(234,179,8,.35);
+    }
+    .gap-tooltip strong { color: #fde68a; display: block; margin-bottom: 4px; }
+    .gap-tooltip-anchor:hover .gap-tooltip { display: block; animation: tooltip-in .15s ease; }
+    @keyframes tooltip-in { from { opacity:0; transform: translateX(-50%) translateY(4px); } to { opacity:1; transform: translateX(-50%) translateY(0); } }
 
     /* Gap risk badge */
     .badge--gap-high {
@@ -526,6 +557,34 @@
       font-size: 10px; text-transform: uppercase; letter-spacing: .07em;
       color: rgba(248,250,252,.35);
     }
+
+    /* ── Market Context Strip ── */
+    .at-mkt-strip {
+      display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+      margin-top: 16px; padding-top: 14px;
+      border-top: 1px solid rgba(255,255,255,.06);
+    }
+    .at-mkt-label {
+      font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em;
+      color: rgba(248,250,252,.3); margin-right: 4px;
+    }
+    .at-mkt-chip {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 4px 10px; border-radius: 6px; border: 1px solid;
+      font-size: 12px; font-weight: 600; line-height: 1;
+    }
+    .at-mkt-chip--regime-risk_on   { background: rgba(16,185,129,.12); border-color: rgba(16,185,129,.3); color: #6ee7b7; }
+    .at-mkt-chip--regime-cautious  { background: rgba(245,158,11,.12);  border-color: rgba(245,158,11,.3);  color: #fcd34d; }
+    .at-mkt-chip--regime-risk_off  { background: rgba(239,68,68,.12);   border-color: rgba(239,68,68,.3);   color: #fca5a5; }
+    .at-mkt-chip--regime-unknown   { background: rgba(248,250,252,.06); border-color: rgba(255,255,255,.1); color: rgba(248,250,252,.5); }
+    .at-mkt-chip--vix-low      { background: rgba(16,185,129,.1);  border-color: rgba(16,185,129,.2); color: #6ee7b7; }
+    .at-mkt-chip--vix-elevated { background: rgba(245,158,11,.1);  border-color: rgba(245,158,11,.2); color: #fcd34d; }
+    .at-mkt-chip--vix-high     { background: rgba(239,68,68,.1);   border-color: rgba(239,68,68,.2);  color: #fca5a5; }
+    .at-mkt-chip--vix-extreme  { background: rgba(239,68,68,.18);  border-color: rgba(239,68,68,.4);  color: #f87171; }
+    .at-mkt-chip--neutral      { background: rgba(248,250,252,.06); border-color: rgba(255,255,255,.08); color: rgba(248,250,252,.55); }
+    .at-mkt-chip--up           { background: rgba(16,185,129,.1);  border-color: rgba(16,185,129,.2); color: #6ee7b7; }
+    .at-mkt-chip--down         { background: rgba(239,68,68,.1);   border-color: rgba(239,68,68,.2);  color: #fca5a5; }
+    .at-mkt-sep { width: 1px; height: 14px; background: rgba(255,255,255,.1); flex-shrink: 0; }
   </style>
 </head>
 <body>
@@ -552,6 +611,8 @@
         </button>
         <span class="at-refresh-hint">Recalculates SL/TP from latest prices, evaluates signal alignment, then reloads.</span>
       </div>
+      <div class="at-mkt-strip" id="at-mkt-strip" style="display:none;"></div>
+
       <div class="at-stats-row" id="at-stats" style="display:none;">
         <div class="at-stat">
           <span class="at-stat-value" id="at-stat-open">—</span>
@@ -623,10 +684,38 @@
       </div>`;
     }
 
+    // Delayed tooltip: CSS hover shows it immediately; JS delays the display using animation-delay trick via class toggle.
+    // We use a data-delay approach: mouseenter starts a timer, mouseleave cancels it.
+    function initGapTooltips() {
+      document.querySelectorAll('.gap-tooltip-anchor').forEach(el => {
+        let timer = null;
+        const tip = el.querySelector('.gap-tooltip');
+        if (!tip) return;
+        tip.style.display = 'none';
+        el.addEventListener('mouseenter', () => {
+          timer = setTimeout(() => { tip.style.display = 'block'; }, 3000);
+        });
+        el.addEventListener('mouseleave', () => {
+          clearTimeout(timer);
+          tip.style.display = 'none';
+        });
+      });
+    }
+
     function gapBadge(level) {
       if (!level || level === 'low') return '';
       const cls = level === 'high' ? 'badge--gap-high' : 'badge--gap-medium';
-      return `<span class="${cls}" title="Gap risk: overnight price gaps may cause slippage beyond your stop loss">GAP ${level.toUpperCase()}</span>`;
+      const levelLabel = level === 'high' ? 'HIGH' : 'MEDIUM';
+      const tipText = level === 'high'
+        ? 'Overnight gap risk is <strong>HIGH</strong>. This means the market could open far past your stop loss — you might lose significantly more than 1R on a single bad night. Consider reducing position size or closing before weekends/earnings.'
+        : 'Overnight gap risk is <strong>MEDIUM</strong>. Markets sometimes open past your stop loss level due to after-hours news. Your actual loss on a gap night could be larger than planned. Factor this into your position size.';
+      return `<span class="gap-tooltip-anchor">
+        <span class="${cls}">GAP ${levelLabel}</span>
+        <div class="gap-tooltip">
+          <strong>What is gap risk?</strong>
+          When markets close overnight or over the weekend, news can move the price significantly. If bad news hits, the market can "gap" open — meaning the first trade of the day happens far below your stop loss, and you exit at that worse price, not at your stop. ${tipText}
+        </div>
+      </span>`;
     }
     function gapStrip(level, note) {
       if (!level || level === 'low') return '';
@@ -842,7 +931,10 @@
       h += `
         <div class="trade-header">
           <div class="trade-header-left">
-            <span class="trade-asset">${esc(t.asset_id || '')}</span>
+            <div>
+              <span class="trade-asset">${esc(t.asset_id || '')}</span>
+              ${t.short_name ? `<div class="trade-asset-name">${esc(t.short_name)}</div>` : ''}
+            </div>
             ${t.asset_category ? `<span class="badge badge--gray" style="font-size:11px;text-transform:uppercase;letter-spacing:.04em;">${esc(t.asset_category)}</span>` : ''}
             ${t.strategy_leg && t.strategy_leg !== 'vanilla' ? `<span class="badge badge--gray" style="font-size:10px;max-width:200px;white-space:normal;line-height:1.2;">${esc(t.strategy_label || t.strategy_leg)}</span>` : ''}
           </div>
@@ -981,6 +1073,65 @@
       }
     }
 
+    async function loadMarketContext() {
+      const strip = document.getElementById('at-mkt-strip');
+      if (!strip) return;
+      try {
+        const r = await fetch('/api/market/context');
+        if (!r.ok) return;
+        const d = await r.json();
+
+        const regime      = d.regime || 'unknown';
+        const vixLevel    = d.vix_level;
+        const vixRegime   = (d.vix_regime || 'unknown').toLowerCase();
+        const spxTrend    = (d.spx_trend || '').toLowerCase();
+        const dxy         = d.dxy || {};
+
+        const REGIME_LABEL = { risk_on: 'Risk On', cautious: 'Cautious', risk_off: 'Risk Off' };
+        const REGIME_ICON  = { risk_on: 'trending-up', cautious: 'minus', risk_off: 'trending-down' };
+        const VIX_LABEL    = { low: 'Low', elevated: 'Elevated', high: 'High', extreme: 'Extreme' };
+        const SPX_ICON     = { bullish: 'trending-up', bearish: 'trending-down', neutral: 'minus', sideways: 'minus' };
+
+        const regimeCls = 'at-mkt-chip at-mkt-chip--regime-' + (regime in REGIME_LABEL ? regime : 'unknown');
+        const regimeIcon = REGIME_ICON[regime] || 'activity';
+        const regimeLabel = REGIME_LABEL[regime] || regime;
+
+        const vixCls = 'at-mkt-chip at-mkt-chip--vix-' + (vixRegime || 'low');
+        const vixText = vixLevel != null ? 'VIX ' + parseFloat(vixLevel).toFixed(1) + ' · ' + (VIX_LABEL[vixRegime] || vixRegime) : 'VIX —';
+
+        let spxHtml = '';
+        if (spxTrend) {
+          const spxCls = spxTrend.includes('bull') ? 'at-mkt-chip at-mkt-chip--up'
+                       : spxTrend.includes('bear') ? 'at-mkt-chip at-mkt-chip--down'
+                       : 'at-mkt-chip at-mkt-chip--neutral';
+          const spxIcon = SPX_ICON[spxTrend] || 'minus';
+          const spxLabel = spxTrend.charAt(0).toUpperCase() + spxTrend.slice(1);
+          spxHtml = '<div class="at-mkt-sep"></div><div class="' + spxCls + '">' + icon(spxIcon, 11) + ' S&amp;P 500: ' + spxLabel + '</div>';
+        }
+
+        let dxyHtml = '';
+        if (dxy.available && dxy.trend) {
+          const dxyTrend = (dxy.trend || '').toLowerCase();
+          const dxyCls = dxyTrend.includes('strong') || dxyTrend === 'up'
+            ? 'at-mkt-chip at-mkt-chip--down'   // strong USD = negative for risk assets
+            : dxyTrend === 'down' || dxyTrend.includes('weak')
+            ? 'at-mkt-chip at-mkt-chip--up'
+            : 'at-mkt-chip at-mkt-chip--neutral';
+          const dxyPrice = dxy.price != null ? ' ' + parseFloat(dxy.price).toFixed(1) : '';
+          dxyHtml = '<div class="at-mkt-sep"></div><div class="' + dxyCls + '">' + icon('dollar-sign', 11) + ' DXY' + dxyPrice + ' · ' + dxy.trend + '</div>';
+        }
+
+        strip.innerHTML =
+          '<span class="at-mkt-label">Market</span>' +
+          '<div class="' + regimeCls + '">' + icon(regimeIcon, 11) + ' ' + regimeLabel + '</div>' +
+          '<div class="at-mkt-sep"></div>' +
+          '<div class="' + vixCls + '">' + icon('activity', 11) + ' ' + vixText + '</div>' +
+          spxHtml + dxyHtml;
+
+        strip.style.display = 'flex';
+      } catch (e) { /* non-critical, skip silently */ }
+    }
+
     async function loadRegimeAlerts() {
       try {
         const r = await fetch('/api/regime/status');
@@ -1028,6 +1179,7 @@
         items.forEach((t, idx) => { html += buildCard(t, idx); });
         html += '</div>';
         content.innerHTML = html;
+        initGapTooltips();
 
         // Populate hero stats
         const openCount   = items.filter(t => !t.trade_phase || !t.trade_phase.startsWith('closed')).length;
@@ -1176,6 +1328,7 @@
 
     document.getElementById('refresh-btn').addEventListener('click', () => load(true).then(() => { startPricePolling(); loadSparklines(); }));
     load(false).then(() => { startPricePolling(); loadSparklines(); });
+    loadMarketContext();
 
     // ── Backtest Quick Modal ───────────────────────────────────────────────────
     function openBtModal(assetId, category, direction, riskTier) {
