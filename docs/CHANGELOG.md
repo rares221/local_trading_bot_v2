@@ -4,6 +4,60 @@
 
 ---
 
+## 2026-04-07 — `improvements_trade_builder` (sesiunea 7)
+
+### LLM — Analiză completă + fix-uri thinking budget + plan îmbunătățiri
+
+#### Analiză și planificare
+
+**Nou: `docs/LLM_IMPROVEMENT_PLAN.md`** (rev 2)
+- Analiză completă a celor 5 prompts existente din perspectivă developer senior + trader profesionist
+- Gap-uri identificate: orizont de predicție absent, sentiment fără trend/context, confidence score netrimis la LLM, macro context gol, Volume Profile fără context de execuție, backtest grade rubric slab calibrat, lipsă streaming news, daily briefing fără LLM
+- Erori de logică: `max_tokens=200` trunchiază, `THINKING_BUDGET` hardcodat, zero validare rationale, context dict fără schemă, halucinații numerice și de news nedetectate, lipsă versionare prompts
+- **Distincție near/far horizon**: near ≤ 14 trading days (tehnice + news + events iminente), far > 14 zile (trend structural + fundamentale + macro cycle)
+- **Plan validator V1–V8**: length, truncation, direction alignment, halucinații de preț/indicatori/news/temporale, specificity score, grade consistency, horizon consistency
+- **Plan feedback loop anti-halucinație**: tabel `llm_rationale_log`, news cross-reference vs `feed_items`, metrics snapshot la entry, metrics verification la outcome, hallucination profile per model (weekly), hallucination guard injectat în prompts viitoare, few-shot cu exemple verificate
+- 9 obiecții documentate cu mitigări: cost API few-shot, false positives V4b/V4c, bootstrap problem, divergență prompts NEAR/FAR, model mai bun vs feedback loop, far horizon fără fundamentale complete, delay metrics capture, prompts mai lungi, sentiment window extinsă inexistentă
+
+#### Fix-uri implementate
+
+**Modificat: `app/services/research/llm.py`**
+- `THINKING_BUDGET = 2000` hardcodat în `generate_gap_advice` → eliminat; citește acum `thinking_budget = int(cfg.get("thinking_budget") or 0)` din config (identic cu toate celelalte funcții)
+- `_call_anthropic()`: adăugat parametru `output_buffer: int = 1024` — separă explicit bugetul de thinking de tokens-ii rezervați pentru răspuns; formula: `max_tokens = thinking_budget + output_buffer`
+- `max_tokens` rationale: 200 → **400** pentru OpenAI, Anthropic (output_buffer=400), OpenRouter; previne trunchierile frecvente pe modele verbose
+- `generate_backtest_insight`: output buffer ridicat la **1500** (JSON complex poate depăși 1024 tokens)
+- `generate_gap_advice`: output buffer **150** tokens (25 cuvinte + marjă), `max_tokens` non-thinking: 80 → 100
+
+**Modificat: `app/services/research/providers.py`**
+- `ProviderDef` dataclass: câmp nou `max_thinking_budget: int = 0`
+- Anthropic: `max_thinking_budget=32000` (claude-opus-4-6/sonnet-4-6 suportă extended thinking până la 32K tokens)
+- OpenAI / Ollama / OpenRouter: `max_thinking_budget=0` (nu suportă thinking tokens)
+- Funcție nouă: `get_max_thinking_budget(provider_id)` — returnează plafonul provider-ului
+- Funcție nouă: `clamp_thinking_budget(provider_id, requested)` — capsează automat un budget configurat la maximul provider-ului; returnează 0 dacă provider-ul nu suportă thinking
+
+**Modificat: `app/core/preferences.py`**
+- `get_research_llm_config()`: aplică `clamp_thinking_budget()` după citirea valorii — budgetele peste maximul provider-ului sunt silențios capsate
+- `get_research_llm_config()`: returnează câmp nou `thinking_budget_max` — plafonul provider-ului curent; folosit pentru validare UI (slider max)
+- `set_research_llm_config()`: parametru nou `thinking_budget: int | None` — permite salvarea budgetului în `preferences.json`; aplică `clamp_thinking_budget()` înainte de persistare
+
+**Modificat: `app/api/routes.py`**
+- `PreferencesUpdate`: câmp nou `research_llm_thinking_budget: int | None` (0 = disabled, max depinde de provider)
+- `PATCH /preferences`: pasează `thinking_budget` la `set_research_llm_config()` când e specificat
+
+#### Ierarhia de prioritate pentru `thinking_budget` (de la maxim la minim)
+
+```
+preferences.json["research_llm_thinking_budget"]   ← PATCH /preferences sau editare manuală
+    ↓ fallback dacă absent
+.env RESEARCH_LLM_THINKING_BUDGET=16000             ← override la restart container
+    ↓ fallback dacă .env nu setează
+config.py default: research_llm_thinking_budget = 0 ← thinking dezactivat
+```
+
+Bugetul configurat este capsat automat la `max_thinking_budget` al provider-ului (32000 pentru Anthropic, 0 pentru restul).
+
+---
+
 ## 2026-04-07 — `improvements_trade_builder` (sesiunea 6)
 
 ### Analiza impact PRIORITATE 7 și 8 — decizie pendintă

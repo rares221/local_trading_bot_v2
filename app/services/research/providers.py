@@ -15,6 +15,8 @@ class ProviderDef:
     api_key_env_var: Optional[str] = None
     """Default model for this provider when not specified in config."""
     default_model: str = ""
+    """Maximum extended thinking budget in tokens. 0 = provider does not support thinking."""
+    max_thinking_budget: int = 0
 
 
 PROVIDERS: list[ProviderDef] = [
@@ -23,26 +25,49 @@ PROVIDERS: list[ProviderDef] = [
         display_name="OpenAI",
         api_key_env_var="OPENAI_API_KEY",
         default_model="gpt-4o-mini",
+        max_thinking_budget=0,  # standard models; reasoning models (o1/o3/o4-mini) not yet supported
     ),
     ProviderDef(
         id="anthropic",
         display_name="Anthropic",
         api_key_env_var="ANTHROPIC_API_KEY",
-        default_model="claude-3-5-haiku-20241022",
+        default_model="claude-opus-4-6",
+        # claude-opus-4-6 / claude-sonnet-4-6 support extended thinking up to 32000 tokens.
+        # Practical cap at 16000 for latency/cost balance; raise in .env to go higher.
+        max_thinking_budget=32000,
     ),
     ProviderDef(
         id="ollama",
         display_name="Ollama",
         api_key_env_var=None,
         default_model="llama3.1",
+        max_thinking_budget=0,  # local models do not support thinking tokens
     ),
     ProviderDef(
         id="openrouter",
         display_name="OpenRouter",
         api_key_env_var="OPENROUTER_API_KEY",
         default_model="openai/gpt-4o-mini",
+        max_thinking_budget=0,  # depends on routed model; not enforced here
     ),
 ]
+
+
+def get_max_thinking_budget(provider_id: str) -> int:
+    """Return the maximum thinking budget in tokens for this provider. 0 = not supported."""
+    p = get_provider_by_id(provider_id)
+    return p.max_thinking_budget if p else 0
+
+
+def clamp_thinking_budget(provider_id: str, requested: int) -> int:
+    """
+    Clamp a requested thinking_budget to the provider's maximum.
+    Returns 0 if the provider does not support extended thinking.
+    """
+    max_budget = get_max_thinking_budget(provider_id)
+    if max_budget == 0:
+        return 0
+    return max(0, min(requested, max_budget))
 
 
 def get_provider_by_id(provider_id: str) -> Optional[ProviderDef]:

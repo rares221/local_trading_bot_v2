@@ -155,8 +155,9 @@ async def _call_openrouter(
 
 
 async def _call_anthropic(
-    model: str, system: str, user: str, api_key: str, *, max_tokens: int = 200,
+    model: str, system: str, user: str, api_key: str, *, max_tokens: int = 400,
     thinking_budget: int = 0,
+    output_buffer: int = 1024,
 ) -> str | None:
     import anthropic
     client = anthropic.AsyncAnthropic(api_key=api_key)
@@ -167,8 +168,9 @@ async def _call_anthropic(
         messages=[{"role": "user", "content": user}],
     )
     if thinking_budget > 0:
-        # Extended thinking: max_tokens must exceed budget; extra 1024 for the actual response
-        kwargs["max_tokens"] = thinking_budget + 1024
+        # Extended thinking: max_tokens = budget + output buffer.
+        # output_buffer controls how many tokens the actual response can use.
+        kwargs["max_tokens"] = thinking_budget + output_buffer
         kwargs["thinking"] = {"type": "enabled", "budget_tokens": thinking_budget}
     else:
         kwargs["max_tokens"] = max_tokens
@@ -350,13 +352,16 @@ async def generate_rationale(context: dict[str, Any]) -> str | None:
 
     try:
         if provider_id == "openai":
-            return await _call_openai(model, system, user, api_key or "", max_tokens=200)
+            return await _call_openai(model, system, user, api_key or "", max_tokens=400)
         if provider_id == "anthropic":
-            return await _call_anthropic(model, system, user, api_key or "", max_tokens=200, thinking_budget=thinking_budget)
+            return await _call_anthropic(
+                model, system, user, api_key or "",
+                max_tokens=400, thinking_budget=thinking_budget, output_buffer=400,
+            )
         if provider_id == "ollama":
             return await _call_ollama(model, system, user, ollama_base_url)
         if provider_id == "openrouter":
-            return await _call_openrouter(model, system, user, api_key or "", max_tokens=200)
+            return await _call_openrouter(model, system, user, api_key or "", max_tokens=400)
     except Exception as exc:
         import logging
         logging.getLogger(__name__).warning("LLM call failed (%s/%s): %s", provider_id, model, exc)
@@ -556,17 +561,17 @@ async def generate_backtest_insight(
     import logging as _log
     _logger = _log.getLogger(__name__)
 
-    # Anthropic with extended thinking needs higher max_tokens
     thinking_budget = int(cfg.get("thinking_budget") or 0)
-    anthropic_max_tokens = (thinking_budget + 1024) if (provider_id == "anthropic" and thinking_budget > 0) else 1200
+    # Backtest insight JSON can be verbose — use 1500 token output buffer.
+    _BACKTEST_OUTPUT_BUFFER = 1500
 
     try:
         if provider_id == "openai":
-            raw = await _call_openai(model, _BACKTEST_INSIGHT_SYSTEM, user_content, api_key or "", max_tokens=1200)
+            raw = await _call_openai(model, _BACKTEST_INSIGHT_SYSTEM, user_content, api_key or "", max_tokens=1500)
         elif provider_id == "anthropic":
             raw = await _call_anthropic(
                 model, _BACKTEST_INSIGHT_SYSTEM, user_content, api_key or "",
-                max_tokens=anthropic_max_tokens, thinking_budget=thinking_budget,
+                max_tokens=1500, thinking_budget=thinking_budget, output_buffer=_BACKTEST_OUTPUT_BUFFER,
             )
         elif provider_id == "ollama":
             combined = f"{_BACKTEST_INSIGHT_SYSTEM.strip()}\n\n---\n\n{user_content.strip()}"
@@ -671,22 +676,24 @@ async def generate_gap_advice(context: dict[str, Any]) -> str | None:
 
     ollama_base_url = (cfg.get("ollama_base_url") or "").strip() or (settings.ollama_base_url or "http://localhost:11434")
 
-    # Extended thinking for Anthropic (small budget — focused question)
-    THINKING_BUDGET = 2000
+    # Read thinking budget from config — same source as all other prompts.
+    # Output for gap advice is short (~25 words), so 150 tokens is a generous buffer.
+    thinking_budget = int(cfg.get("thinking_budget") or 0)
+    _GAP_OUTPUT_BUFFER = 150
 
     try:
         if provider_id == "openai":
-            return await _call_openai(model, _GAP_ADVICE_SYSTEM, user_content, api_key or "", max_tokens=80)
+            return await _call_openai(model, _GAP_ADVICE_SYSTEM, user_content, api_key or "", max_tokens=100)
         elif provider_id == "anthropic":
             return await _call_anthropic(
                 model, _GAP_ADVICE_SYSTEM, user_content, api_key or "",
-                max_tokens=THINKING_BUDGET + 80, thinking_budget=THINKING_BUDGET,
+                max_tokens=100, thinking_budget=thinking_budget, output_buffer=_GAP_OUTPUT_BUFFER,
             )
         elif provider_id == "ollama":
             combined = f"{_GAP_ADVICE_SYSTEM.strip()}\n\n---\n\n{user_content.strip()}"
             return await _call_ollama(model, "", combined, ollama_base_url, num_predict=60, timeout=60.0)
         elif provider_id == "openrouter":
-            return await _call_openrouter(model, _GAP_ADVICE_SYSTEM, user_content, api_key or "", max_tokens=80)
+            return await _call_openrouter(model, _GAP_ADVICE_SYSTEM, user_content, api_key or "", max_tokens=100)
     except Exception as exc:
         _logger.warning("Gap advice LLM call failed (%s/%s): %s", provider_id, model, exc)
 

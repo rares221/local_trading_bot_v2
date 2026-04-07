@@ -1533,6 +1533,7 @@ class PreferencesUpdate(BaseModel):
     research_llm_provider: str | None = None
     research_llm_model: str | None = None
     ollama_base_url: str | None = None
+    research_llm_thinking_budget: int | None = None  # 0 = disabled; max depends on provider (Anthropic: up to 32000)
     risk_budget_1r: float | None = None
     sentiment_half_life_hours: float | None = None
     confidence_threshold_risk_on: int | None = None
@@ -1561,11 +1562,17 @@ async def update_preferences(body: PreferencesUpdate) -> dict[str, Any]:
     try:
         if body.preferred_risk is not None:
             set_preferred_risk(body.preferred_risk)
-        if body.research_llm_provider is not None or body.research_llm_model is not None or body.ollama_base_url is not None:
+        if (
+            body.research_llm_provider is not None
+            or body.research_llm_model is not None
+            or body.ollama_base_url is not None
+            or body.research_llm_thinking_budget is not None
+        ):
             set_research_llm_config(
                 provider=body.research_llm_provider,
                 model=body.research_llm_model,
                 ollama_base_url=body.ollama_base_url,
+                thinking_budget=body.research_llm_thinking_budget,
             )
         if body.risk_budget_1r is not None:
             set_risk_budget_1r(body.risk_budget_1r)

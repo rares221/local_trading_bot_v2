@@ -64,15 +64,32 @@ def get_research_llm_config() -> dict[str, Any]:
         thinking_budget = int(data.get("research_llm_thinking_budget", settings.research_llm_thinking_budget or 0))
     except (TypeError, ValueError):
         thinking_budget = 0
+    # Clamp to provider maximum — silently caps over-specified budgets.
+    try:
+        from app.services.research.providers import clamp_thinking_budget
+        thinking_budget = clamp_thinking_budget(provider, thinking_budget)
+    except Exception:
+        thinking_budget = max(0, thinking_budget)
+    try:
+        from app.services.research.providers import get_max_thinking_budget
+        max_budget = get_max_thinking_budget(provider)
+    except Exception:
+        max_budget = 0
     return {
         "research_llm_provider": provider,
         "research_llm_model": model,
         "ollama_base_url": ollama_base_url,
-        "thinking_budget": max(0, thinking_budget),
+        "thinking_budget": thinking_budget,
+        "thinking_budget_max": max_budget,  # provider ceiling — use for UI slider / validation
     }
 
 
-def set_research_llm_config(provider: str | None = None, model: str | None = None, ollama_base_url: str | None = None) -> dict[str, Any]:
+def set_research_llm_config(
+    provider: str | None = None,
+    model: str | None = None,
+    ollama_base_url: str | None = None,
+    thinking_budget: int | None = None,
+) -> dict[str, Any]:
     """Save research LLM preferences. Omit a key to leave unchanged. Returns current full config."""
     data = _load_prefs()
     if provider is not None:
@@ -84,6 +101,15 @@ def set_research_llm_config(provider: str | None = None, model: str | None = Non
         data["research_llm_model"] = model.strip()
     if ollama_base_url is not None:
         data["ollama_base_url"] = ollama_base_url.strip() or "http://localhost:11434"
+    if thinking_budget is not None:
+        # Clamp to provider max before persisting.
+        resolved_provider = data.get("research_llm_provider") or settings.research_llm_provider or "openai"
+        try:
+            from app.services.research.providers import clamp_thinking_budget
+            thinking_budget = clamp_thinking_budget(resolved_provider, thinking_budget)
+        except Exception:
+            thinking_budget = max(0, thinking_budget)
+        data["research_llm_thinking_budget"] = thinking_budget
     _save_prefs(data)
     return get_research_llm_config()
 
