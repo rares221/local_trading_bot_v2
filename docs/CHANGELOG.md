@@ -1,0 +1,163 @@
+# Changelog — Local Trading Bot v2
+
+> Format: data · branch · ce s-a schimbat și de ce
+
+---
+
+## 2026-04-07 — `improvements_trade_builder`
+
+### Earnings Calendar (PRIORITATE 2)
+
+**Nou: `app/services/earnings_calendar.py`**
+- Fetch data de earnings per ticker via `yfinance.Ticker.calendar`
+- Cache în memorie cu TTL 24h — nu bate Yahoo la fiecare batch
+- `get_next_earnings(symbol)` → `Optional[date]`
+- `is_near_earnings(symbol, window_days)` → `(bool, Optional[int])`
+
+**Modificat: `app/services/recommendations/engine.py`**
+- `Candidate` dataclass: câmpuri noi `near_earnings: bool`, `days_to_earnings: Optional[int]`
+- `_build_candidate()`: penalizare `-15` confidence pentru stocks în fereastra ±2 zile de earnings
+- Dacă `earnings_skip_enabled=True`: candidatul e eliminat complet din batch (skip)
+- Note în `market_regime_note`: `"earnings ±Nd"`
+
+**Modificat: `app/core/preferences.py`**
+- `get_earnings_calendar_config()` / `set_earnings_calendar_config()`
+- Chei noi: `earnings_window_days` (default 2), `earnings_confidence_penalty` (default 15), `earnings_skip_enabled` (default False)
+
+**Modificat: `app/api/routes.py`**
+- `/api/recommendations` — câmpuri noi `near_earnings`, `days_to_earnings` per recomandare
+- `/api/active-trades` — câmpuri noi `near_earnings`, `days_to_earnings` per trade activ (stocks only, folosind cache-ul existent)
+
+**Modificat: `app/static/recommendations.html`**
+- Badge auriu `EARNINGS ±Nd` pe simbolul acțiunii în tabelul de recomandări
+
+**Modificat: `app/static/active-trades.html`**
+- Badge pulsant roșu `EARNINGS +Nd` în header-ul cardului de trade
+- Strip de avertizare sub header cu mesaj explicit de gap risk când `near_earnings=true`
+- CSS: `.badge--earnings-warn` (animație pulse), `.earnings-strip`
+
+---
+
+### Circuit Breaker (PRIORITATE 3)
+
+**Nou: `app/services/circuit_breaker.py`**
+- `CircuitBreakerState` dataclass: `mode`, `rolling_loss_r`, `consecutive_losses`, `drawdown_r`, `triggered_by`
+- `compute_state(db_trades, ...)` — evaluează 3 gate-uri independente:
+  1. **rolling_loss_gate** — R-multipli pierduți în ultimele 24h (nu calendar day)
+  2. **consecutive_gate** — streak de `hit_sl`; `expired`/`manual` sunt neutre; doar `hit_tp` resetează
+  3. **drawdown_gate** — peak-to-trough pe curba cumulativă R (tot istoricul)
+- Moduri: `normal` / `defensive` (conf -10, sizing ×0.7) / `paused` (batch gol)
+
+**Modificat: `app/services/recommendations/engine.py`**
+- `build_daily_candidates()` — parametru nou `closed_trades: Optional[list]`
+- Dacă CB e `paused` → returnează `[]` imediat
+- Dacă CB e `defensive` → aplică penalizare confidence și sizing după ce batch-ul e construit
+
+**Modificat: `app/jobs/scheduler.py`**
+- `job_run_batch()` — fetchează closed trades și le pasează la `build_daily_candidates(closed_trades=...)`
+- `job_update_active_trades()` — evaluează CB la fiecare run (2h); loghează și notifică dacă mode != normal
+
+**Modificat: `app/core/preferences.py`**
+- `get_circuit_breaker_config()` / `set_circuit_breaker_config()`
+- Chei noi: `circuit_breaker_enabled` (default True), `max_consecutive_losses` (default 5), `max_daily_loss_r` (default 3.0), `drawdown_gate_r` (default 8.0)
+
+**Modificat: `app/api/routes.py`**
+- `GET /api/circuit-breaker` — endpoint nou: mode curent, stats, config, triggered_by
+
+**Modificat: `app/static/recommendations.html`**
+- Banner `⛔ PAUSED` (roșu) sau `⚠️ DEFENSIVE` (galben) deasupra tabelului când CB e activ
+- CSS: `.alert--cb-defensive`, `.alert--cb-paused`
+
+---
+
+### Fix-uri circuit breaker (sesiunea 2 — 2026-04-07)
+
+**Bug fix: `app/services/circuit_breaker.py`**
+- `expired` și `manual` nu mai rup streak-ul de pierderi consecutive — sunt tratate ca neutre
+- Înainte: orice outcome non-`hit_sl` reseta streak-ul → un trade expirat masca o serie de pierderi
+- Acum: doar `hit_tp` (victorie confirmată) resetează streak-ul
+
+**Bug fix: rolling 24h window în loc de calendar day**
+- Înainte: `oa_date == today` → pierderile de la 23:55 dispăreau la miezul nopții
+- Acum: `outcome_at >= now - 24h` → fereastra glisantă corectă
+
+**Nou: CB evaluat la fiecare update de active trades (2h)**
+- Înainte: CB era evaluat doar la generarea batch-ului zilnic
+- Acum: `job_update_active_trades()` calculează starea CB și loghează/notifică dacă e activ
+
+**Nou: earnings warning pe active trades**
+- `/api/active-trades` returnează `near_earnings` și `days_to_earnings` pentru fiecare trade
+- UI: badge pulsant + strip de avertizare cu mesaj de gap risk explicit
+
+---
+
+## 2026-04-06 — `improvements_trade_builder`
+
+### Backtesting — Quick Backtest (PRIORITATE 1)
+
+**Modificat: `app/services/backtesting/replay.py`**
+- `run_backtest()` — parametru nou `max_outcome_bars: int`
+- `_simulate_signal_outcome()` — acceptă `max_bars` în loc de constanta globală
+
+**Modificat: `app/api/backtest_routes.py`**
+- `/api/backtest/quick` — redesenat complet:
+  - Fereastra fixă: ultimele 90 de zile de semnale, outcomes pe 14 bare (nu mai e 1 an)
+  - Adaugă `_compute_current_signal()` — snapshot live al motorului pentru asset-ul curent
+  - Apelează `generate_backtest_insight()` cu context curent + orizont 14 zile
+  - Returnează: `window_days=90`, `outcome_bars=14`, `current_signal`, `llm_analysis`
+
+**Modificat: `app/services/research/llm.py`**
+- `generate_backtest_insight()` — returnează `dict` structurat (nu text liber):
+  - Câmpuri: `grade` (A–F), `grade_reason`, `key_insights[]` (3 bullets), `recommendation`
+- `_BACKTEST_INSIGHT_SYSTEM` — prompt nou cu rubrică de notare și orizont explicit 14 zile
+- `_parse_backtest_insight_json()` — parser tolerant la markdown fences
+- Fix Anthropic: `max_tokens = thinking_budget + 1024` când extended thinking e activ
+
+**Modificat: `app/static/active-trades.html`**
+- Modal backtest redesenat complet:
+  - Card "ENGINE SIGNAL — TODAY": Confidence, Price, SL, TP în grid 4 coloane
+  - Grade badge colorat (A=verde, B=teal, C=amber, D=portocaliu, F=roșu) cu `grade_reason`
+  - Grid 4 metrici: Win Rate, Avg Profit/Loss, Sharpe Ratio, Max Drawdown
+  - Stacked bar W/L/Expired cu legendă
+  - AI Key Insights ca bullet list cu chevron icons
+  - Confidence buckets cu bare colorate
+  - Recommendation box cu border amber
+- Fix overflow: `max-height: 90vh` + flexbox pe modal + `overflow-y: auto` pe body
+- Fix SL/TP bug: `rangeBar()` și live price cell folosesc `origTP` în loc de `sugTP || origTP`
+
+**Modificat: `app/jobs/scheduler.py`**
+- `trade.suggested_tp = trade.current_tp` — TP-ul per-leg nu mai e suprascris de ATR recalculat
+- Același fix în `ActiveTradeLevel` logging
+
+**Modificat: `docs/IMPROVEMENT_PLAN.md`**
+- PRIORITATE 1 marcată ✅ DONE 2026-04-06
+- PRIORITATE 2 marcată ✅ DONE 2026-04-07
+- PRIORITATE 3 marcată ✅ DONE 2026-04-07
+
+---
+
+## 2026-04-06 — `improvements_trade_builder` (sesiunea 1)
+
+### Infrastructură
+
+**Nou: TimescaleDB**
+- `docker-compose.yml` — serviciu separat `trading-timescaledb` (PostgreSQL 16 + TimescaleDB)
+- `requirements.txt` — adăugat `asyncpg`, `psycopg2-binary`, `alembic`
+- `app/core/database.py` — suport dual-engine SQLite (dev) / PostgreSQL (prod)
+
+**Nou: Alembic migrations**
+- `alembic.ini`, `migrations/env.py`, `migrations/script.py.mako`
+- `migrations/versions/001_initial_schema.py` — toate tabelele + TimescaleDB hypertables
+- `scripts/migrate_sqlite_to_pg.py` — transfer idempotent SQLite → PostgreSQL
+
+**Modificat: `entrypoint.sh`**
+- Rulează Alembic + migrare date înainte de uvicorn
+
+### Bug fixes
+
+| Bug | Fișier | Fix |
+|-----|--------|-----|
+| Platt calibration returna `(0.0, 0.0)` la cold start → `sigmoid(0)=0.5` pentru toate | `calibration.py` | Returnează `None`; caller verifică |
+| `routes.py` apela `set_platt_params(0, 0)` necondiționat | `routes.py` | Guard pe `None` |
+| S/R snapping long: `pass` și `sl = sr_sl` inversate — SL corect ignorat | `technicals.py:632` | Logică corectată |
+| `yfinance ticker.history()` fără timeout — bloca schedulerele indefinit | `technicals.py:52` | `ThreadPoolExecutor` cu timeout 30s |

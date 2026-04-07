@@ -232,6 +232,8 @@ def _rec_to_item(r: Recommendation) -> dict:
         "shadow_b_threshold": getattr(r, "shadow_b_threshold", None),
         "shadow_b_pass": getattr(r, "shadow_b_pass", None),
         "instrument_type": getattr(r, "instrument_type", None),
+        "near_earnings": getattr(r, "near_earnings", False),
+        "days_to_earnings": getattr(r, "days_to_earnings", None),
         "engine_policy": engine_policy_to_dict(
             get_asset_class_policy(r.asset_category or "", r.asset_id or "")
         ),
@@ -719,11 +721,29 @@ async def list_active_trades(
     items = []
     from app.services.trade_strategies import strategy_label_for_leg
 
+    # Earnings proximity: cached per-ticker, safe to call for every trade
+    from app.services.earnings_calendar import is_near_earnings as _is_near_earnings
+    from app.core.preferences import get_earnings_calendar_config
+    _earnings_cfg = get_earnings_calendar_config()
+    _earnings_window = _earnings_cfg["earnings_window_days"]
+
     for t in trades:
         rec = t.recommendation
         levels_sorted = sorted(t.levels or [], key=lambda L: L.created_at)
         conf_score = getattr(rec, "confidence_score", None) if rec else None
         strat_leg = getattr(t, "strategy_leg", None) or "vanilla"
+
+        # Earnings check for stocks (cached 24h — no performance concern)
+        near_earnings = False
+        days_to_earnings = None
+        if rec and (rec.asset_category or "") == "stocks" and _earnings_window > 0:
+            try:
+                symbol = get_yf_symbol(rec.asset_category, rec.asset_id)
+                if symbol:
+                    near_earnings, days_to_earnings = _is_near_earnings(symbol, _earnings_window)
+            except Exception:
+                pass
+
         items.append({
             "id": t.id,
             "recommendation_id": t.recommendation_id,
@@ -753,6 +773,8 @@ async def list_active_trades(
             "outcome": getattr(t, "outcome", None),
             "outcome_at": (oat.isoformat() if (oat := getattr(t, "outcome_at", None)) else None),
             "closing_price": getattr(t, "closing_price", None),
+            "near_earnings": near_earnings,
+            "days_to_earnings": days_to_earnings,
             "levels": [
                 {"sl": L.sl, "tp": L.tp, "created_at": L.created_at.isoformat(), "source": L.source}
                 for L in levels_sorted
@@ -1573,6 +1595,47 @@ async def action_update_active_trades() -> dict[str, Any]:
     from app.jobs.scheduler import job_update_active_trades
     await job_update_active_trades()
     return _with_disclaimer({"ok": True, "message": "Active trades updated with latest prices and levels."})
+
+
+@router.get("/circuit-breaker")
+async def get_circuit_breaker_status(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    """
+    Current circuit breaker state: mode (normal/defensive/paused), daily loss R,
+    consecutive losses, cumulative drawdown R, and what triggered any active mode.
+    """
+    from app.services.circuit_breaker import compute_state as _cb_compute
+    from app.core.preferences import get_circuit_breaker_config
+
+    cfg = get_circuit_breaker_config()
+    result = await db.execute(select(ActiveTrade).where(ActiveTrade.outcome.isnot(None)))
+    closed_trades = result.scalars().all()
+
+    if not cfg["circuit_breaker_enabled"]:
+        return _with_disclaimer({
+            "enabled": False,
+            "mode": "normal",
+            "config": cfg,
+            "stats": {"rolling_loss_r": 0, "consecutive_losses": 0, "drawdown_r": 0},
+            "triggered_by": [],
+        })
+
+    state = _cb_compute(
+        list(closed_trades),
+        max_consecutive_losses=cfg["max_consecutive_losses"],
+        max_daily_loss_r=cfg["max_daily_loss_r"],
+        drawdown_gate_r=cfg["drawdown_gate_r"],
+    )
+    return _with_disclaimer({
+        "enabled": True,
+        "mode": state.mode,
+        "config": cfg,
+        "stats": {
+            "rolling_loss_r": state.rolling_loss_r,
+            "consecutive_losses": state.consecutive_losses,
+            "drawdown_r": state.drawdown_r,
+        },
+        "triggered_by": state.triggered_by,
+    })
 
 
 @router.post("/actions/purge-all")

@@ -397,3 +397,111 @@ def apply_non_commodity_engine_patch(patch: dict[str, Any]) -> dict[str, int | f
                 )
     _save_prefs(data)
     return get_non_commodity_engine_gates()
+
+
+# ---------------------------------------------------------------------------
+# Earnings Calendar config
+# ---------------------------------------------------------------------------
+_DEFAULT_EARNINGS_WINDOW_DAYS = 2
+_DEFAULT_EARNINGS_CONFIDENCE_PENALTY = 15
+_DEFAULT_EARNINGS_SKIP_ENABLED = False
+
+
+def get_earnings_calendar_config() -> dict[str, Any]:
+    """
+    Return earnings calendar settings:
+    - earnings_window_days: ±days around earnings to apply penalty (default 2)
+    - earnings_confidence_penalty: confidence points deducted (default 15)
+    - earnings_skip_enabled: if True, skip the candidate entirely (default False)
+    """
+    data = _load_prefs()
+    try:
+        window = max(0, int(data.get("earnings_window_days", _DEFAULT_EARNINGS_WINDOW_DAYS)))
+    except (TypeError, ValueError):
+        window = _DEFAULT_EARNINGS_WINDOW_DAYS
+    try:
+        penalty = max(0, min(50, int(data.get("earnings_confidence_penalty", _DEFAULT_EARNINGS_CONFIDENCE_PENALTY))))
+    except (TypeError, ValueError):
+        penalty = _DEFAULT_EARNINGS_CONFIDENCE_PENALTY
+    skip = bool(data.get("earnings_skip_enabled", _DEFAULT_EARNINGS_SKIP_ENABLED))
+    return {
+        "earnings_window_days": window,
+        "earnings_confidence_penalty": penalty,
+        "earnings_skip_enabled": skip,
+    }
+
+
+def set_earnings_calendar_config(
+    window_days: int | None = None,
+    confidence_penalty: int | None = None,
+    skip_enabled: bool | None = None,
+) -> dict[str, Any]:
+    """Persist earnings calendar settings. Returns current config."""
+    data = _load_prefs()
+    if window_days is not None:
+        data["earnings_window_days"] = max(0, int(window_days))
+    if confidence_penalty is not None:
+        data["earnings_confidence_penalty"] = max(0, min(50, int(confidence_penalty)))
+    if skip_enabled is not None:
+        data["earnings_skip_enabled"] = bool(skip_enabled)
+    _save_prefs(data)
+    return get_earnings_calendar_config()
+
+
+# ---------------------------------------------------------------------------
+# Circuit Breaker config
+# ---------------------------------------------------------------------------
+_DEFAULT_CB_ENABLED = True
+_DEFAULT_CB_MAX_CONSECUTIVE_LOSSES = 5
+_DEFAULT_CB_MAX_DAILY_LOSS_R = 3.0
+_DEFAULT_CB_DRAWDOWN_GATE_R = 8.0
+
+
+def get_circuit_breaker_config() -> dict[str, Any]:
+    """
+    Return circuit breaker settings:
+    - circuit_breaker_enabled: master switch (default True)
+    - max_consecutive_losses: losing streak before defensive mode (default 5)
+    - max_daily_loss_r: R-multiples lost today before defensive mode (default 3.0)
+    - drawdown_gate_r: peak-to-trough R drawdown before paused mode (default 8.0)
+    """
+    data = _load_prefs()
+    enabled = bool(data.get("circuit_breaker_enabled", _DEFAULT_CB_ENABLED))
+    try:
+        max_cons = max(1, int(data.get("max_consecutive_losses", _DEFAULT_CB_MAX_CONSECUTIVE_LOSSES)))
+    except (TypeError, ValueError):
+        max_cons = _DEFAULT_CB_MAX_CONSECUTIVE_LOSSES
+    try:
+        max_daily = max(0.5, float(data.get("max_daily_loss_r", _DEFAULT_CB_MAX_DAILY_LOSS_R)))
+    except (TypeError, ValueError):
+        max_daily = _DEFAULT_CB_MAX_DAILY_LOSS_R
+    try:
+        drawdown = max(1.0, float(data.get("drawdown_gate_r", _DEFAULT_CB_DRAWDOWN_GATE_R)))
+    except (TypeError, ValueError):
+        drawdown = _DEFAULT_CB_DRAWDOWN_GATE_R
+    return {
+        "circuit_breaker_enabled": enabled,
+        "max_consecutive_losses": max_cons,
+        "max_daily_loss_r": max_daily,
+        "drawdown_gate_r": drawdown,
+    }
+
+
+def set_circuit_breaker_config(
+    enabled: bool | None = None,
+    max_consecutive_losses: int | None = None,
+    max_daily_loss_r: float | None = None,
+    drawdown_gate_r: float | None = None,
+) -> dict[str, Any]:
+    """Persist circuit breaker settings. Returns current config."""
+    data = _load_prefs()
+    if enabled is not None:
+        data["circuit_breaker_enabled"] = bool(enabled)
+    if max_consecutive_losses is not None:
+        data["max_consecutive_losses"] = max(1, int(max_consecutive_losses))
+    if max_daily_loss_r is not None:
+        data["max_daily_loss_r"] = max(0.5, float(max_daily_loss_r))
+    if drawdown_gate_r is not None:
+        data["drawdown_gate_r"] = max(1.0, float(drawdown_gate_r))
+    _save_prefs(data)
+    return get_circuit_breaker_config()

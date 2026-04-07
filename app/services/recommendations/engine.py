@@ -395,6 +395,9 @@ class Candidate:
     min_confidence_gate: Optional[int] = None
     shadow_b_threshold: Optional[int] = None
     shadow_b_pass: Optional[bool] = None
+    # Earnings proximity flag (stocks only)
+    near_earnings: bool = False
+    days_to_earnings: Optional[int] = None
 
 
 # ---------------------------------------------------------------------------
@@ -1052,6 +1055,35 @@ def _build_candidate(
         else:
             regime_note = "High-impact event"
 
+    # Earnings proximity penalty: reduce confidence for stocks reporting within ±window_days
+    near_earnings = False
+    days_to_earnings: Optional[int] = None
+    if category == "stocks":
+        from app.core.preferences import get_earnings_calendar_config
+        from app.services.earnings_calendar import is_near_earnings as _is_near_earnings
+        earnings_cfg = get_earnings_calendar_config()
+        if earnings_cfg["earnings_window_days"] > 0:
+            near_earnings, days_to_earnings = _is_near_earnings(symbol, earnings_cfg["earnings_window_days"])
+            if near_earnings:
+                pen = earnings_cfg["earnings_confidence_penalty"]
+                confidence = max(0, confidence - pen)
+                logger.debug("[ENGINE] %s: earnings penalty=%d (days=%s) → conf=%d", asset_id, pen, days_to_earnings, confidence)
+                suffix = f"earnings ±{days_to_earnings}d" if days_to_earnings is not None else "earnings window"
+                if regime_note:
+                    regime_note = f"{regime_note}; {suffix}"
+                else:
+                    regime_note = suffix
+                if earnings_cfg["earnings_skip_enabled"]:
+                    _log_engine_skip(
+                        "earnings_proximity",
+                        category=category,
+                        asset_id=asset_id,
+                        symbol=symbol,
+                        policy=pol.key,
+                        days_to_earnings=days_to_earnings,
+                    )
+                    return None
+
     if (
         pol.news_boost_min_mentions > 0
         and sentiment_count >= pol.news_boost_min_mentions
@@ -1137,6 +1169,8 @@ def _build_candidate(
         market_regime_note=regime_note,
         _score=score,
         suggested_risk_pct=suggested_risk,
+        near_earnings=near_earnings,
+        days_to_earnings=days_to_earnings,
     )
 
 
@@ -1313,6 +1347,7 @@ def build_daily_candidates(
     exclude_taken: Optional[set[tuple[str, str]]] = None,
     active_events: Optional[list[str]] = None,
     risk_budget_1r: float = 25.0,
+    closed_trades: Optional[list] = None,
 ) -> list[Candidate]:
     """
     Build today's batch: up to ``max_per_category`` recommendations **per** category
@@ -1343,6 +1378,28 @@ def build_daily_candidates(
         len(BATCH_CATEGORIES),
         market_ctx.regime.regime,
     )
+
+    # Circuit breaker: check risk mode before running the batch
+    from app.core.preferences import get_circuit_breaker_config
+    from app.services.circuit_breaker import CircuitBreakerState, compute_state as _cb_compute
+    cb_state = CircuitBreakerState()  # default: normal
+    cb_cfg = get_circuit_breaker_config()
+    if cb_cfg["circuit_breaker_enabled"] and closed_trades is not None:
+        cb_state = _cb_compute(
+            closed_trades,
+            max_consecutive_losses=cb_cfg["max_consecutive_losses"],
+            max_daily_loss_r=cb_cfg["max_daily_loss_r"],
+            drawdown_gate_r=cb_cfg["drawdown_gate_r"],
+        )
+        if cb_state.is_paused:
+            logger.warning("[CIRCUIT_BREAKER] mode=paused — skipping batch generation")
+            return []
+        if cb_state.is_defensive:
+            logger.info(
+                "[CIRCUIT_BREAKER] mode=defensive — confidence penalty +%d, sizing ×%.1f",
+                cb_state.confidence_penalty(),
+                cb_state.sizing_multiplier(),
+            )
 
     out: list[Candidate] = []
     batch_ctx: dict[str, Any] = {
@@ -1427,6 +1484,18 @@ def build_daily_candidates(
                 "[ENGINE] High-impact macro day: applied confidence penalty %d to %d candidates",
                 MACRO_DAY_CONFIDENCE_PENALTY,
                 len(out),
+            )
+
+        # Circuit breaker defensive mode: penalize confidence + shrink sizing
+        if cb_state.is_defensive:
+            pen = cb_state.confidence_penalty()
+            mul = cb_state.sizing_multiplier()
+            for c in out:
+                c.confidence_score = max(0, (c.confidence_score or 0) - pen)
+                c.suggested_risk_pct = round((c.suggested_risk_pct or 0.0) * mul, 2)
+            logger.info(
+                "[CIRCUIT_BREAKER] defensive: applied conf penalty %d + sizing ×%.1f to %d candidates",
+                pen, mul, len(out),
             )
 
         # Shadow profile B: alternate min-confidence gate (does not change who is in the batch)

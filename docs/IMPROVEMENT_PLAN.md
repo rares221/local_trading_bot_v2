@@ -112,7 +112,7 @@ In plus, Platt calibration are nevoie de date reale de outcome ca sa fie utila. 
 
 ---
 
-### PRIORITATE 2 — Earnings calendar pe actiuni individuale
+### ✅ PRIORITATE 2 — Earnings calendar pe actiuni individuale — DONE 2026-04-07
 
 **De ce e problema:**
 Avem penalizare pentru FOMC/CPI/NFP dar nu pentru earnings individuale. Aceasta e cea mai mare sursa de gap risk pe actiuni. Un trade deschis pe AAPL cu 2 zile inainte de earnings poate pierde 8-10% intr-o singura noapte daca rezultatele surprind piata negativ. SL-ul setat la 2x ATR (tipic ~3-4% pentru o actiune mare) nu te protejeaza deloc de un astfel de gap. Sistemul nu stie ca AAPL raporteaza maine.
@@ -129,7 +129,7 @@ Mai mult: in zilele inainte de earnings, volatilitatea implicita creste (IV crus
 
 ---
 
-### PRIORITATE 3 — Circuit breaker / daily loss limit
+### ✅ PRIORITATE 3 — Circuit breaker / daily loss limit — DONE 2026-04-07
 
 **De ce e problema:**
 Daca sistemul genereaza 5 semnale proaste consecutiv (poate din cauza unui regime shift neasteptat, a unui black swan, sau pur si simplu a unei perioade proaste), continua sa genereze semnale noi ca si cum nimic nu s-a intamplat. Orice sistem de trading profesionist are un mecanism de oprire automata cand lucrurile merg rau — nu din frica, ci pentru ca o serie de pierderi consecutive e un semnal ca ceva s-a schimbat in piata si modelul nu mai e calibrat corect pe contextul curent.

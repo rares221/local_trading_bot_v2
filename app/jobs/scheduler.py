@@ -127,7 +127,11 @@ async def job_daily_batch() -> None:
             payload = analysis.payload or {}
             by_asset_sentiment = payload.get("by_asset_sentiment") or None
             active_events = payload.get("active_events") or None
-            print(f"[BATCH] Sentiment tags: {len(by_asset_sentiment) if by_asset_sentiment else 0}, excluded taken: {len(exclude_taken)}")
+            # Fetch closed trades for circuit breaker evaluation
+            q_closed = select(ActiveTrade).where(ActiveTrade.outcome.isnot(None))
+            result_closed = await session.execute(q_closed)
+            closed_trades = result_closed.scalars().all()
+            print(f"[BATCH] Sentiment tags: {len(by_asset_sentiment) if by_asset_sentiment else 0}, excluded taken: {len(exclude_taken)}, closed trades: {len(closed_trades)}")
             progress.update(55, "batch", "Building candidate recommendations…")
             # Run heavy sync work off the asyncio loop so HTTP (e.g. /api/recommendations) stays responsive.
             _build = partial(
@@ -138,6 +142,7 @@ async def job_daily_batch() -> None:
                 exclude_taken=exclude_taken,
                 active_events=active_events,
                 risk_budget_1r=get_risk_budget_1r(),
+                closed_trades=list(closed_trades),
             )
             candidates = await asyncio.to_thread(_build)
             print(f"[BATCH] Candidates built: {len(candidates)}")
@@ -269,6 +274,43 @@ async def job_update_active_trades() -> None:
         # Load latest analysis for sentiment lookup
         analysis = await get_latest_analysis(session)
         by_asset_sentiment = (analysis.payload or {}).get("by_asset_sentiment", {}) if analysis and analysis.payload else {}
+
+        # Circuit breaker: evaluate from closed trades and log/notify if active
+        try:
+            from app.services.circuit_breaker import compute_state as _cb_compute
+            from app.core.preferences import get_circuit_breaker_config
+            _cb_cfg = get_circuit_breaker_config()
+            if _cb_cfg["circuit_breaker_enabled"]:
+                _closed_q = select(ActiveTrade).where(ActiveTrade.outcome.isnot(None))
+                _closed_result = await session.execute(_closed_q)
+                _closed_trades = _closed_result.scalars().all()
+                _cb_state = _cb_compute(
+                    list(_closed_trades),
+                    max_consecutive_losses=_cb_cfg["max_consecutive_losses"],
+                    max_daily_loss_r=_cb_cfg["max_daily_loss_r"],
+                    drawdown_gate_r=_cb_cfg["drawdown_gate_r"],
+                )
+                if _cb_state.mode != "normal":
+                    print(
+                        f"[CB] mode={_cb_state.mode} | "
+                        f"rolling_loss={_cb_state.rolling_loss_r}R | "
+                        f"streak={_cb_state.consecutive_losses} | "
+                        f"drawdown={_cb_state.drawdown_r}R | "
+                        f"triggers={_cb_state.triggered_by}"
+                    )
+                    try:
+                        from app.services.notifications import send_notification
+                        await send_notification("circuit_breaker", {
+                            "mode": _cb_state.mode,
+                            "rolling_loss_r": _cb_state.rolling_loss_r,
+                            "consecutive_losses": _cb_state.consecutive_losses,
+                            "drawdown_r": _cb_state.drawdown_r,
+                            "triggered_by": _cb_state.triggered_by,
+                        })
+                    except Exception:
+                        pass
+        except Exception as _cb_err:
+            print(f"[UPDATE_TRADES] Circuit breaker check failed (non-critical): {_cb_err}")
 
         q = select(ActiveTrade).options(selectinload(ActiveTrade.recommendation))
         result = await session.execute(q)

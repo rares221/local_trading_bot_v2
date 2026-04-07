@@ -242,6 +242,11 @@
     /* Section title row */
     .tab-section-header { display:flex; align-items:center; justify-content:space-between; margin-bottom: 10px; }
     .tab-section-count { font-size:12px; color:var(--muted-foreground); background:var(--secondary); border:1px solid var(--border); border-radius:99px; padding:2px 9px; }
+    /* Earnings proximity badge */
+    .badge--earnings { background: rgba(251,191,36,.15); color: #fbbf24; border: 1px solid rgba(251,191,36,.35); font-size:9px; padding:1px 4px; border-radius:4px; font-weight:700; letter-spacing:.03em; }
+    /* Circuit breaker banner */
+    .alert--cb-defensive { background: rgba(251,191,36,.12); border: 1px solid rgba(251,191,36,.4); color: #fbbf24; border-radius: var(--radius); padding: 10px 14px; font-size: 13px; }
+    .alert--cb-paused    { background: rgba(239,68,68,.12);  border: 1px solid rgba(239,68,68,.4);  color: #ef4444; border-radius: var(--radius); padding: 10px 14px; font-size: 13px; }
   </style>
 </head>
 <body>
@@ -273,6 +278,7 @@
       </div>
     </details>
 
+    <div id="circuit-breaker-banner" class="alert mb-2" style="display:none;" role="alert" aria-live="polite"></div>
     <div id="macro-banner" class="alert alert--warning mb-2" style="display:none;" role="status" aria-live="polite"></div>
     <div id="calibration-strip" class="recommendations-calibration mb-2" style="display:none;" aria-label="Calibration summary"></div>
 
@@ -904,6 +910,11 @@
           else if (p.trendAligned === false) badges += '<span class="indicator-badge indicator-badge--red" title="Multi-TF Conflicting">↓</span>';
           if (p.volRegime === 'expanding')   badges += '<span class="indicator-badge indicator-badge--yellow" title="Vol Expanding">⚡</span>';
           else if (p.volRegime === 'contracting') badges += '<span class="indicator-badge indicator-badge--blue" title="Vol Contracting">◆</span>';
+          if (rec.near_earnings) {
+            const eDays = rec.days_to_earnings;
+            const eLabel = eDays != null ? (eDays === 0 ? '±0d' : (eDays > 0 ? '+' + eDays + 'd' : eDays + 'd')) : '';
+            badges += `<span class="badge--earnings" title="Earnings within ±${rec.days_to_earnings ?? '?'} days — confidence penalised">EARNINGS${eLabel ? ' ' + eLabel : ''}</span>`;
+          }
           const tip = escapeAttr((rec.volatility_notes || '') + (rec.status !== 'pending' ? ' [' + rec.status + ']' : ''));
           return `<span class="font-semibold rec-asset-link" title="${tip}">${escHtml(rec.asset_id)}${badges ? '<span class="indicator-badges">' + badges + '</span>' : ''}</span>`;
         },
@@ -1084,9 +1095,30 @@
       el.style.display = 'block';
     }
 
+    async function renderCircuitBreakerBanner() {
+      const el = document.getElementById('circuit-breaker-banner');
+      if (!el) return;
+      try {
+        const r = await fetch('/api/circuit-breaker');
+        if (!r.ok) return;
+        const d = await r.json();
+        if (!d.enabled || d.mode === 'normal') { el.style.display = 'none'; return; }
+        const stats = d.stats || {};
+        if (d.mode === 'paused') {
+          el.className = 'alert alert--cb-paused mb-2';
+          el.innerHTML = `<strong>⛔ Circuit Breaker — PAUSED</strong> No new signals this batch. 24h loss: ${stats.rolling_loss_r}R · Streak: ${stats.consecutive_losses} · Drawdown: ${stats.drawdown_r}R<br><span style="opacity:.75;font-size:12px;">${(d.triggered_by || []).join('; ')}</span>`;
+        } else {
+          el.className = 'alert alert--cb-defensive mb-2';
+          el.innerHTML = `<strong>⚠️ Circuit Breaker — DEFENSIVE</strong> Confidence penalised +10, position sizing ×0.7. 24h loss: ${stats.rolling_loss_r}R · Streak: ${stats.consecutive_losses} · Drawdown: ${stats.drawdown_r}R<br><span style="opacity:.75;font-size:12px;">${(d.triggered_by || []).join('; ')}</span>`;
+        }
+        el.style.display = 'block';
+      } catch (_) { el.style.display = 'none'; }
+    }
+
     async function load() {
       const macroEl = document.getElementById('macro-banner');
       const calEl = document.getElementById('calibration-strip');
+      renderCircuitBreakerBanner();
       try {
         const [r, calR] = await Promise.all([
           fetch('/api/recommendations?group_by=category'),

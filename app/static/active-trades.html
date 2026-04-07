@@ -41,6 +41,24 @@
     .trade-asset { font-size: 1.25rem; font-weight: 700; letter-spacing: -.025em; color: #f8fafc; }
     .trade-header-badges { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
     .badge-sep { width: 1px; height: 16px; background: rgba(255,255,255,.12); flex-shrink: 0; }
+    /* Earnings warning badge */
+    .badge--earnings-warn {
+      background: rgba(239,68,68,.18); color: #fca5a5;
+      border: 1px solid rgba(239,68,68,.4);
+      font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 5px;
+      letter-spacing: .03em; animation: earnings-pulse 2s ease-in-out infinite;
+    }
+    @keyframes earnings-pulse {
+      0%,100% { opacity:1; } 50% { opacity:.6; }
+    }
+    /* Earnings warning strip below header */
+    .earnings-strip {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 16px;
+      background: rgba(239,68,68,.08);
+      border-bottom: 1px solid rgba(239,68,68,.2);
+      font-size: 12px; color: #fca5a5;
+    }
 
     /* ── Levels 4-column grid ── */
     .trade-levels {
@@ -571,6 +589,19 @@
       const cls = score >= 70 ? 'badge--green' : score >= 40 ? 'badge--yellow' : 'badge--red';
       return `<span class="badge ${cls}">${score}%</span>`;
     }
+    function earningsBadge(near, days) {
+      if (!near) return '';
+      const label = days === 0 ? 'EARNINGS TODAY' : days > 0 ? `EARNINGS +${days}d` : `EARNINGS ${days}d`;
+      return `<span class="badge--earnings-warn" title="Earnings report within ±${Math.abs(days ?? 0)} days — consider reducing or closing position">${label}</span>`;
+    }
+    function earningsStrip(near, days) {
+      if (!near) return '';
+      const when = days === 0 ? 'today' : days > 0 ? `in ${days} day${days === 1 ? '' : 's'}` : `${Math.abs(days)} day${Math.abs(days) === 1 ? '' : 's'} ago`;
+      return `<div class="earnings-strip">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        <strong>Earnings report ${when}.</strong> Gap risk: price may open significantly different from your SL. Consider closing or reducing this position before the announcement.
+      </div>`;
+    }
 
     // ── Lightweight Charts: state ──────────────────────────────────────────────
     let tradesData = [];
@@ -791,8 +822,10 @@
             ${signalBadge(t.signal_flip_count)}
             <span class="badge-sep"></span>
             ${phaseBadge(t.trade_phase)}${be}
+            ${t.near_earnings ? '<span class="badge-sep"></span>' + earningsBadge(t.near_earnings, t.days_to_earnings) : ''}
           </div>
-        </div>`;
+        </div>
+        ${earningsStrip(t.near_earnings, t.days_to_earnings)}`;
 
       /* Levels grid */
       h += `<div class="trade-levels">`;
