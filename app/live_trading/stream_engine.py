@@ -312,7 +312,7 @@ class DataStreamEngine:
             from app.core.database import AsyncSessionLocal
             from app.live_trading.models import LiveNewsItem
             from sqlalchemy import select
-            from app.services.sentiment.ticker_detection import tag_assets
+            from app.services.sentiment.ticker_detection import detect_tickers as tag_assets
 
             now = datetime.now(timezone.utc)
             async with AsyncSessionLocal() as session:
@@ -328,7 +328,8 @@ class DataStreamEngine:
                     text = (it.get("title") or "") + " " + (it.get("description") or "")
                     sentiment = float(_vader.polarity_scores(text).get("compound", 0.0))
                     try:
-                        tags = await asyncio.to_thread(tag_assets, text)
+                        from app.services.sentiment.ticker_detection import detect_tickers
+                        tags = await asyncio.to_thread(detect_tickers, text)
                     except Exception:
                         tags = []
                     session.add(LiveNewsItem(

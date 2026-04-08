@@ -255,7 +255,7 @@ class StreamProcessor:
 
             try:
                 # ── Step 1: Math signals ──────────────────────────────────────
-                signals = await build_all_signals(min_confidence=45)
+                signals = await build_all_signals(min_confidence=10)
                 logger.info("[PROCESSOR] Math signals: %d", len(signals))
 
                 if not signals:
@@ -270,6 +270,8 @@ class StreamProcessor:
                 prices = self._engine.latest_prices if self._engine else {}
 
                 # ── Step 3: LLM analysis prompt ───────────────────────────────
+                # Limit to top 20 by confidence to keep LLM prompt manageable
+                llm_signals = sorted(signals, key=lambda x: -(x.get("confidence") or 0))[:20]
                 signals_text = json.dumps([
                     {
                         "ticker":      s["ticker"],
@@ -281,10 +283,8 @@ class StreamProcessor:
                         "confidence":  s["confidence"],
                         "risk_reward": s["risk_reward"],
                         "regime":      s["regime"],
-                        "sentiment_avg":   s["sentiment_avg"],
-                        "sentiment_count": s["sentiment_count"],
                     }
-                    for s in signals
+                    for s in llm_signals
                 ], indent=2)
 
                 user_msg = (

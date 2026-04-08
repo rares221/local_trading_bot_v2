@@ -294,7 +294,7 @@ def _compute_signal_sync(
 
 # ── Async orchestrator ────────────────────────────────────────────────────────
 
-async def build_all_signals(min_confidence: int = 40) -> list[dict]:
+async def build_all_signals(min_confidence: int = 10) -> list[dict]:
     """
     Async: fetches universe, runs all signal computations in parallel threads,
     returns list of signal dicts with confidence >= min_confidence.
