@@ -799,7 +799,17 @@ async def generate_rationale(context: dict[str, Any]) -> str | None:
                     max_tokens=400, thinking_budget=thinking_budget, output_buffer=400,
                 )
             elif provider_id == "ollama":
-                text = await _call_ollama(model, system, user, ollama_base_url)
+                # Same pattern as strategy explain: system+user in one turn + num_predict.
+                # Many Ollama models (e.g. gemma3) return empty with separate system messages.
+                combined = f"{system.strip()}\n\n---\n\n{user.strip()}"
+                text = await _call_ollama(
+                    model,
+                    "",
+                    combined,
+                    ollama_base_url,
+                    num_predict=384,
+                    timeout=120.0,
+                )
             elif provider_id == "openrouter":
                 text = await _call_openrouter(model, system, user, api_key or "", max_tokens=400)
             else:

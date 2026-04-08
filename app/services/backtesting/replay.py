@@ -100,10 +100,18 @@ def run_backtest(
 
     logger.info("[BACKTEST] %d trading days to replay", len(trading_days))
 
-    # Sort sentiment_history ascending by datetime for bisect lookups
-    _sent_hist: list[tuple] = []
+    # Sort sentiment_history ascending by datetime for bisect lookups.
+    # Normalize all timestamps to UTC-aware to avoid naive/aware comparison crashes.
+    _sent_hist: list[tuple[pd.Timestamp, dict]] = []
     if sentiment_history:
-        _sent_hist = sorted(sentiment_history, key=lambda t: t[0])
+        for raw_dt, by_asset in sentiment_history:
+            ts = pd.Timestamp(raw_dt)
+            if ts.tzinfo is None:
+                ts = ts.tz_localize("UTC")
+            else:
+                ts = ts.tz_convert("UTC")
+            _sent_hist.append((ts, by_asset))
+        _sent_hist.sort(key=lambda t: t[0])
         logger.info("[BACKTEST] Sentiment history: %d market_analyses records loaded", len(_sent_hist))
 
     signals: list[dict] = []
