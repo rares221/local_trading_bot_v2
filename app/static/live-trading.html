@@ -553,16 +553,29 @@
         break;
 
       case 'ticker_patch':
-        // Merge updated tickers into state.recommendations without replacing all
+        // Merge updated tickers into state.recommendations and patch only those cards in-place
         if (msg.patches) {
           Object.entries(msg.patches).forEach(([cat, items]) => {
             if (!state.recommendations[cat]) state.recommendations[cat] = [];
             items.forEach(updated => {
+              // Update state
               const idx = state.recommendations[cat].findIndex(r => r.ticker === updated.ticker);
               if (idx >= 0) {
                 state.recommendations[cat][idx] = updated;
               } else {
                 state.recommendations[cat].push(updated);
+              }
+              // Patch only the specific card in the DOM (skip full re-render)
+              const existingCard = document.querySelector(`[data-ticker="${updated.ticker}"].rec-card`);
+              if (existingCard) {
+                const tmp = document.createElement('div');
+                tmp.innerHTML = recCardHTML(updated);
+                const newCard = tmp.firstElementChild;
+                existingCard.replaceWith(newCard);
+                // Re-bind watch button on the new card
+                newCard.querySelectorAll('.btn-watch').forEach(btn => {
+                  btn.addEventListener('click', () => watchTrade(btn.dataset));
+                });
               }
             });
           });
@@ -572,9 +585,8 @@
           updateCostBar();
         }
         renderCatTabs();
-        renderRecs();
         showToast(
-          `Updated ${(msg.tickers || []).join(', ')} based on: "${(msg.trigger_headline || '').slice(0, 50)}…"`,
+          `Updated ${(msg.tickers || []).join(', ')} — "${(msg.trigger_headline || '').slice(0, 50)}…"`,
           'success'
         );
         break;
@@ -753,7 +765,7 @@
       confidence: r.confidence,
     }));
 
-    return `<div class="rec-card rec-card--${dir}${isWatched ? ' rec-card--watched' : ''}">
+    return `<div class="rec-card rec-card--${dir}${isWatched ? ' rec-card--watched' : ''}" data-ticker="${r.ticker}">
       ${isWatched ? '<span class="rec-pin-badge" style="position:absolute;top:8px;right:8px;">📌 Watching</span>' : ''}
       <div class="rec-card-header">
         <span class="rec-card-ticker">${r.ticker}</span>
