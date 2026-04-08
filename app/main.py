@@ -13,6 +13,7 @@ from app.core.database import init_db
 from app.api.routes import router
 from app.api.backtest_routes import router as backtest_router
 from app.jobs.scheduler import start_scheduler
+from app.live_trading.live_routes import live_router
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -67,6 +68,20 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass
     scheduler = start_scheduler()
+
+    # Live Trading — stream engine
+    try:
+        import asyncio
+        from app.live_trading.stream_engine import engine as live_engine
+        from app.live_trading.stream_processor import processor as live_processor
+        from app.live_trading.trade_watcher import get_watchlist
+        live_engine.watchlist = get_watchlist()
+        live_processor.set_engine(live_engine)
+        asyncio.create_task(live_engine.start())
+        logger.info("[LIVE_TRADING] Stream engine started, watchlist=%s", live_engine.watchlist)
+    except Exception:
+        logger.exception("[LIVE_TRADING] Failed to start stream engine")
+
     yield
     scheduler.shutdown(wait=False)
 
@@ -77,6 +92,7 @@ app = FastAPI(
 )
 app.include_router(router, prefix="/api", tags=["api"])
 app.include_router(backtest_router, prefix="/api", tags=["backtest"])
+app.include_router(live_router, prefix="/api/live", tags=["live-trading"])
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
@@ -150,3 +166,9 @@ async def calendar_page() -> HTMLResponse:
 async def backtest_page() -> HTMLResponse:
     """Backtesting: run historical replay and view results (win rate, Sharpe, drawdown)."""
     return HTMLResponse(content=_read_static("backtest.html"))
+
+
+@app.get("/live-trading", response_class=HTMLResponse)
+async def live_trading_page() -> HTMLResponse:
+    """Live Trading: real-time market monitor, LLM analysis, selected trade watcher."""
+    return HTMLResponse(content=_read_static("live-trading.html"))
