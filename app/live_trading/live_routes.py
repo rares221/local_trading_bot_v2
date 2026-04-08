@@ -393,6 +393,42 @@ async def get_recent_news(limit: int = 30):
         }
 
 
+# ── Chart data ───────────────────────────────────────────────────────────────
+
+@live_router.get("/chart/{ticker}")
+async def get_chart_data(ticker: str, period: str = "1d", interval: str = "5m"):
+    """Return OHLCV candles for Lightweight Charts. period/interval follow yfinance conventions."""
+    import asyncio
+
+    _INTERVAL_MAP = {
+        "1d": "5m", "5d": "30m", "1mo": "1d", "3mo": "1d",
+    }
+    interval = _INTERVAL_MAP.get(period, interval)
+
+    def _fetch():
+        import yfinance as yf
+        hist = yf.Ticker(ticker.upper()).history(period=period, interval=interval)
+        if hist.empty:
+            return []
+        candles = []
+        for ts, row in hist.iterrows():
+            t = int(ts.timestamp())
+            candles.append({
+                "time":  t,
+                "open":  round(float(row["Open"]),  4),
+                "high":  round(float(row["High"]),  4),
+                "low":   round(float(row["Low"]),   4),
+                "close": round(float(row["Close"]), 4),
+            })
+        return candles
+
+    try:
+        candles = await asyncio.to_thread(_fetch)
+        return {"ticker": ticker.upper(), "period": period, "interval": interval, "candles": candles}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 # ── Trading API (placeholder) ─────────────────────────────────────────────────
 
 @live_router.get("/trading-api/status")

@@ -251,6 +251,9 @@ let _tradesOffset = 0;
 const _tradesLimit = 50;
 let _allSymbols = [];
 
+// Read ?ticker= param from Live Trading card backtest button
+const _prefilterTicker = new URLSearchParams(location.search).get('ticker') || null;
+
 // Set default dates: 1 year ago to today
 (function initDates() {
   const today = new Date();
@@ -329,6 +332,22 @@ async function loadRuns() {
   const el = document.getElementById('runs-list');
   document.getElementById('runs-count').textContent = `(${runs.length})`;
   if (!runs.length) { el.innerHTML = '<div class="no-data">No runs yet.</div>'; return; }
+
+  // Auto-select first completed run and filter to pre-fill ticker from Live Trading
+  if (_prefilterTicker && !_currentRunId) {
+    const first = runs.find(r => r.status === 'completed');
+    if (first) {
+      setTimeout(() => {
+        selectRun(first.id).then(() => {
+          const sel = document.getElementById('filter-symbol');
+          if (sel) {
+            sel.value = _prefilterTicker;
+            sel.dispatchEvent(new Event('change'));
+          }
+        });
+      }, 100);
+    }
+  }
 
   el.innerHTML = runs.map(r => `
     <div class="run-row ${r.id === _currentRunId ? 'selected' : ''}" onclick="selectRun('${r.id}')">

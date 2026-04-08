@@ -14,6 +14,8 @@ Trigger modes:
   manual_button       — user presses Analyze Market (no gate, always runs)
   pre_market_warmup   — auto at 08:30 ET transition
   news_refresh        — new news article, debounced 3 min, gated by analysis_allowed()
+                        → if news tags specific tickers in current recs: run_targeted_analysis
+                        → otherwise: run_full_analysis
   ticker_watch        — news matching selected ticker, debounced 5 min per ticker, gated
 """
 from __future__ import annotations
@@ -129,7 +131,17 @@ def _estimate_cost(model: str, prompt_tokens: int, completion_tokens: int) -> fl
     return round((prompt_tokens + completion_tokens) / 1_000_000 * rate, 6)
 
 
-# ── News compression ──────────────────────────────────────────────────────────
+# ── News helpers ──────────────────────────────────────────────────────────────
+
+def _parse_asset_tags(item: dict) -> list[str]:
+    """Extract asset_tags from a news item as a flat list of strings."""
+    raw = item.get("asset_tags") or "[]"
+    try:
+        tags = json.loads(raw) if isinstance(raw, str) else (raw or [])
+        return [str(t).strip() for t in tags if t]
+    except Exception:
+        return []
+
 
 def _compress_news(news_items: list[dict]) -> str:
     top = sorted(news_items, key=lambda x: abs(x.get("sentiment_score") or 0), reverse=True)[:10]
@@ -186,6 +198,8 @@ class StreamProcessor:
         self._news_refresh_debounce = timedelta(minutes=3)
         self._ticker_watch_debounce = timedelta(minutes=5)
         self._engine = None
+        # Cache of the last full analysis results — used to match news tags to displayed tickers
+        self._current_recs: dict[str, list] = {}
 
     def set_engine(self, eng) -> None:
         self._engine = eng
@@ -199,18 +213,15 @@ class StreamProcessor:
         from app.live_trading.trade_watcher import watcher
 
         watchlist = self._engine.watchlist if self._engine else []
+        headline = (item.get("title") or "")[:200]
+        asset_tags = _parse_asset_tags(item)
 
+        # ── Active trade watch ────────────────────────────────────────────────
         selected = watcher.get()
         if selected:
             ticker = selected.get("ticker", "")
-            asset_tags = []
-            raw = item.get("asset_tags") or "[]"
-            try:
-                asset_tags = json.loads(raw) if isinstance(raw, str) else (raw or [])
-            except Exception:
-                pass
             ticker_match = any(
-                ticker.upper() in str(tag).upper() or str(tag).upper() in ticker.upper()
+                ticker.upper() in tag.upper() or tag.upper() in ticker.upper()
                 for tag in asset_tags
             )
             if ticker_match:
@@ -221,14 +232,22 @@ class StreamProcessor:
                         asyncio.create_task(self.run_ticker_watch(
                             ticker=ticker,
                             selected=selected,
-                            headline=(item.get("title") or "")[:200],
+                            headline=headline,
                         ))
 
+        # ── News-triggered analysis (targeted or full) ────────────────────────
         last_refresh = self._last_news_refresh
         if not last_refresh or (datetime.now(timezone.utc) - last_refresh) > self._news_refresh_debounce:
             if analysis_allowed(watchlist) and not self._lock.locked():
                 self._last_news_refresh = datetime.now(timezone.utc)
-                asyncio.create_task(self.run_full_analysis(trigger="news_refresh"))
+                matched = self._match_tags_to_recs(asset_tags)
+                if matched:
+                    # News targets specific tickers we're tracking — run targeted analysis only
+                    logger.info("[PROCESSOR] News tagged %s — running targeted analysis", matched)
+                    asyncio.create_task(self.run_targeted_analysis(matched, headline))
+                else:
+                    # General market news — full analysis
+                    asyncio.create_task(self.run_full_analysis(trigger="news_refresh"))
 
     async def _on_warmup_trigger(self) -> None:
         if not self._lock.locked():
@@ -270,8 +289,11 @@ class StreamProcessor:
                 prices = self._engine.latest_prices if self._engine else {}
 
                 # ── Step 3: LLM analysis prompt ───────────────────────────────
-                # Limit to top 20 by confidence to keep LLM prompt manageable
-                llm_signals = sorted(signals, key=lambda x: -(x.get("confidence") or 0))[:20]
+                # Only analyze signals that will be displayed (confidence >= 40%)
+                llm_signals = sorted(
+                    [s for s in signals if (s.get("confidence") or 0) >= 40],
+                    key=lambda x: -(x.get("confidence") or 0)
+                )[:35]
                 signals_text = json.dumps([
                     {
                         "ticker":      s["ticker"],
@@ -304,14 +326,18 @@ class StreamProcessor:
                 llm_by_ticker = self._parse_analysis_response(raw)
                 cost = _estimate_cost(model, prompt_tokens, completion_tokens)
 
-                # ── Step 5: Merge math + LLM ──────────────────────────────────
-                merged = self._merge_signals_with_llm(signals, llm_by_ticker)
+                # ── Step 5: Merge math + LLM (only signals >= 40% confidence) ──
+                eligible = [s for s in signals if (s.get("confidence") or 0) >= 40]
+                merged = self._merge_signals_with_llm(eligible, llm_by_ticker)
 
                 # Group by category
                 recs_by_cat: dict[str, list] = {}
                 for sig in merged:
                     cat = sig["category"]
                     recs_by_cat.setdefault(cat, []).append(sig)
+
+                # Cache for targeted-analysis routing
+                self._current_recs = recs_by_cat
 
                 context_snapshot = {
                     "trigger": trigger,
@@ -354,6 +380,163 @@ class StreamProcessor:
                 return None
             finally:
                 self._active_run_id = None
+
+    # ── Targeted analysis (news → specific tickers) ───────────────────────────
+
+    def _match_tags_to_recs(self, asset_tags: list[str]) -> list[str]:
+        """Return tickers from current recommendations that match the news asset_tags."""
+        if not asset_tags or not self._current_recs:
+            return []
+        all_tickers = {
+            sig["ticker"]
+            for recs in self._current_recs.values()
+            for sig in recs
+        }
+        matched = []
+        for ticker in all_tickers:
+            t_up = ticker.upper()
+            for tag in asset_tags:
+                tag_up = tag.upper()
+                if t_up in tag_up or tag_up in t_up:
+                    matched.append(ticker)
+                    break
+        return matched
+
+    def _find_rec_meta(self, ticker: str) -> dict:
+        """Return category and any other metadata stored for a ticker in current recs."""
+        for cat, recs in self._current_recs.items():
+            for rec in recs:
+                if rec.get("ticker") == ticker:
+                    return {"category": rec.get("category", cat)}
+        return {}
+
+    async def run_targeted_analysis(self, tickers: list[str], headline: str) -> None:
+        """Run math + LLM analysis only for the tickers affected by breaking news."""
+        from app.live_trading.stream_engine import ws_manager, get_market_state
+        from app.live_trading.live_analyzer import (
+            _compute_signal_sync, _snap_executor,
+            _aggregate_live_sentiment_sync, get_auto_universe,
+        )
+
+        logger.info("[PROCESSOR] Targeted analysis %s ← %s", tickers, headline[:60])
+        try:
+            await ws_manager.broadcast({
+                "type": "targeted_analysis_started",
+                "tickers": tickers,
+                "trigger_headline": headline,
+            })
+
+            # Resolve universe metadata (risk_tier, category) for each ticker
+            universe = await asyncio.to_thread(get_auto_universe)
+            universe_map: dict[str, tuple] = {row[1]: row for row in universe}  # yf_symbol → row
+
+            # Get current sentiment data
+            sent_data = await asyncio.to_thread(_aggregate_live_sentiment_sync)
+
+            # Get market regime
+            regime = "cautious"
+            try:
+                from app.services.market_context import detect_market_regime
+                ctx = await asyncio.to_thread(detect_market_regime)
+                regime = ctx.regime if hasattr(ctx, "regime") else str(ctx)
+            except Exception:
+                pass
+
+            # Compute math signals in parallel for the targeted tickers only
+            loop = asyncio.get_event_loop()
+            sig_tasks = []
+            for ticker in tickers:
+                meta = universe_map.get(ticker)
+                if meta:
+                    asset_id, yf_symbol, risk_tier, category = meta
+                else:
+                    rec_meta = self._find_rec_meta(ticker)
+                    asset_id, yf_symbol, risk_tier, category = (
+                        ticker, ticker, "moderate", rec_meta.get("category", "stocks")
+                    )
+                tag_info = sent_data.get(asset_id) or sent_data.get(ticker) or {}
+                sig_tasks.append(loop.run_in_executor(
+                    _snap_executor,
+                    _compute_signal_sync,
+                    asset_id, yf_symbol, risk_tier, category,
+                    float(tag_info.get("avg", 0.0)),
+                    int(tag_info.get("count", 0)),
+                    regime,
+                ))
+
+            results = await asyncio.gather(*sig_tasks, return_exceptions=True)
+            signals = [r for r in results if isinstance(r, dict) and r and (r.get("confidence") or 0) >= 40]
+
+            if not signals:
+                logger.info("[PROCESSOR] Targeted: no displayable signals for %s", tickers)
+                return
+
+            # Fetch recent news for LLM context
+            news_items = await self._fetch_recent_news(limit=20)
+            news_text = _compress_news(news_items)
+            regime_summary = await asyncio.to_thread(self._get_regime_summary)
+
+            watchlist = self._engine.watchlist if self._engine else []
+            state = get_market_state(watchlist)
+
+            # LLM prompt — focused on the triggering headline + only the affected tickers
+            signals_text = json.dumps([
+                {
+                    "ticker":      s["ticker"],
+                    "category":    s["category"],
+                    "direction":   s["direction"],
+                    "entry_price": s["entry_price"],
+                    "math_sl":     s["math_sl"],
+                    "math_tp":     s["math_tp"],
+                    "confidence":  s["confidence"],
+                    "risk_reward": s["risk_reward"],
+                    "regime":      s["regime"],
+                }
+                for s in signals
+            ], indent=2)
+
+            user_msg = (
+                f"Market session: {state}\n"
+                f"Regime: {regime_summary}\n\n"
+                f"BREAKING NEWS (triggered this analysis):\n{headline}\n\n"
+                f"Recent news context:\n{news_text}\n\n"
+                f"Math-generated signals for affected tickers only:\n{signals_text}\n\n"
+                "Analyze each signal in light of the breaking news above. "
+                "For each ticker return: trade_type, rationale, llm_sl, llm_tp, catalysts."
+            )
+
+            provider, model, api_key = _get_llm_config()
+            raw, prompt_tokens, completion_tokens = await _call_llm(
+                _ANALYSIS_SYSTEM, user_msg, provider, model, api_key
+            )
+
+            llm_by_ticker = self._parse_analysis_response(raw)
+            cost = _estimate_cost(model, prompt_tokens, completion_tokens)
+
+            merged = self._merge_signals_with_llm(signals, llm_by_ticker)
+
+            # Patch _current_recs with updated data for these tickers
+            patches_by_cat: dict[str, list] = {}
+            for sig in merged:
+                cat = sig["category"]
+                patches_by_cat.setdefault(cat, []).append(sig)
+                if cat in self._current_recs:
+                    for i, existing in enumerate(self._current_recs[cat]):
+                        if existing["ticker"] == sig["ticker"]:
+                            self._current_recs[cat][i] = sig
+                            break
+
+            await ws_manager.broadcast({
+                "type": "ticker_patch",
+                "patches": patches_by_cat,
+                "tickers": tickers,
+                "trigger_headline": headline,
+                "estimated_cost_usd": cost,
+            })
+            logger.info("[PROCESSOR] Targeted done tickers=%s cost=$%.4f", tickers, cost)
+
+        except Exception as exc:
+            logger.warning("[PROCESSOR] Targeted analysis error: %s", exc, exc_info=True)
 
     # ── Ticker watch analysis ─────────────────────────────────────────────────
 
