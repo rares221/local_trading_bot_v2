@@ -76,12 +76,16 @@ class LiveRecommendation(Base):
     ticker: Mapped[str] = mapped_column(String(32), nullable=False)
     direction: Mapped[str] = mapped_column(String(8), nullable=False, default="long")
     entry_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # Math-based SL/TP (ATR + support/resistance, same logic as main engine)
     stop_loss: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     take_profit: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # LLM-estimated SL/TP (may differ from math; LLM adjusts based on news/context)
+    llm_stop_loss: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    llm_take_profit: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     confidence: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     risk_reward: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     rationale: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    # scalp | intraday | swing
+    # scalp | intraday | swing  (determined by LLM based on ATR%, volatility, session)
     timeframe: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     catalysts: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON list
     # regular | pre_market_warmup | after_hours | closed | open_24h

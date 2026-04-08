@@ -250,7 +250,27 @@ class DataStreamEngine:
     async def _poll_news_once(self) -> None:
         from app.services.ingestion.rss import fetch_all_feeds
         items: list[dict] = await asyncio.to_thread(fetch_all_feeds)
-        new_items = [it for it in items if it["id"] not in self._news_cache]
+        cutoff_14d = datetime.now(timezone.utc) - timedelta(days=14)
+        new_items = []
+        for it in items:
+            if it["id"] in self._news_cache:
+                continue
+            pub = it.get("published")
+            if pub:
+                try:
+                    if isinstance(pub, str):
+                        from email.utils import parsedate_to_datetime
+                        pub_dt = parsedate_to_datetime(pub)
+                    else:
+                        pub_dt = pub
+                    if pub_dt.tzinfo is None:
+                        pub_dt = pub_dt.replace(tzinfo=timezone.utc)
+                    if pub_dt < cutoff_14d:
+                        self._news_cache.add(it["id"])  # mark as seen so we skip next poll too
+                        continue
+                except Exception:
+                    pass
+            new_items.append(it)
         if not new_items:
             return
 
@@ -328,8 +348,26 @@ class DataStreamEngine:
 
     # ── Price loop ────────────────────────────────────────────────────────────
 
+    async def _refresh_universe(self) -> None:
+        """Refresh watchlist from auto-universe (base + sentiment discovery)."""
+        try:
+            from app.live_trading.live_analyzer import get_auto_watchlist_symbols
+            symbols = await asyncio.to_thread(get_auto_watchlist_symbols)
+            if symbols:
+                self.watchlist = symbols
+                logger.info("[LIVE_ENGINE] Universe refreshed: %d symbols", len(symbols))
+        except Exception as exc:
+            logger.warning("[LIVE_ENGINE] Could not refresh universe: %s", exc)
+
     async def _price_poll_loop(self) -> None:
+        _universe_refresh_counter = 0
         while True:
+            # Refresh universe every 10 cycles (~5-30 min depending on interval)
+            _universe_refresh_counter += 1
+            if _universe_refresh_counter >= 10 or not self.watchlist:
+                await self._refresh_universe()
+                _universe_refresh_counter = 0
+
             state = get_market_state(self.watchlist)
             interval = _POLL_INTERVAL.get(state, 120)
 
@@ -343,11 +381,15 @@ class DataStreamEngine:
                         logger.warning("[LIVE_ENGINE] Warmup trigger error: %s", exc)
             self._last_market_state = state
 
-            # Broadcast market state to UI
-            await ws_manager.broadcast({"type": "market_state", "state": state})
+            # Broadcast market state + universe size to UI
+            await ws_manager.broadcast({
+                "type": "market_state",
+                "state": state,
+                "universe_size": len(self.watchlist),
+            })
 
-            # Fetch prices if watchlist non-empty and market not fully closed
-            if self.watchlist and state != "closed":
+            # Fetch prices — always fetch even when market closed (crypto/FX always open)
+            if self.watchlist:
                 try:
                     prices = await asyncio.to_thread(self._fetch_prices_sync, self.watchlist)
                     self.latest_prices.update(prices)
@@ -366,13 +408,15 @@ class DataStreamEngine:
         for sym in tickers:
             try:
                 fi = yf.Ticker(sym).fast_info
-                last = float(fi.get("last_price") or 0)
-                prev = float(fi.get("previous_close") or last or 1)
-                volume = fi.get("last_volume")
+                last = float(getattr(fi, "last_price", None) or 0)
+                prev = float(getattr(fi, "previous_close", None) or last or 1)
+                volume = getattr(fi, "last_volume", None)
+                if not last:
+                    continue
                 result[sym] = {
                     "price": round(last, 4),
                     "volume": int(volume) if volume else None,
-                    "change_pct": round((last - prev) / prev * 100, 2) if prev else 0.0,
+                    "change_pct": round((last - prev) / prev * 100, 4) if prev else 0.0,
                 }
             except Exception:
                 pass

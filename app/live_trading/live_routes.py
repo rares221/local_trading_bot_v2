@@ -140,6 +140,8 @@ async def get_latest_analysis():
                 "entry_price": r.entry_price,
                 "stop_loss": r.stop_loss,
                 "take_profit": r.take_profit,
+                "llm_stop_loss": r.llm_stop_loss,
+                "llm_take_profit": r.llm_take_profit,
                 "confidence": r.confidence,
                 "risk_reward": r.risk_reward,
                 "rationale": r.rationale,
@@ -223,6 +225,8 @@ async def get_recommendations(run_id: Optional[str] = None, category: Optional[s
                     "entry_price": r.entry_price,
                     "stop_loss": r.stop_loss,
                     "take_profit": r.take_profit,
+                    "llm_stop_loss": r.llm_stop_loss,
+                    "llm_take_profit": r.llm_take_profit,
                     "confidence": r.confidence,
                     "risk_reward": r.risk_reward,
                     "rationale": r.rationale,
@@ -365,7 +369,7 @@ async def get_recent_news(limit: int = 30):
     from app.core.database import AsyncSessionLocal
     from app.live_trading.models import LiveNewsItem
     from sqlalchemy import select, desc
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=14)
     async with AsyncSessionLocal() as session:
         result = await session.execute(
             select(LiveNewsItem)

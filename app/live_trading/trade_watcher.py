@@ -21,9 +21,12 @@ _WATCHLIST_FILE = _DATA_DIR / "live_watchlist.json"
 
 DEFAULT_WATCHLIST = [
     "AAPL", "TSLA", "NVDA", "MSFT",
-    "GC=F", "CL=F",
-    "BTC-USD", "ETH-USD",
-    "EUR=X", "SPY", "QQQ",
+    "GC=F", "CL=F", "BZ=F", "GC=F", "NG=F", "SI=F",
+    "BTC-USD", "ETH-USD", "BNB-USD", "SOL-USD",
+    "EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X",
+    "SPY", "QQQ", "GLD", "TLT", "XLE", "XLF",
+    "^GSPC", "^DJI", "^IXIC", "^RUT", "^FTSE", "^GDAXI", "^N225", "^VIX",
+    "XOM", "CVX", "BP", "SHEL", "NEM",
 ]
 
 
@@ -100,24 +103,24 @@ class TradeWatcher:
 # ── Watchlist helpers ─────────────────────────────────────────────────────────
 
 def get_watchlist() -> list[str]:
+    """
+    Returns the auto-generated watchlist from the live_analyzer universe
+    (base assets + sentiment-discovered tickers).
+    Falls back to DEFAULT_WATCHLIST if analyzer not available.
+    """
     try:
-        if _WATCHLIST_FILE.exists():
-            data = json.loads(_WATCHLIST_FILE.read_text(encoding="utf-8"))
-            return data.get("tickers", DEFAULT_WATCHLIST)
-    except Exception:
-        pass
+        from app.live_trading.live_analyzer import get_auto_watchlist_symbols
+        symbols = get_auto_watchlist_symbols()
+        if symbols:
+            return symbols
+    except Exception as exc:
+        logger.warning("[WATCHER] Could not get auto watchlist: %s", exc)
     return list(DEFAULT_WATCHLIST)
 
 
 def set_watchlist(tickers: list[str]) -> None:
-    try:
-        _DATA_DIR.mkdir(parents=True, exist_ok=True)
-        _WATCHLIST_FILE.write_text(
-            json.dumps({"tickers": tickers, "updated_at": datetime.now(timezone.utc).isoformat()}),
-            encoding="utf-8",
-        )
-    except Exception as exc:
-        logger.warning("[WATCHER] Could not save watchlist: %s", exc)
+    """Kept for backward compatibility — no longer writes to file (auto-generated)."""
+    pass
 
 
 # ── Module-level singleton ────────────────────────────────────────────────────

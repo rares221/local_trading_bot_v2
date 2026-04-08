@@ -47,23 +47,6 @@
     .selected-assessment { margin-top: 10px; font-size: 13px; color: var(--accent-foreground); font-style: italic; border-left: 2px solid var(--primary); padding-left: 10px; }
     .selected-panel-actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
 
-    /* Controls bar */
-    .controls-bar {
-      display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;
-      padding: var(--space-2) var(--space-3);
-      border-bottom: 1px solid var(--border);
-    }
-    .watchlist-chips { display: flex; flex-wrap: wrap; gap: 4px; flex: 1; }
-    .chip {
-      display: inline-flex; align-items: center; gap: 4px;
-      padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600;
-      background: var(--muted); color: var(--foreground); border: 1px solid var(--border);
-      cursor: default; font-variant-numeric: tabular-nums;
-    }
-    .chip .chip-price { color: var(--muted-foreground); font-weight: 400; }
-    .chip .chip-change { font-size: 11px; }
-    .chip .chip-change--up { color: var(--success-text); }
-    .chip .chip-change--down { color: var(--error-text); }
 
     /* Category tabs */
     .cat-tabs {
@@ -109,6 +92,16 @@
     .rec-level-value { font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
     .rec-level-value--sl { color: var(--error-text); }
     .rec-level-value--tp { color: var(--success-text); }
+    /* Dual SL/TP (Math vs LLM) */
+    .rec-levels-dual { margin: 8px 0; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+    .rec-levels-row { display: grid; grid-template-columns: 80px 1fr 1fr; align-items: center; padding: 5px 8px; gap: 6px; }
+    .rec-levels-row:not(:last-child) { border-bottom: 1px solid var(--border); }
+    .rec-levels-row:first-child { background: rgba(255,255,255,.02); }
+    .rec-source-label { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; }
+    .rec-source-label--math { color: #818cf8; }
+    .rec-source-label--llm  { color: #f59e0b; }
+    /* Universe chip */
+    .universe-badge { display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px; border-radius: 999px; font-size: 12px; background: var(--accent); color: var(--accent-foreground); border: 1px solid var(--border); }
     .rec-meta { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; }
     .rec-rationale { font-size: 12px; color: var(--muted-foreground); line-height: 1.5; margin: 8px 0; }
     .rec-card-footer { margin-top: 10px; }
@@ -205,8 +198,16 @@
       <span id="mktPausedMsg" class="market-bar-paused" style="display:none;">
         ⏸ Auto-analysis paused — market closed. Manual analysis still available.
       </span>
+      <button class="btn btn--primary btn-sm" id="btnAnalyze" style="margin-left:auto;"
+        data-tooltip="Run math analysis on 35+ assets using ATR/RSI/MACD/volume profile,&#10;then LLM provides trade type, rationale and SL/TP estimate">
+        <span data-icon="zap"></span> Analyze Market
+      </button>
       <span id="wsStatus" style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted-foreground);">
         <span class="ws-dot ws-dot--connecting" id="wsDot"></span> Connecting…
+      </span>
+      <span class="universe-badge" id="universeBadge" style="cursor:pointer;"
+        data-tooltip="Auto-discovered from base universe (35 assets)&#10;+ sentiment-discovered tickers from live news">
+        <span id="universeCount">—</span> assets
       </span>
       <span class="market-bar-cost" id="costBar"></span>
     </div>
@@ -242,17 +243,6 @@
       </div>
     </div>
 
-    <!-- Controls bar -->
-    <div class="controls-bar">
-      <button class="btn btn--primary" id="btnAnalyze" data-tooltip="Run LLM analysis on current market context&#10;and generate 6 recommendations per category">
-        <span data-icon="zap"></span> Analyze Market
-      </button>
-      <div class="watchlist-chips" id="watchlistChips"></div>
-      <button class="btn btn--secondary btn-sm" id="btnEditWatchlist" data-tooltip="Edit the list of tickers monitored&#10;for price updates and recommendations">
-        <span data-icon="settings"></span> Watchlist
-      </button>
-    </div>
-
     <!-- Category tabs + recs grid -->
     <div>
       <div class="cat-tabs" id="catTabs">
@@ -267,7 +257,7 @@
         <div class="empty-state" id="emptyState">
           <span data-icon="zap" style="font-size:2rem;"></span>
           <p style="margin:0;font-size:14px;">Press <strong>Analyze Market</strong> to generate recommendations.</p>
-          <p style="margin:0;font-size:12px;color:var(--muted-foreground);">The engine will run LLM analysis on current news and price data.</p>
+          <p style="margin:0;font-size:12px;color:var(--muted-foreground);">Math engine computes signals (ATR/RSI/MACD) · LLM adds trade type, rationale & SL/TP estimate.</p>
         </div>
         <div class="recs-grid" id="recsGrid" style="display:none;"></div>
       </div>
@@ -284,16 +274,18 @@
 
   </div>
 
-  <!-- Watchlist modal -->
-  <div id="watchlistModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:300;display:none;align-items:center;justify-content:center;">
-    <div class="card" style="width:420px;max-width:calc(100vw - 32px);">
-      <h3 class="section-title" style="margin-bottom:var(--space-1);">Edit Watchlist</h3>
-      <p style="font-size:13px;color:var(--muted-foreground);margin-bottom:var(--space-2);">Comma-separated tickers. Use <code>GC=F</code> for Gold, <code>CL=F</code> for Oil, <code>EUR=X</code> for EUR/USD, <code>BTC-USD</code> for Bitcoin.</p>
-      <textarea id="watchlistInput" style="width:100%;min-height:80px;background:var(--input);border:1px solid var(--border);border-radius:var(--radius);color:var(--foreground);padding:10px;font-family:var(--font-mono);font-size:13px;resize:vertical;" placeholder="AAPL, TSLA, GC=F, BTC-USD..."></textarea>
-      <div class="btn-group" style="margin-top:var(--space-2);justify-content:flex-end;">
-        <button class="btn btn--secondary btn-sm" id="btnWlCancel">Cancel</button>
-        <button class="btn btn--primary btn-sm" id="btnWlSave">Save Watchlist</button>
+  <!-- Universe info modal -->
+  <div id="universeModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:300;align-items:center;justify-content:center;">
+    <div class="card" style="width:520px;max-width:calc(100vw - 32px);max-height:80vh;overflow-y:auto;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:var(--space-2);">
+        <h3 class="section-title" style="margin:0;">Asset Universe</h3>
+        <button class="btn btn--secondary btn-sm" id="btnUniverseClose"><span data-icon="x"></span></button>
       </div>
+      <p style="font-size:13px;color:var(--muted-foreground);margin-bottom:var(--space-2);">
+        Automatically built from 35 base assets + tickers discovered from live news sentiment (≥2 mentions in 24h).
+        No manual configuration needed.
+      </p>
+      <div id="universeList" style="font-size:12px;line-height:2;font-family:var(--font-mono);color:var(--foreground);"></div>
     </div>
   </div>
 
@@ -370,19 +362,21 @@
         if (msg.prices) { Object.assign(state.prices, msg.prices); }
         if (msg.selected_trade) { state.selectedTrade = msg.selected_trade; }
         renderMarketBar();
-        renderWatchlistChips();
+        // renderWatchlistChips removed
         renderSelectedPanel();
         break;
 
       case 'market_state':
         state.marketState = msg.state;
         state.analysisAllowed = ['regular','pre_market_warmup','after_hours','open_24h'].includes(msg.state);
+        if (msg.universe_size) {
+          document.getElementById('universeCount').textContent = msg.universe_size;
+        }
         renderMarketBar();
         break;
 
       case 'price':
         state.prices[msg.ticker] = { price: msg.price, change_pct: msg.change_pct, volume: msg.volume };
-        updateChipPrice(msg.ticker, msg.price, msg.change_pct);
         updateCardLivePrice(msg.ticker, msg.price, msg.change_pct);
         if (state.selectedTrade && state.selectedTrade.ticker === msg.ticker) {
           document.getElementById('selLivePrice').textContent = '$' + fmt(msg.price);
@@ -463,6 +457,7 @@
       state.analysisRunning = d.analysis_in_progress;
       state.dailyCost = d.daily_llm_cost_usd || 0;
       if (d.selected_trade) state.selectedTrade = d.selected_trade;
+      document.getElementById('universeCount').textContent = state.watchlist.length || '—';
       renderMarketBar();
       renderWatchlistChips();
       renderSelectedPanel();
@@ -516,31 +511,6 @@
     else if (s === 'pre_market_warmup') dot.classList.add('market-dot--warmup');
     else dot.classList.add('market-dot--closed');
     paused.style.display = (s === 'closed' || s === 'pre_market_early') ? 'flex' : 'none';
-  }
-
-  function renderWatchlistChips() {
-    const container = document.getElementById('watchlistChips');
-    container.innerHTML = state.watchlist.map(ticker => {
-      const p = state.prices[ticker];
-      const price = p ? '$' + fmt(p.price) : '—';
-      const pct = p ? ((p.change_pct >= 0 ? '+' : '') + fmt(p.change_pct) + '%') : '';
-      const pctClass = p ? (p.change_pct >= 0 ? 'chip-change--up' : 'chip-change--down') : '';
-      return `<span class="chip" id="chip-${ticker}">
-        ${ticker}
-        <span class="chip-price" id="chip-price-${ticker}">${price}</span>
-        <span class="chip-change ${pctClass}" id="chip-pct-${ticker}">${pct}</span>
-      </span>`;
-    }).join('');
-  }
-
-  function updateChipPrice(ticker, price, pct) {
-    const el = document.getElementById('chip-price-' + ticker);
-    const ep = document.getElementById('chip-pct-' + ticker);
-    if (el) el.textContent = '$' + fmt(price);
-    if (ep) {
-      ep.textContent = (pct >= 0 ? '+' : '') + fmt(pct) + '%';
-      ep.className = 'chip-change ' + (pct >= 0 ? 'chip-change--up' : 'chip-change--down');
-    }
   }
 
   function updateCardLivePrice(ticker, price, pct) {
@@ -615,13 +585,42 @@
 
   function recCardHTML(r) {
     const dir = r.direction || 'long';
-    const confColor = r.confidence >= 70 ? 'var(--success)' : r.confidence >= 55 ? '#f59e0b' : 'var(--primary)';
     const sessionBadge = r.market_session && r.market_session !== 'regular' && r.market_session !== 'open_24h'
-      ? `<span class="badge badge--yellow" style="font-size:10px;">${r.market_session.replace('_', ' ')}</span>` : '';
+      ? `<span class="badge badge--yellow" style="font-size:10px;">${r.market_session.replace(/_/g,' ')}</span>` : '';
     const liveP = state.prices[r.ticker];
     const livePriceHtml = liveP
       ? `<span class="rec-card-live-price" id="live-${r.ticker}" style="color:${liveP.change_pct >= 0 ? 'var(--success-text)' : 'var(--error-text)'};">$${fmt(liveP.price)} (${liveP.change_pct >= 0 ? '+' : ''}${fmt(liveP.change_pct)}%)</span>`
       : `<span class="rec-card-live-price" id="live-${r.ticker}">~ Delayed</span>`;
+
+    // Dual SL/TP rows: Math (ATR-based) + LLM estimate
+    const hasMath = r.stop_loss || r.take_profit;
+    const hasLLM  = r.llm_stop_loss || r.llm_take_profit;
+    const levelsHtml = `
+      <div class="rec-levels-dual">
+        <div class="rec-levels-row">
+          <span class="rec-source-label rec-source-label--math" data-tooltip="ATR-based stop &amp; target — same math as the main engine">⚙ Math</span>
+          <div class="rec-level">
+            <span class="rec-level-label">Stop Loss</span>
+            <span class="rec-level-value rec-level-value--sl">${r.stop_loss ? '$' + fmt(r.stop_loss) : '—'}</span>
+          </div>
+          <div class="rec-level">
+            <span class="rec-level-label">Take Profit</span>
+            <span class="rec-level-value rec-level-value--tp">${r.take_profit ? '$' + fmt(r.take_profit) : '—'}</span>
+          </div>
+        </div>
+        <div class="rec-levels-row">
+          <span class="rec-source-label rec-source-label--llm" data-tooltip="LLM-adjusted levels based on news, regime and key price levels">✦ LLM</span>
+          <div class="rec-level">
+            <span class="rec-level-label">Stop Loss</span>
+            <span class="rec-level-value rec-level-value--sl">${r.llm_stop_loss ? '$' + fmt(r.llm_stop_loss) : '—'}</span>
+          </div>
+          <div class="rec-level">
+            <span class="rec-level-label">Take Profit</span>
+            <span class="rec-level-value rec-level-value--tp">${r.llm_take_profit ? '$' + fmt(r.llm_take_profit) : '—'}</span>
+          </div>
+        </div>
+      </div>`;
+
     return `<div class="rec-card rec-card--${dir}">
       <div class="rec-card-header">
         <span class="rec-card-ticker">${r.ticker}</span>
@@ -632,22 +631,13 @@
         <span class="rec-card-price">${r.entry_price ? '$' + fmt(r.entry_price) : '—'}</span>
         ${livePriceHtml}
       </div>
-      <div class="rec-levels">
-        <div class="rec-level">
-          <span class="rec-level-label">Stop Loss</span>
-          <span class="rec-level-value rec-level-value--sl">${r.stop_loss ? '$' + fmt(r.stop_loss) : '—'}</span>
-        </div>
-        <div class="rec-level">
-          <span class="rec-level-label">Take Profit</span>
-          <span class="rec-level-value rec-level-value--tp">${r.take_profit ? '$' + fmt(r.take_profit) : '—'}</span>
-        </div>
-      </div>
+      ${levelsHtml}
       <div class="rec-meta">
-        <span class="badge badge--blue" style="font-size:11px;">
-          <span style="font-size:10px;">Conf</span> ${r.confidence != null ? r.confidence + '%' : '—'}
+        <span class="badge badge--blue" style="font-size:11px;" data-tooltip="Math-computed confidence from RSI/MACD/ADX/Stochastic/OBV/VP alignment">
+          Conf ${r.confidence != null ? r.confidence + '%' : '—'}
         </span>
         ${r.risk_reward ? `<span class="badge badge--gray" style="font-size:11px;">R:R ${fmt(r.risk_reward)}x</span>` : ''}
-        ${r.timeframe ? `<span class="badge badge--gray" style="font-size:11px;">${r.timeframe}</span>` : ''}
+        ${r.timeframe ? `<span class="badge badge--gray" style="font-size:11px;" data-tooltip="Trade type determined by LLM based on ATR%, volatility and session">${r.timeframe}</span>` : ''}
       </div>
       ${r.rationale ? `<div class="rec-rationale">${r.rationale}</div>` : ''}
       <div class="rec-card-footer">
@@ -724,27 +714,14 @@
       document.getElementById('historyModal').style.display = 'none';
     });
 
-    document.getElementById('btnEditWatchlist').addEventListener('click', () => {
-      document.getElementById('watchlistInput').value = state.watchlist.join(', ');
-      document.getElementById('watchlistModal').style.display = 'flex';
+    document.getElementById('universeBadge').addEventListener('click', () => {
+      const list = document.getElementById('universeList');
+      list.textContent = state.watchlist.join('  ·  ') || 'Loading…';
+      document.getElementById('universeModal').style.display = 'flex';
     });
 
-    document.getElementById('btnWlCancel').addEventListener('click', () => {
-      document.getElementById('watchlistModal').style.display = 'none';
-    });
-
-    document.getElementById('btnWlSave').addEventListener('click', async () => {
-      const raw = document.getElementById('watchlistInput').value;
-      const tickers = raw.split(',').map(t => t.trim().toUpperCase()).filter(Boolean);
-      try {
-        const d = await api('POST', '/watchlist', { tickers });
-        state.watchlist = d.tickers;
-        renderWatchlistChips();
-        document.getElementById('watchlistModal').style.display = 'none';
-        showToast('Watchlist updated', 'success');
-      } catch (e) {
-        showToast('Failed to save watchlist', 'error');
-      }
+    document.getElementById('btnUniverseClose').addEventListener('click', () => {
+      document.getElementById('universeModal').style.display = 'none';
     });
   }
 
