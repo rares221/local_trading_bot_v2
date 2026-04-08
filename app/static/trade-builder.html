@@ -10,6 +10,139 @@
   <link rel="stylesheet" href="/static/css/common.css">
   <script src="/static/js/icons.js"></script>
   <style>
+    /* ── Search Hero ── */
+    .sb-hero {
+      position: relative; overflow: hidden;
+      background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 55%, #312e81 100%);
+      border-radius: var(--radius); border: 1px solid rgba(99,102,241,.3);
+      padding: 40px 40px 32px;
+    }
+    .sb-hero::before {
+      content: ''; position: absolute; inset: 0; pointer-events: none;
+      background-image: radial-gradient(circle at 1px 1px, rgba(255,255,255,.04) 1px, transparent 0);
+      background-size: 28px 28px;
+    }
+    .sb-hero::after {
+      content: ''; position: absolute; top: -80px; right: -80px; pointer-events: none;
+      width: 320px; height: 320px; border-radius: 50%;
+      background: radial-gradient(circle, rgba(99,102,241,.15) 0%, transparent 70%);
+    }
+    .sb-hero > * { position: relative; z-index: 1; }
+    .sb-hero-title {
+      font-size: 26px; font-weight: 800; color: #f8fafc;
+      margin: 0 0 5px; letter-spacing: -.03em; line-height: 1.2;
+    }
+    .sb-hero-sub {
+      font-size: 13px; color: rgba(248,250,252,.45); margin: 0 0 28px;
+    }
+    .sb-search-wrap {
+      display: flex; align-items: center; gap: 0;
+      background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.14);
+      border-radius: 12px; overflow: hidden;
+      transition: border-color .2s, box-shadow .2s;
+    }
+    .sb-search-wrap:focus-within {
+      border-color: rgba(129,140,248,.65);
+      box-shadow: 0 0 0 3px rgba(99,102,241,.15);
+    }
+    .sb-search-icon {
+      padding: 0 14px; color: rgba(248,250,252,.35);
+      display: flex; align-items: center; flex-shrink: 0;
+    }
+    .sb-search-input {
+      flex: 1; background: none; border: none; outline: none;
+      padding: 16px 8px; font-size: 17px; font-weight: 500;
+      color: #f8fafc; font-family: inherit; min-width: 0;
+    }
+    .sb-search-input::placeholder { color: rgba(248,250,252,.28); font-weight: 400; }
+    .sb-build-btn {
+      flex-shrink: 0; margin: 6px; padding: 11px 22px;
+      background: #6366f1; color: #fff; border: none; border-radius: 8px;
+      font-size: 14px; font-weight: 700; cursor: pointer;
+      display: flex; align-items: center; gap: 7px;
+      transition: background .15s, transform .1s; white-space: nowrap;
+      font-family: inherit; letter-spacing: -.01em;
+    }
+    .sb-build-btn:hover:not(:disabled) { background: #4f46e5; }
+    .sb-build-btn:active:not(:disabled) { transform: scale(.97); }
+    .sb-build-btn:disabled { opacity: .55; cursor: not-allowed; }
+    .sb-cat-row {
+      display: flex; align-items: center; gap: 8px;
+      margin-top: 9px; min-height: 22px; padding-left: 2px;
+    }
+    .sb-cat-label { font-size: 11px; color: rgba(248,250,252,.35); }
+    .sb-cat-badge {
+      font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em;
+      padding: 2px 8px; border-radius: 99px;
+      background: rgba(99,102,241,.25); color: #a5b4fc;
+    }
+    .sb-cat-override-hint { font-size: 11px; color: rgba(248,250,252,.25); }
+    .sb-quick-label {
+      font-size: 10px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .07em; color: rgba(248,250,252,.3);
+      align-self: center; flex-shrink: 0;
+    }
+    .sb-quick-picks { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 20px; align-items: center; }
+    .sb-pick-btn {
+      padding: 5px 14px; border-radius: 99px;
+      background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.1);
+      color: rgba(248,250,252,.65); font-size: 13px; font-weight: 600;
+      cursor: pointer; font-family: inherit;
+      transition: background .15s, border-color .15s, color .15s;
+      font-variant-numeric: tabular-nums;
+    }
+    .sb-pick-btn:hover {
+      background: rgba(99,102,241,.22); border-color: rgba(99,102,241,.45); color: #f8fafc;
+    }
+    .sb-footer-row {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-top: 20px; flex-wrap: wrap; gap: 12px;
+    }
+    .sb-advanced-toggle {
+      background: none; border: none; color: rgba(248,250,252,.4);
+      font-size: 12px; cursor: pointer; display: flex; align-items: center; gap: 5px;
+      font-family: inherit; padding: 0; transition: color .15s;
+    }
+    .sb-advanced-toggle:hover { color: rgba(248,250,252,.75); }
+    .sb-pick-from-list {
+      color: rgba(248,250,252,.4); font-size: 13px; text-decoration: none;
+      display: flex; align-items: center; gap: 5px; transition: color .15s;
+    }
+    .sb-pick-from-list:hover { color: rgba(248,250,252,.75); }
+    .sb-advanced-panel {
+      display: none; margin-top: 18px; padding-top: 18px;
+      border-top: 1px solid rgba(255,255,255,.09);
+    }
+    .sb-advanced-panel.open { display: block; }
+    .sb-adv-label {
+      font-size: 10px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .07em; color: rgba(248,250,252,.3); margin-bottom: 12px;
+    }
+    .sb-adv-row { display: flex; align-items: flex-start; gap: 28px; flex-wrap: wrap; }
+    .sb-adv-field { display: flex; flex-direction: column; gap: 5px; }
+    .sb-adv-field-label { font-size: 11px; color: rgba(248,250,252,.4); font-weight: 600; }
+    .sb-cat-select {
+      background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.14);
+      border-radius: var(--radius); color: rgba(248,250,252,.8);
+      padding: 7px 12px; font-size: 13px; font-family: inherit; outline: none; cursor: pointer;
+    }
+    .sb-cat-select:focus { border-color: rgba(129,140,248,.6); }
+    .sb-cat-select option { background: #1e293b; color: #f8fafc; }
+    .sb-refresh-label {
+      display: flex; align-items: flex-start; gap: 9px;
+      font-size: 13px; color: rgba(248,250,252,.6); cursor: pointer; line-height: 1.4;
+    }
+    .sb-refresh-label input[type="checkbox"] { margin-top: 2px; flex-shrink: 0; cursor: pointer; }
+    .sb-adv-hint {
+      font-size: 11px; color: rgba(248,250,252,.25); margin-top: 10px; line-height: 1.5;
+    }
+    @media (max-width: 600px) {
+      .sb-hero { padding: 28px 20px 24px; }
+      .sb-hero-title { font-size: 20px; }
+      .sb-search-input { font-size: 15px; padding: 13px 6px; }
+      .sb-build-btn { padding: 9px 16px; font-size: 13px; }
+    }
+
     .trade-card {
       background: var(--card); border: 1px solid var(--border);
       border-left: 4px solid #3b82f6; border-radius: var(--radius);
@@ -40,39 +173,295 @@
       font-family: var(--font-mono);
     }
     .strategy-explain {
-      margin-top: var(--space-3); padding: var(--space-3);
+      margin-top: var(--space-2);
+      font-size: 14px; line-height: 1.65; color: var(--foreground);
+    }
+    .strategy-explain--loading {
+      padding: var(--space-3);
       background: var(--secondary); border: 1px solid var(--border);
-      border-radius: var(--radius); font-size: 14px; line-height: 1.65;
-      white-space: pre-wrap; color: var(--foreground);
+      border-radius: var(--radius);
+      color: var(--muted-foreground); font-style: italic;
     }
-    .strategy-explain--loading { color: var(--muted-foreground); font-style: italic; }
     .strategy-explain-meta { font-size: 11px; color: var(--muted-foreground); margin-top: 8px; }
-    .sim-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-    .sim-table th, .sim-table td {
-      border: 1px solid var(--border); padding: 8px 10px; text-align: left;
+
+    /* Explanation rendered sections */
+    .explain-heading {
+      font-size: 15px; font-weight: 700; color: var(--foreground);
+      margin: 0 0 12px; padding-bottom: 10px;
+      border-bottom: 1px solid var(--border);
+      letter-spacing: -.01em;
     }
-    .sim-table th { background: var(--secondary); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
-    .sim-table td.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; text-align: right; }
+    .explain-levels {
+      display: flex; flex-wrap: wrap; gap: 10px;
+      margin-bottom: 16px;
+    }
+    .explain-level {
+      display: flex; flex-direction: column; gap: 2px;
+      padding: 9px 14px; border-radius: var(--radius);
+      border: 1px solid; min-width: 110px; flex: 1;
+    }
+    .explain-level--entry {
+      background: rgba(99,102,241,.08); border-color: rgba(99,102,241,.25);
+    }
+    .explain-level--sl {
+      background: rgba(239,68,68,.08); border-color: rgba(239,68,68,.25);
+    }
+    .explain-level--tp {
+      background: rgba(16,185,129,.08); border-color: rgba(16,185,129,.25);
+    }
+    .explain-level--rr {
+      background: rgba(245,158,11,.08); border-color: rgba(245,158,11,.25);
+    }
+    .explain-level-label {
+      font-size: 10px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .07em; color: var(--muted-foreground);
+    }
+    .explain-level--entry .explain-level-label { color: #6366f1; }
+    .explain-level--sl    .explain-level-label { color: #ef4444; }
+    .explain-level--tp    .explain-level-label { color: #10b981; }
+    .explain-level--rr    .explain-level-label { color: #f59e0b; }
+    .explain-level-value {
+      font-size: 16px; font-weight: 700; font-family: var(--font-mono);
+      font-variant-numeric: tabular-nums; color: var(--foreground);
+    }
+    .explain-para {
+      margin: 0 0 12px; color: var(--foreground); font-size: 14px; line-height: 1.7;
+    }
+    .explain-list {
+      margin: 0 0 12px; padding-left: 0; list-style: none;
+      display: flex; flex-direction: column; gap: 6px;
+    }
+    .explain-list li {
+      padding: 8px 12px; background: var(--secondary);
+      border: 1px solid var(--border); border-left: 3px solid var(--border);
+      border-radius: var(--radius); font-size: 13px; line-height: 1.55;
+    }
+    .explain-pro, .explain-con {
+      display: flex; align-items: flex-start; gap: 10px;
+      padding: 10px 14px; border-radius: var(--radius);
+      border: 1px solid; margin-bottom: 8px; font-size: 13px; line-height: 1.6;
+    }
+    .explain-pro {
+      background: rgba(16,185,129,.08); border-color: rgba(16,185,129,.25);
+    }
+    .explain-con {
+      background: rgba(239,68,68,.07); border-color: rgba(239,68,68,.22);
+    }
+    .explain-badge {
+      flex-shrink: 0; font-size: 10px; font-weight: 800;
+      text-transform: uppercase; letter-spacing: .08em;
+      padding: 2px 7px; border-radius: 99px; margin-top: 1px;
+    }
+    .explain-badge--pro { background: rgba(16,185,129,.2); color: #059669; }
+    .explain-badge--con { background: rgba(239,68,68,.15); color: #dc2626; }
+    .explain-note {
+      display: flex; align-items: flex-start; gap: 8px;
+      padding: 10px 14px; border-radius: var(--radius);
+      background: rgba(245,158,11,.07); border: 1px solid rgba(245,158,11,.25);
+      font-size: 13px; line-height: 1.6; color: var(--foreground); margin-top: 4px;
+    }
+    .explain-note::before {
+      content: "⚠"; font-size: 13px; color: #f59e0b; flex-shrink: 0; margin-top: 1px;
+    }
+    /* dark mode tweaks */
+    .dark .explain-level--entry { background: rgba(99,102,241,.12); }
+    .dark .explain-level--sl    { background: rgba(239,68,68,.12); }
+    .dark .explain-level--tp    { background: rgba(16,185,129,.12); }
+    .dark .explain-level--rr    { background: rgba(245,158,11,.12); }
+    .dark .explain-list li { background: rgba(255,255,255,.04); }
     .r-pos { color: #10b981; font-weight: 600; }
     .r-neg { color: #ef4444; font-weight: 600; }
     .r-zero { color: var(--muted-foreground); }
+
+    /* ── Scenario cards ── */
+    .sim-cards { display: flex; flex-direction: column; gap: 8px; }
+    .sim-card {
+      display: grid;
+      grid-template-columns: 170px 1fr 175px 175px;
+      gap: 0;
+      border: 1px solid var(--border);
+      border-left: 4px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      background: var(--card);
+    }
+    .sim-card--win  { border-left-color: #10b981; }
+    .sim-card--partial { border-left-color: #3b82f6; }
+    .sim-card--scratch { border-left-color: #f59e0b; }
+    .sim-card--loss { border-left-color: #ef4444; }
+    .sim-card-scenario {
+      padding: 12px 14px; border-right: 1px solid var(--border);
+      display: flex; flex-direction: column; gap: 4px; justify-content: center;
+      background: var(--secondary);
+    }
+    .sim-card-title { font-size: 13px; font-weight: 700; color: var(--foreground); }
+    .sim-outcome-badge {
+      display: inline-flex; align-items: center; gap: 4px;
+      font-size: 10px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .06em; padding: 2px 7px; border-radius: 99px;
+      width: fit-content;
+    }
+    .sim-outcome-badge--win    { background: rgba(16,185,129,.15); color: #059669; }
+    .sim-outcome-badge--partial { background: rgba(59,130,246,.15); color: #2563eb; }
+    .sim-outcome-badge--scratch { background: rgba(245,158,11,.15); color: #d97706; }
+    .sim-outcome-badge--loss   { background: rgba(239,68,68,.15); color: #dc2626; }
+    .sim-card-assumption {
+      padding: 12px 14px; border-right: 1px solid var(--border);
+      display: flex; flex-direction: column; gap: 3px; justify-content: center;
+    }
+    .sim-assumption-short { font-size: 13px; font-weight: 500; color: var(--foreground); }
+    .sim-assumption-detail { font-size: 11px; color: var(--muted-foreground); line-height: 1.4; }
+    .sim-r-col {
+      padding: 10px 12px; display: flex; flex-direction: column;
+      gap: 5px; justify-content: center; align-items: center;
+      border-right: 1px solid var(--border);
+    }
+    .sim-r-col:last-child { border-right: none; }
+    .sim-r-value {
+      font-size: 20px; font-weight: 800; font-family: var(--font-mono);
+      font-variant-numeric: tabular-nums; line-height: 1;
+    }
+    .sim-r-money { font-size: 10px; color: var(--muted-foreground); font-family: var(--font-mono); }
+    .sim-r-bar-track {
+      width: 100%; height: 4px; border-radius: 2px;
+      background: var(--border); overflow: hidden; position: relative;
+    }
+    .sim-r-bar-fill {
+      height: 100%; border-radius: 2px; transition: width .3s ease;
+    }
+    .sim-r-bar-fill--pos { background: #10b981; }
+    .sim-r-bar-fill--neg { background: #ef4444; }
+    .sim-r-bar-fill--zero { background: var(--muted-foreground); width: 4px !important; }
+    .sim-chosen-wins {
+      font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
+      color: #10b981; background: rgba(16,185,129,.12); padding: 1px 5px;
+      border-radius: 99px; white-space: nowrap;
+    }
+    /* column headers row */
+    .sim-header {
+      display: grid;
+      grid-template-columns: 170px 1fr 175px 175px;
+      gap: 0; padding: 0; margin-bottom: 4px;
+    }
+    .sim-header-cell {
+      font-size: 10px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .07em; color: var(--muted-foreground);
+      padding: 4px 12px 4px;
+    }
+    .sim-header-cell:nth-child(3), .sim-header-cell:nth-child(4) { text-align: center; }
+    /* ── Strategy tabs ── */
+    .strat-card { padding: 0; overflow: hidden; }
+    .strat-tabs-wrap {
+      border-bottom: 1px solid var(--border);
+      overflow-x: auto; scrollbar-width: none;
+      padding: 0 var(--space-3);
+    }
+    .strat-tabs-wrap::-webkit-scrollbar { display: none; }
+    .strat-tab-bar {
+      display: flex; gap: 0; min-width: max-content;
+    }
+    .strat-tab-btn {
+      display: inline-flex; align-items: center; gap: 7px;
+      padding: 13px 18px;
+      font-size: 13px; font-weight: 500;
+      color: var(--muted-foreground);
+      background: none; border: none;
+      border-bottom: 2px solid transparent;
+      cursor: pointer; white-space: nowrap;
+      transition: color .15s, border-color .15s;
+      font-family: inherit; margin-bottom: -1px;
+    }
+    .strat-tab-btn:hover { color: var(--foreground); }
+    .strat-tab-btn.active {
+      color: var(--primary); border-bottom-color: var(--primary); font-weight: 600;
+    }
+    .strat-tab-btn:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+    .strat-tab-legs {
+      font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
+      padding: 2px 6px; border-radius: 99px;
+      background: var(--secondary); color: var(--muted-foreground);
+      transition: background .15s, color .15s;
+    }
+    .strat-tab-btn.active .strat-tab-legs {
+      background: rgba(99,102,241,.12); color: var(--primary);
+    }
+    .strat-panel-wrap { padding: var(--space-3); }
+    .strat-leg-hint {
+      display: none;
+      font-size: 12px; color: var(--muted-foreground);
+      padding: 0 0 12px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: var(--space-2);
+    }
+    .strat-section-label {
+      font-size: 10px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .08em; color: var(--muted-foreground);
+      margin-bottom: 10px; display: flex; align-items: center; gap: 6px;
+    }
+    .strat-section-label::after {
+      content: ''; flex: 1; height: 1px; background: var(--border);
+    }
+    .strat-divider { height: 1px; background: var(--border); margin: var(--space-3) 0; }
+
+    /* ── R explainer strip ── */
+    .r-explainer {
+      display: flex; flex-direction: column; gap: 10px;
+      margin-bottom: 16px;
+      padding: 14px 16px;
+      background: var(--secondary); border: 1px solid var(--border);
+      border-radius: var(--radius);
+    }
+    .r-explainer-label {
+      font-size: 11px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .07em; color: var(--muted-foreground); margin-bottom: 2px;
+    }
+    .r-explainer-intro {
+      font-size: 13px; color: var(--foreground); line-height: 1.5;
+    }
+    .r-explainer-intro strong { color: var(--foreground); }
+    .r-examples {
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
+    }
+    .r-ex {
+      display: flex; flex-direction: column; gap: 5px;
+      padding: 10px 12px; border-radius: var(--radius); border: 1px solid;
+    }
+    .r-ex--win   { background: rgba(16,185,129,.08); border-color: rgba(16,185,129,.25); }
+    .r-ex--zero  { background: rgba(100,116,139,.08); border-color: rgba(100,116,139,.2); }
+    .r-ex--loss  { background: rgba(239,68,68,.07);  border-color: rgba(239,68,68,.22); }
+    .r-ex-value {
+      font-size: 22px; font-weight: 800; font-family: var(--font-mono);
+      font-variant-numeric: tabular-nums; line-height: 1;
+    }
+    .r-ex--win  .r-ex-value { color: #10b981; }
+    .r-ex--zero .r-ex-value { color: var(--muted-foreground); }
+    .r-ex--loss .r-ex-value { color: #ef4444; }
+    .r-ex-headline {
+      font-size: 12px; font-weight: 600; color: var(--foreground);
+    }
+    .r-ex-sub {
+      font-size: 11px; color: var(--muted-foreground); line-height: 1.4;
+    }
+    .r-explainer-formula {
+      font-size: 12px; color: var(--muted-foreground);
+      padding-top: 6px; border-top: 1px solid var(--border);
+      line-height: 1.5;
+    }
+    .r-explainer-formula strong { color: var(--foreground); }
+    /* responsive */
+    @media (max-width: 720px) {
+      .sim-card, .sim-header {
+        grid-template-columns: 1fr 1fr;
+      }
+      .sim-card-assumption { display: none; }
+      .sim-header-cell:nth-child(2) { display: none; }
+      .sim-card-scenario { border-right: none; border-bottom: 1px solid var(--border); grid-column: 1 / -1; }
+      .r-examples { grid-template-columns: 1fr; }
+    }
     @media (max-width: 720px) {
       .trade-levels { grid-template-columns: 1fr; }
       .level-cell { border-right: none; border-bottom: 1px solid var(--border); }
     }
-    .tb-refresh-guide {
-      display: block;
-      margin-bottom: var(--space-3);
-      font-size: 14px;
-      line-height: 1.55;
-    }
-    .tb-refresh-guide ul {
-      margin: 8px 0 0;
-      padding-left: 1.15rem;
-    }
-    .tb-refresh-guide li { margin-bottom: 6px; }
-    .tb-refresh-guide li:last-child { margin-bottom: 0; }
-    .tb-refresh-guide .tb-h { font-weight: 600; color: var(--foreground); }
   </style>
 </head>
 <body>
@@ -83,58 +472,90 @@
     <a href="/research"><span data-icon="search"></span> Research</a>
     <a href="/analysis"><span data-icon="bar-chart-2"></span> Analysis</a>
     <a href="/active-trades"><span data-icon="activity"></span> Active trades</a>
+    <a href="/backtest"><span data-icon="history"></span> Backtest</a>
     <a href="/journal"><span data-icon="book-open"></span> Journal</a>
     <a href="/briefing"><span data-icon="newspaper"></span> Briefing</a>
     <a href="/calendar"><span data-icon="calendar"></span> Calendar</a>
   </nav>
 
   <main class="app app--wide">
-    <h1 class="page-title">Trade builder</h1>
-    <p class="page-desc">Review the system idea, pick an execution strategy, read the explanation, then confirm. Open from <a href="/recommendations">Recommendations</a> (<strong>Took it</strong>), or start below with any symbol the bot can price (live data + latest analysis sentiment when available). Trades are only created after you confirm.</p>
+    <div id="err" class="alert alert--error mb-3" style="display:none;"></div>
 
-    <div id="err" class="alert alert--error" style="display:none;"></div>
+    <div id="start-panel" style="display:none; margin-bottom: var(--space-3);">
+      <div class="sb-hero">
+        <div class="sb-hero-title">Build a Trade Plan</div>
+        <div class="sb-hero-sub">Live prices &middot; technicals &middot; multi-strategy execution &middot; R-multiple scenarios</div>
 
-    <div id="start-panel" class="card mb-3" style="display:none;">
-      <h2 class="section-title"><span data-icon="search"></span> Start from a symbol</h2>
-      <p class="text-sm text-muted mb-3">Same engine as <strong>Took it</strong> from the list: live price and technicals for every build. Sentiment and event hints come from the <strong>latest saved analysis</strong> when the pipeline has been run (<a href="/dashboard">Dashboard</a>).</p>
-
-      <div class="alert alert--info tb-refresh-guide">
-        <div class="flex gap-2" style="align-items:flex-start; margin-bottom:6px;">
-          <span data-icon="info" class="text-muted" style="flex-shrink:0; margin-top:2px;"></span>
-          <strong>“Refresh news &amp; analysis” — need it or not?</strong>
+        <!-- Main search input -->
+        <div class="sb-search-wrap">
+          <span class="sb-search-icon">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+          </span>
+          <input type="text" id="sf-asset" class="sb-search-input"
+                 placeholder="Symbol or asset — AAPL, Brent, BTC, NDX…"
+                 autocomplete="off" spellcheck="false">
+          <button type="button" class="sb-build-btn" id="sf-submit">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+            Build
+          </button>
         </div>
-        <ul>
-          <li><span class="tb-h">Not on today&rsquo;s recommendation list?</span> That alone is <strong>not</strong> a reason to enable the refresh. Off-list symbols still build from live data; the list only means that asset wasn&rsquo;t in the last batch ranking.</li>
-          <li><span class="tb-h">Leave the box off (usual case):</span> Fast. Uses whatever analysis is already in the database plus current prices.</li>
-          <li><span class="tb-h">Turn it on only if:</span> You want to pull new headlines and re-run the analysis job <em>before</em> this build (can take several minutes; it refreshes the global feed, not only your symbol). Examples: you haven&rsquo;t run the pipeline yet, or your stored analysis is clearly outdated.</li>
-          <li class="text-sm text-muted" style="list-style:none; margin-left:-1.15rem; margin-top:8px;">Neither option regenerates the full daily recommendations list — use <strong>Dashboard → Run full pipeline</strong> when you want that.</li>
-        </ul>
-      </div>
 
-      <div class="form-group">
-        <label for="sf-category">Category</label>
-        <select id="sf-category" class="input" style="max-width:min(100%, 360px);">
-          <option value="stocks">Stocks</option>
-          <option value="commodities">Commodities</option>
-          <option value="indices">Indices</option>
-          <option value="other">Other</option>
-        </select>
-      </div>
-      <div class="form-group">
-        <label for="sf-asset">Symbol / asset id</label>
-        <input type="text" id="sf-asset" class="input" placeholder="e.g. AAPL" style="max-width:min(100%, 360px);" autocomplete="off">
-      </div>
-      <div class="form-group mb-3">
-        <span class="text-sm font-semibold" style="display:block; margin-bottom:6px;">Optional pre-step</span>
-        <label class="flex gap-2" style="align-items:flex-start; cursor:pointer;">
-          <input type="checkbox" id="sf-refresh" style="margin-top:4px;">
-          <span class="text-sm">Refresh news &amp; analysis before building (ingestion + analysis jobs; slow)</span>
-        </label>
-        <p class="text-sm text-muted mt-1 mb-0">See the blue note above — most users leave this unchecked.</p>
-      </div>
-      <div class="flex gap-2 flex-wrap">
-        <button type="button" class="btn btn--primary" id="sf-submit"><span data-icon="sliders-horizontal"></span> Build plan</button>
-        <a href="/recommendations" class="btn btn--secondary">Pick from today&rsquo;s list</a>
+        <!-- Auto-detected category indicator -->
+        <div class="sb-cat-row" id="sb-cat-row" style="visibility:hidden;">
+          <span class="sb-cat-label">Detected category:</span>
+          <span class="sb-cat-badge" id="sb-cat-badge">stocks</span>
+          <span class="sb-cat-override-hint">— override in Advanced</span>
+        </div>
+
+        <!-- Quick picks -->
+        <div class="sb-quick-picks">
+          <span class="sb-quick-label">Quick</span>
+          <button type="button" class="sb-pick-btn" data-symbol="AAPL"  data-cat="stocks">AAPL</button>
+          <button type="button" class="sb-pick-btn" data-symbol="MSFT"  data-cat="stocks">MSFT</button>
+          <button type="button" class="sb-pick-btn" data-symbol="Gold"  data-cat="commodities">Gold</button>
+          <button type="button" class="sb-pick-btn" data-symbol="Brent" data-cat="commodities">Brent</button>
+          <button type="button" class="sb-pick-btn" data-symbol="BTC"   data-cat="other">BTC</button>
+          <button type="button" class="sb-pick-btn" data-symbol="NDX"   data-cat="indices">NDX</button>
+        </div>
+
+        <!-- Footer: Advanced toggle + pick from list -->
+        <div class="sb-footer-row">
+          <button type="button" class="sb-advanced-toggle" id="sb-adv-toggle">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 0-14.14 0M4.93 19.07a10 10 0 0 0 14.14 0M12 2v2M12 20v2M2 12h2M20 12h2"/></svg>
+            Advanced
+            <span id="sb-adv-arrow" style="font-size:10px;">▾</span>
+          </button>
+          <a href="/recommendations" class="sb-pick-from-list">
+            Pick from today&rsquo;s recommendations &rarr;
+          </a>
+        </div>
+
+        <!-- Advanced panel (collapsed by default) -->
+        <div class="sb-advanced-panel" id="sb-advanced">
+          <div class="sb-adv-label">Advanced options</div>
+          <div class="sb-adv-row">
+            <div class="sb-adv-field">
+              <span class="sb-adv-field-label">Category override</span>
+              <select id="sf-category" class="sb-cat-select">
+                <option value="auto">Auto-detect</option>
+                <option value="stocks">Stocks</option>
+                <option value="commodities">Commodities</option>
+                <option value="indices">Indices</option>
+                <option value="other">Other (crypto…)</option>
+              </select>
+            </div>
+            <div class="sb-adv-field" style="justify-content:flex-end; padding-top:18px;">
+              <label class="sb-refresh-label">
+                <input type="checkbox" id="sf-refresh">
+                Refresh news &amp; analysis before building
+              </label>
+            </div>
+          </div>
+          <div class="sb-adv-hint">
+            <strong style="color:rgba(248,250,252,.45);">Refresh</strong> re-runs ingestion + analysis jobs before the build (slow, several minutes).
+            Leave off unless your saved analysis is clearly outdated. Does <em>not</em> regenerate the full recommendations list — use Dashboard &rarr; Run full pipeline for that.
+          </div>
+        </div>
       </div>
     </div>
 
@@ -168,33 +589,66 @@
         <div style="padding:12px var(--space-3); font-size:13px; color:var(--muted-foreground);" id="rec-notes"></div>
       </section>
 
-      <section class="card mb-3">
-        <h2 class="section-title"><span data-icon="sliders-horizontal"></span> Execution strategy</h2>
-        <div class="form-group">
-          <label for="strategy-select">Strategy</label>
-          <select id="strategy-select" class="input" style="max-width:min(100%, 520px);"></select>
+      <section class="card strat-card mb-3">
+        <!-- Tab bar -->
+        <div class="strat-tabs-wrap">
+          <div class="strat-tab-bar" id="strat-tab-bar" role="tablist"></div>
         </div>
-        <p class="text-sm text-muted mt-1 mb-0" id="strategy-levels-hint" style="display:none;"></p>
-        <h3 class="text-sm font-semibold mt-3 mb-1" style="color:var(--foreground);">Explanation</h3>
-        <div id="strategy-explain" class="strategy-explain strategy-explain--loading">Select a strategy to generate an explanation.</div>
-        <p class="strategy-explain-meta" id="strategy-explain-meta"></p>
-      </section>
+        <!-- Panel -->
+        <div class="strat-panel-wrap">
+          <!-- Leg details hint (fine text) -->
+          <p class="strat-leg-hint" id="strategy-levels-hint"></p>
 
-      <section class="card mb-3">
-        <h2 class="section-title"><span data-icon="activity"></span> Scenario sketch (R-multiples)</h2>
-        <p class="text-sm text-muted mb-2" id="sim-footnote"></p>
-        <div class="table-wrap">
-          <table class="sim-table">
-            <thead>
-              <tr>
-                <th>Scenario</th>
-                <th>Assumption</th>
-                <th class="num">Vanilla (R)</th>
-                <th class="num" id="sim-r-header-selected">Chosen (R)</th>
-              </tr>
-            </thead>
-            <tbody id="sim-body"></tbody>
-          </table>
+          <!-- Execution plan -->
+          <div class="strat-section-label">Execution Plan</div>
+          <div id="strategy-explain" class="strategy-explain strategy-explain--loading">Select a strategy to generate an explanation.</div>
+          <p class="strategy-explain-meta" id="strategy-explain-meta"></p>
+
+          <div class="strat-divider"></div>
+
+          <!-- Scenario sketch -->
+          <div class="strat-section-label">Scenario Sketch — R-multiples</div>
+          <p class="text-sm text-muted mb-2" id="sim-footnote"></p>
+          <div class="r-explainer">
+            <div>
+              <div class="r-explainer-label">Understanding R-multiples</div>
+              <div class="r-explainer-intro">
+                <strong>R = Risk unit.</strong> Before entering a trade you decide: "I'm willing to lose X dollars on this."
+                That amount is your <strong>1R</strong>. Every outcome below is expressed as a multiple of that number —
+                so you can compare trades regardless of position size.
+              </div>
+            </div>
+            <div class="r-examples">
+              <div class="r-ex r-ex--win">
+                <span class="r-ex-value">+2R</span>
+                <span class="r-ex-headline">You made 2× your risk</span>
+                <span class="r-ex-sub">Risked $100 → walked away with +$200 profit</span>
+              </div>
+              <div class="r-ex r-ex--zero">
+                <span class="r-ex-value">~0R</span>
+                <span class="r-ex-headline">Break even</span>
+                <span class="r-ex-sub">Exited near entry — neither gained nor lost</span>
+              </div>
+              <div class="r-ex r-ex--loss">
+                <span class="r-ex-value">−1R</span>
+                <span class="r-ex-headline">Stop hit — full loss</span>
+                <span class="r-ex-sub">Risked $100 → stop triggered, lost $100</span>
+              </div>
+            </div>
+            <div class="r-explainer-formula">
+              <strong>Your formula:</strong> pick any risk amount (e.g. $500) →
+              multiply by the R shown to get your dollar outcome.
+              <strong>+1.07R on $500 = +$535 profit. −1R on $500 = −$500 loss.</strong>
+              The "per $100 risked" figures in the cards below use this same logic.
+            </div>
+          </div>
+          <div class="sim-header">
+            <div class="sim-header-cell">Scenario</div>
+            <div class="sim-header-cell">What could happen</div>
+            <div class="sim-header-cell">Vanilla (R)</div>
+            <div class="sim-header-cell" id="sim-r-header-selected">Chosen (R)</div>
+          </div>
+          <div class="sim-cards" id="sim-body"></div>
         </div>
       </section>
 
@@ -468,27 +922,67 @@
       };
     }
 
-    var SIM_SCENARIO_TITLES = ['System right', 'Partially right', 'Partially wrong', 'Wrong'];
+    var SIM_SCENARIO_TITLES   = ['System right', 'Partially right', 'Partially wrong', 'Wrong'];
+    var SIM_SCENARIO_BADGES   = ['Full Win', 'Partial', 'Break Even', 'Full Loss'];
+    var SIM_SCENARIO_TYPES    = ['win', 'partial', 'scratch', 'loss'];
+    var SIM_SCENARIO_SHORTS   = [
+      'All targets hit',
+      'First exit fills, runner stopped',
+      'First exit fills, runner flat',
+      'Stopped out early',
+    ];
     var SIM_SCENARIO_DETAILS = [
-      'All planned take-profit levels for the plan are reached before the stop.',
+      'All planned take-profit levels are reached before the stop.',
       'First scale-out fills; remaining size stopped (≈½R drag on runner notional, illustrative).',
       'First scale-out fills; remaining size scratched near flat.',
       'Stop before meaningful profit (≈−1R on combined risk).',
     ];
 
+    var SIM_R_SCALE = 1.5; // max R shown as 100% bar width
+
+    function fmtRCard(x) {
+      if (x == null || isNaN(x)) return '<span class="sim-r-value" style="color:var(--muted-foreground)">—</span>';
+      const absX = Math.abs(x);
+      const pct = Math.min(absX / SIM_R_SCALE * 100, 100).toFixed(1);
+      const isPos = x > 0.001, isNeg = x < -0.001;
+      const cls = isPos ? 'r-pos' : isNeg ? 'r-neg' : 'r-zero';
+      const sign = isPos ? '+' : '';
+      const barCls = isPos ? 'pos' : isNeg ? 'neg' : 'zero';
+      const moneyVal = isPos ? '+$' + Math.round(Math.abs(x) * 100)
+                      : isNeg ? '−$' + Math.round(Math.abs(x) * 100)
+                      : '~$0';
+      return (
+        '<span class="sim-r-value ' + cls + '">' + sign + x.toFixed(2) + 'R</span>' +
+        '<div class="sim-r-bar-track"><div class="sim-r-bar-fill sim-r-bar-fill--' + barCls + '" style="width:' + pct + '%"></div></div>' +
+        '<span class="sim-r-money">per $100 risked: ' + moneyVal + '</span>'
+      );
+    }
+
     function buildSimulationForStrategy(strategy, entry, sl, tp) {
       const vRs = getVanillaScenarioRs(entry, sl, tp);
       const meta = getSelectedScenarioMeta(strategy, entry, sl, tp);
       document.getElementById('sim-footnote').innerHTML = meta.foot;
-      document.getElementById('sim-r-header-selected').textContent = meta.selectedLabel + ' (R)';
+      const hdr = document.getElementById('sim-r-header-selected');
+      if (hdr) hdr.textContent = meta.selectedLabel + ' (R)';
 
-      const tbody = document.getElementById('sim-body');
-      tbody.innerHTML = SIM_SCENARIO_TITLES.map(function (title, i) {
+      const container = document.getElementById('sim-body');
+      container.innerHTML = SIM_SCENARIO_TITLES.map(function (title, i) {
+        const type = SIM_SCENARIO_TYPES[i];
+        const vR = vRs[i], sR = meta.rs[i];
+        const chosenWins = (sR != null && vR != null && !isNaN(sR) && !isNaN(vR) && sR > vR + 0.05);
         return (
-          '<tr><td><strong>' + esc(title) + '</strong></td>' +
-          '<td class="text-sm text-muted">' + esc(SIM_SCENARIO_DETAILS[i]) + '</td>' +
-          '<td class="num">' + fmtR(vRs[i]) + '</td>' +
-          '<td class="num">' + fmtR(meta.rs[i]) + '</td></tr>'
+          '<div class="sim-card sim-card--' + type + '">' +
+            '<div class="sim-card-scenario">' +
+              '<span class="sim-card-title">' + esc(title) + '</span>' +
+              '<span class="sim-outcome-badge sim-outcome-badge--' + type + '">' + esc(SIM_SCENARIO_BADGES[i]) + '</span>' +
+            '</div>' +
+            '<div class="sim-card-assumption">' +
+              '<span class="sim-assumption-short">' + esc(SIM_SCENARIO_SHORTS[i]) + '</span>' +
+              '<span class="sim-assumption-detail">' + esc(SIM_SCENARIO_DETAILS[i]) + '</span>' +
+            '</div>' +
+            '<div class="sim-r-col">' + fmtRCard(vR) + '</div>' +
+            '<div class="sim-r-col">' + fmtRCard(sR) + (chosenWins ? '<span class="sim-chosen-wins">Chosen wins</span>' : '') + '</div>' +
+          '</div>'
         );
       }).join('');
     }
@@ -559,6 +1053,118 @@
       }
     }
 
+    // ── Explanation markdown renderer ──────────────────────────────────────
+    function escHtml(s) {
+      return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+    function renderInline(s) {
+      // **bold** → <strong>, keep everything else escaped
+      return escHtml(s).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    }
+    function renderLevelsRow(line) {
+      // Parses lines like: **Entry:** 109.05 | **Stop Loss:** 92.51 | **Take Profit:** 126.69
+      // Also handles R:R if present
+      const parts = line.split('|').map(p => p.trim()).filter(Boolean);
+      const levelMap = {
+        entry: 'entry', 'buy-in': 'entry', 'buy in': 'entry', price: 'entry',
+        'stop loss': 'sl', 'stop': 'sl', sl: 'sl',
+        'take profit': 'tp', 'target': 'tp', tp: 'tp',
+        'r:r': 'rr', 'r/r': 'rr', 'risk': 'rr', 'reward': 'rr',
+      };
+      let html = '<div class="explain-levels">';
+      for (const part of parts) {
+        const m = part.match(/^\*\*(.+?):\*\*\s*(.+)$/);
+        if (!m) continue;
+        const rawLabel = m[1].trim().toLowerCase();
+        const value = m[2].trim();
+        let typeKey = 'entry';
+        for (const [k, v] of Object.entries(levelMap)) {
+          if (rawLabel.includes(k)) { typeKey = v; break; }
+        }
+        html += `<div class="explain-level explain-level--${typeKey}">`;
+        html += `<span class="explain-level-label">${escHtml(m[1])}</span>`;
+        html += `<span class="explain-level-value">${escHtml(value)}</span>`;
+        html += '</div>';
+      }
+      html += '</div>';
+      return html;
+    }
+    function isLevelsLine(line) {
+      return /\*\*(Entry|Buy[- ]?[Ii]n|Price|Stop[- ]?Loss|Take[- ]?Profit|Target|SL|TP):\*\*/i.test(line) && line.includes('|');
+    }
+    function isAttentionLine(line) {
+      const l = line.toLowerCase();
+      return l.includes('resistance') || l.includes('support') || l.includes('deserves') ||
+             l.includes('watch') || l.includes('close attention') || l.includes('warning') ||
+             l.includes('caution') || l.includes('note:') || l.includes('key level');
+    }
+    function renderExplanationMarkdown(raw) {
+      const lines = raw.split('\n');
+      let html = '';
+      let inList = false;
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line) {
+          if (inList) { html += '</ul>'; inList = false; }
+          continue;
+        }
+        // Headings
+        if (line.startsWith('### ')) {
+          if (inList) { html += '</ul>'; inList = false; }
+          html += `<h4 class="explain-heading" style="font-size:14px;">${escHtml(line.slice(4))}</h4>`;
+          continue;
+        }
+        if (line.startsWith('## ') || line.startsWith('# ')) {
+          if (inList) { html += '</ul>'; inList = false; }
+          html += `<h3 class="explain-heading">${escHtml(line.replace(/^#{1,2}\s+/, ''))}</h3>`;
+          continue;
+        }
+        // Key levels row
+        if (isLevelsLine(line)) {
+          if (inList) { html += '</ul>'; inList = false; }
+          html += renderLevelsRow(line);
+          continue;
+        }
+        // Pro line
+        if (/^\*\*Pro[:\*]/.test(line)) {
+          if (inList) { html += '</ul>'; inList = false; }
+          const text = line.replace(/^\*\*Pro[:\*]+\*?\*?\s*/, '');
+          html += `<div class="explain-pro"><span class="explain-badge explain-badge--pro">Pro</span><span>${renderInline(text)}</span></div>`;
+          continue;
+        }
+        // Con line
+        if (/^\*\*Con[:\*]/.test(line)) {
+          if (inList) { html += '</ul>'; inList = false; }
+          const text = line.replace(/^\*\*Con[:\*]+\*?\*?\s*/, '');
+          html += `<div class="explain-con"><span class="explain-badge explain-badge--con">Con</span><span>${renderInline(text)}</span></div>`;
+          continue;
+        }
+        // Bullet items
+        if (line.startsWith('- ') || line.startsWith('• ') || line.startsWith('* ')) {
+          if (!inList) { html += '<ul class="explain-list">'; inList = true; }
+          html += `<li>${renderInline(line.slice(2))}</li>`;
+          continue;
+        }
+        // Numbered list
+        if (/^\d+\.\s/.test(line)) {
+          if (!inList) { html += '<ul class="explain-list">'; inList = true; }
+          html += `<li>${renderInline(line.replace(/^\d+\.\s/, ''))}</li>`;
+          continue;
+        }
+        if (inList) { html += '</ul>'; inList = false; }
+        // Attention / note callout
+        if (isAttentionLine(line)) {
+          html += `<div class="explain-note">${renderInline(line)}</div>`;
+          continue;
+        }
+        // Regular paragraph
+        html += `<p class="explain-para">${renderInline(line)}</p>`;
+      }
+      if (inList) html += '</ul>';
+      return html;
+    }
+    // ── End explanation renderer ───────────────────────────────────────────
+
     let llmExplainAbort = null;
     let explainDebounceTimer = null;
     let strategyExplainSeq = 0;
@@ -582,7 +1188,7 @@
         if (seq !== strategyExplainSeq) return;
         if (!stat.ok) throw new Error(sd.detail || 'Static summary failed');
         box.className = 'strategy-explain';
-        box.textContent = sd.explanation || '—';
+        box.innerHTML = renderExplanationMarkdown(sd.explanation || '—');
         meta.textContent = 'Instant summary. Optional AI detail loads next if your research LLM is configured.';
         if (sd.leg_count != null && sd.leg_count >= 1) {
           const hintEl = document.getElementById('confirm-hint');
@@ -615,7 +1221,7 @@
           if (seq !== strategyExplainSeq) return;
           if (!r.ok) throw new Error(data.detail || 'Request failed');
           if (data.explanation && String(data.explanation).trim() && data.source === 'llm') {
-            box.textContent = String(data.explanation).trim();
+            box.innerHTML = renderExplanationMarkdown(String(data.explanation).trim());
             meta.textContent = 'Generated with your Dashboard research LLM settings (replaces instant summary above for this view).';
           } else {
             meta.textContent = 'Instant summary only — research LLM unavailable or returned nothing. Configure keys / Ollama on the Dashboard for richer text.';
@@ -627,9 +1233,31 @@
       }, 280);
     }
 
-    function onStrategyChange() {
-      const sel = document.getElementById('strategy-select');
-      const st = sel.value || 'vanilla';
+    // Short tab labels and leg counts for each strategy id
+    var STRATEGY_TAB_META = {
+      vanilla:                       { short: 'All-In',         legs: '1 leg'  },
+      runner_50_50_one_r:            { short: '+1R Scale',      legs: '2 legs' },
+      scale_half_1r_half_2r:         { short: '+1R / +2R',      legs: '2 legs' },
+      split_tp_50_50:                { short: 'Midpoint 50/50', legs: '2 legs' },
+      split_25_75_midpoint:          { short: 'Light 25/75',    legs: '2 legs' },
+      thirds_equal:                  { short: 'Equal Thirds',   legs: '3 legs' },
+      equal_thirds_1r_2r_full:       { short: 'R-Ladder',       legs: '3 legs' },
+      fibonacci_thirds_382_618_full: { short: 'Fibonacci',      legs: '3 legs' },
+    };
+
+    var activeStrategy = 'vanilla';
+
+    function setActiveTab(id) {
+      activeStrategy = id;
+      document.querySelectorAll('.strat-tab-btn').forEach(function(btn) {
+        btn.classList.toggle('active', btn.dataset.strat === id);
+        btn.setAttribute('aria-selected', btn.dataset.strat === id ? 'true' : 'false');
+      });
+    }
+
+    function onStrategyChange(st) {
+      if (!st) st = activeStrategy || 'vanilla';
+      setActiveTab(st);
       if (rec) {
         const e = rec.buy_in_price, sl = rec.stop_loss, tp = rec.take_profit;
         updateConfirmHint(st, e, sl, tp);
@@ -639,6 +1267,28 @@
       } else {
         updateConfirmHint(st, null, null, null);
       }
+    }
+
+    function buildStrategyTabs(strategies) {
+      const bar = document.getElementById('strat-tab-bar');
+      bar.innerHTML = '';
+      strategies.forEach(function(s) {
+        const meta = STRATEGY_TAB_META[s.id] || {};
+        const short = meta.short || s.label.split('—')[0].trim().slice(0, 18);
+        const legs  = meta.legs  || '';
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'strat-tab-btn';
+        btn.dataset.strat = s.id;
+        btn.setAttribute('role', 'tab');
+        btn.setAttribute('aria-selected', 'false');
+        btn.innerHTML =
+          esc(short) +
+          (legs ? ' <span class="strat-tab-legs">' + esc(legs) + '</span>' : '');
+        btn.title = s.label || s.id;
+        btn.addEventListener('click', function() { onStrategyChange(s.id); });
+        bar.appendChild(btn);
+      });
     }
 
     const params = new URLSearchParams(window.location.search);
@@ -682,37 +1332,25 @@
 
         document.getElementById('rec-notes').textContent = rec.volatility_notes || '';
 
-        const sel = document.getElementById('strategy-select');
-        sel.innerHTML = '';
+        const FALLBACK_STRATEGIES = [
+          { id: 'vanilla',                       label: 'All-in — single position to full target (simple TP/SL)' },
+          { id: 'runner_50_50_one_r',            label: 'Classic +1R scale-out — 50% off at +1R, 50% to full target' },
+          { id: 'scale_half_1r_half_2r',         label: 'R-multiple split — 50% at +1R, 50% at +2R (capped at system TP)' },
+          { id: 'split_tp_50_50',                label: 'Midpoint scale-out — 50% at half the move, 50% at full target' },
+          { id: 'split_25_75_midpoint',          label: 'Light partial — 25% at midpoint, 75% runner to full target' },
+          { id: 'thirds_equal',                  label: 'Equal ladder — thirds at ⅓, ⅔, and full target along the move' },
+          { id: 'equal_thirds_1r_2r_full',       label: 'R-ladder thirds — equal exits at +1R, +2R, and full target' },
+          { id: 'fibonacci_thirds_382_618_full', label: 'Fibonacci-style thirds — 38.2%, 61.8%, and full target along the move' },
+        ];
+        let stratList = FALLBACK_STRATEGIES;
         try {
           const sr = await fetch('/api/trade-builder/strategies');
           const sd = await sr.json();
-          const list = (sd.strategies || []);
-          list.forEach(s => {
-            const o = document.createElement('option');
-            o.value = s.id;
-            o.textContent = s.label || s.id;
-            sel.appendChild(o);
-          });
-        } catch (_) {
-          [
-            ['vanilla', 'All-in — single position to full target (simple TP/SL)'],
-            ['runner_50_50_one_r', 'Classic +1R scale-out — 50% off at +1R, 50% to full target'],
-            ['scale_half_1r_half_2r', 'R-multiple split — 50% at +1R, 50% at +2R (capped at system TP)'],
-            ['split_tp_50_50', 'Midpoint scale-out — 50% at half the move, 50% at full target'],
-            ['split_25_75_midpoint', 'Light partial — 25% at midpoint, 75% runner to full target'],
-            ['thirds_equal', 'Equal ladder — thirds at 1/3, 2/3, and full target along the move'],
-            ['equal_thirds_1r_2r_full', 'R-ladder thirds — equal exits at +1R, +2R, and full target'],
-            ['fibonacci_thirds_382_618_full', 'Fibonacci-style thirds — 38.2%, 61.8%, and full target along the move'],
-          ].forEach(([id, label]) => {
-            const o = document.createElement('option');
-            o.value = id;
-            o.textContent = label;
-            sel.appendChild(o);
-          });
-        }
-        sel.onchange = onStrategyChange;
-        onStrategyChange();
+          if (sd.strategies && sd.strategies.length) stratList = sd.strategies;
+        } catch (_) {}
+        buildStrategyTabs(stratList);
+        activeStrategy = stratList[0] ? stratList[0].id : 'vanilla';
+        onStrategyChange(activeStrategy);
 
         document.getElementById('loading').style.display = 'none';
         document.getElementById('main').style.display = 'block';
@@ -723,15 +1361,70 @@
       }
     }
 
-    document.getElementById('sf-submit').addEventListener('click', async () => {
-      const cat = (document.getElementById('sf-category').value || 'stocks').trim();
+    // ── Start panel: auto-detect, quick picks, advanced toggle ──────────
+    var CAT_PATTERNS = {
+      commodities: ['brent','oil','gold','silver','wti','crude','natural gas','wheat','corn','copper','platinum','palladium','gas','cocoa','coffee','sugar','cotton'],
+      indices:     ['ndx','spx','spy','qqq','dji','dow','nikkei','dax','ftse','sensex','vix','russell','rut','cac','ibex','asx','hang seng','wig'],
+      other:       ['btc','eth','bitcoin','ethereum','sol','ada','xrp','bnb','doge','ltc','link','dot','avax','matic','crypto'],
+    };
+    function detectCategory(symbol) {
+      const s = (symbol || '').toLowerCase().trim();
+      for (const [cat, patterns] of Object.entries(CAT_PATTERNS)) {
+        if (patterns.some(p => s.includes(p))) return cat;
+      }
+      return 'stocks';
+    }
+    function resolveCategory() {
+      const override = document.getElementById('sf-category').value;
+      if (override && override !== 'auto') return override;
+      return detectCategory(document.getElementById('sf-asset').value);
+    }
+    function updateCatBadge() {
       const asset = (document.getElementById('sf-asset').value || '').trim();
+      const row = document.getElementById('sb-cat-row');
+      const badge = document.getElementById('sb-cat-badge');
+      if (!asset) { row.style.visibility = 'hidden'; return; }
+      const cat = resolveCategory();
+      badge.textContent = cat;
+      row.style.visibility = 'visible';
+    }
+    document.getElementById('sf-asset').addEventListener('input', updateCatBadge);
+    document.getElementById('sf-category').addEventListener('change', updateCatBadge);
+
+    // Advanced toggle
+    document.getElementById('sb-adv-toggle').addEventListener('click', function() {
+      const panel = document.getElementById('sb-advanced');
+      const arrow = document.getElementById('sb-adv-arrow');
+      const open = panel.classList.toggle('open');
+      arrow.textContent = open ? '▴' : '▾';
+    });
+
+    // Quick picks
+    document.querySelectorAll('.sb-pick-btn').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        const sym = btn.dataset.symbol;
+        const cat = btn.dataset.cat;
+        document.getElementById('sf-asset').value = sym;
+        document.getElementById('sf-category').value = cat;
+        updateCatBadge();
+        triggerBuild();
+      });
+    });
+
+    // Enter key in search input
+    document.getElementById('sf-asset').addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') triggerBuild();
+    });
+
+    async function triggerBuild() {
+      const asset = (document.getElementById('sf-asset').value || '').trim();
+      const cat = resolveCategory();
       const refresh = document.getElementById('sf-refresh').checked;
       const btn = document.getElementById('sf-submit');
       const errEl = document.getElementById('err');
       if (!asset) {
         errEl.style.display = 'block';
-        errEl.textContent = 'Enter a symbol or asset id.';
+        errEl.textContent = 'Enter a symbol or asset ID.';
         return;
       }
       errEl.style.display = 'none';
@@ -744,11 +1437,7 @@
         const r = await fetch('/api/trade-builder/from-asset', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            asset_id: asset,
-            category: cat,
-            run_full_pipeline: refresh,
-          }),
+          body: JSON.stringify({ asset_id: asset, category: cat, run_full_pipeline: refresh }),
         });
         const data = await r.json();
         if (!r.ok) {
@@ -766,11 +1455,13 @@
         btn.disabled = false;
         btn.innerHTML = prevHtml;
       }
-    });
+    }
+
+    document.getElementById('sf-submit').addEventListener('click', triggerBuild);
 
     document.getElementById('btn-confirm').addEventListener('click', async () => {
       if (!rec) return;
-      const strat = (document.getElementById('strategy-select') || {}).value || 'vanilla';
+      const strat = activeStrategy || 'vanilla';
       const btn = document.getElementById('btn-confirm');
       btn.disabled = true;
       btn.innerHTML = '<span class="spinner spinner--white"></span> Saving…';

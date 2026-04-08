@@ -131,6 +131,26 @@
       color: #f59e0b;
     }
 
+    /* Analyst narrative */
+    .briefing-narrative {
+      background: var(--muted, #f8f9fa);
+      border-left: 3px solid var(--primary, #2563eb);
+      border-radius: 0 6px 6px 0;
+      padding: 12px 16px;
+      margin-bottom: var(--space-3);
+      font-size: 14px;
+      line-height: 1.65;
+      color: var(--foreground);
+    }
+    .briefing-narrative-label {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .07em;
+      color: var(--primary, #2563eb);
+      margin-bottom: 6px;
+    }
+
     /* Sparkline */
     .bm-sparkline {
       margin-top: 8px;
@@ -162,6 +182,7 @@
     <a href="/research"><span data-icon="search"></span> Research</a>
     <a href="/analysis"><span data-icon="bar-chart-2"></span> Analysis</a>
     <a href="/active-trades"><span data-icon="activity"></span> Active trades</a>
+    <a href="/backtest"><span data-icon="history"></span> Backtest</a>
     <a href="/journal"><span data-icon="book-open"></span> Journal</a>
     <a href="/briefing" class="active"><span data-icon="newspaper"></span> Briefing</a>
     <a href="/calendar"><span data-icon="calendar"></span> Calendar</a>
@@ -187,6 +208,7 @@
         </button>
       </div>
 
+      <div id="briefing-narrative" style="display:none;"></div>
       <div id="briefing-metrics" class="briefing-grid"></div>
       <div id="briefing-extras"></div>
     </section>
@@ -418,6 +440,14 @@
         const items = parseBriefing(data.content_text);
         renderMetrics(items);
         loadSparklines();
+        const narrativeEl = document.getElementById('briefing-narrative');
+        const narrative = data.payload && data.payload.narrative;
+        if (narrative) {
+          narrativeEl.innerHTML = `<div class="briefing-narrative"><div class="briefing-narrative-label">Analyst Brief</div>${narrative}</div>`;
+          narrativeEl.style.display = 'block';
+        } else {
+          narrativeEl.style.display = 'none';
+        }
       } else {
         card.style.display = 'none';
         noEl.style.display = 'block';

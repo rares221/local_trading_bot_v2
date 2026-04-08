@@ -59,6 +59,7 @@ from app.services.technicals import (
     compute_atr_levels,
     compute_confidence,
     compute_technical_score,
+    compute_relative_strength,
     determine_direction,
     estimate_expiry_days,
     get_cached_price,
@@ -72,6 +73,7 @@ from app.services.market_context import (
     check_trend_alignment,
     TrendAlignment,
     get_sector_for_asset,
+    get_sector_etf_for_asset,
     SectorRegime,
 )
 from app.services.macro_calendar import MACRO_DAY_CONFIDENCE_PENALTY, is_high_impact_day
@@ -329,20 +331,116 @@ def _all_assets() -> list[tuple[str, str, str, str]]:
 # Candidate with direction + expiry + technicals
 # ---------------------------------------------------------------------------
 
+def _compute_gap_risk(
+    snap,
+    expiry_days: int,
+    near_earnings: bool,
+    category: str,
+    today,
+    max_penalty: float = 0.50,
+) -> tuple[str, float, str]:
+    """
+    Compute gap risk level and sizing multiplier from technical snapshot + trade context.
+
+    Gap risk = probability that an overnight/weekend price gap blows past the SL,
+    causing an actual loss larger than the modeled 1R.
+
+    Returns:
+        level: "low" | "medium" | "high"
+        sizing_mult: float in [max_penalty, 1.0] — multiply suggested_risk_pct by this
+        note: human-readable explanation of active risk factors
+
+    Design:
+    - Penalties are multiplicative (compound when multiple factors fire)
+    - max_penalty caps the floor so sizing never collapses to zero
+    - No changes to SL/TP geometry — only sizing is adjusted
+    """
+    factors: list[str] = []
+    mult = 1.0
+
+    # ── Factor 1: SL distance vs typical overnight gap ───────────────────────
+    # If avg gap is >40% of SL distance, a single bad night can eat most of the risk buffer.
+    avg_gap = getattr(snap, "overnight_gap_pct_avg", None)
+    p95_gap = getattr(snap, "overnight_gap_pct_p95", None)
+    atr_pct = getattr(snap, "atr_pct", None)
+    if avg_gap and atr_pct and atr_pct > 0:
+        # ATR multiplier for moderate tier is 2.0 → SL distance ≈ 2× ATR ≈ 2× atr_pct
+        sl_dist_est = atr_pct * 2.0
+        ratio = avg_gap / sl_dist_est
+        if ratio > 0.5:
+            mult *= 0.80
+            factors.append(f"gap avg {avg_gap*100:.1f}% vs SL ~{sl_dist_est*100:.1f}%")
+        elif ratio > 0.35:
+            mult *= 0.90
+            factors.append(f"gap avg {avg_gap*100:.1f}%")
+    # 95th-pct gap exceeds SL entirely → tail risk is real
+    if p95_gap and atr_pct and atr_pct > 0:
+        sl_dist_est = atr_pct * 2.0
+        if p95_gap > sl_dist_est:
+            mult *= 0.85
+            factors.append(f"p95 gap {p95_gap*100:.1f}% > SL (tail)")
+
+    # ── Factor 2: Holding period — overnight gap exposure compounds ──────────
+    if expiry_days >= 14:
+        mult *= 0.75
+        factors.append(f"{expiry_days}d hold")
+    elif expiry_days >= 7:
+        mult *= 0.85
+        factors.append(f"{expiry_days}d hold")
+    elif expiry_days >= 3:
+        mult *= 0.92
+        factors.append(f"{expiry_days}d hold")
+
+    # ── Factor 3: Weekend gap (65h exposure vs 17h overnight) ───────────────
+    weekday = today.weekday()  # 0=Mon, 4=Fri
+    if weekday == 4:  # Friday entry — first gap is 65h
+        mult *= 0.80
+        factors.append("weekend gap (Friday entry)")
+    elif weekday == 3 and expiry_days >= 2:  # Thursday, hold covers weekend
+        mult *= 0.90
+        factors.append("weekend exposure (Thu entry)")
+
+    # ── Factor 4: Earnings proximity — gap can be catastrophic ──────────────
+    # Already penalized confidence; also reduce sizing (independent risk dimension)
+    if near_earnings:
+        mult *= 0.70
+        factors.append("earnings window")
+
+    # ── Factor 5: Category — stocks gap more than indices/commodities ────────
+    if category == "stocks":
+        mult *= 0.95
+
+    # Apply floor: sizing can't drop below max_penalty of original
+    mult = max(max_penalty, round(mult, 4))
+
+    # Classify level
+    if mult <= 0.70:
+        level = "high"
+    elif mult <= 0.87:
+        level = "medium"
+    else:
+        level = "low"
+
+    note = "; ".join(factors)
+    return level, mult, note
+
+
 def _suggested_risk_pct(
     confidence: int,
     risk_reward: Optional[float],
     trend_aligned: bool = False,
     sector_aligned: bool = False,
+    gap_sizing_mult: float = 1.0,
+    gap_max_penalty: float = 0.50,
 ) -> float:
     """
     Suggested risk per trade as % of capital (half-Kelly style when R:R known; else tier-based).
-    
-    Adjustments:
-    - Trend aligned: +20% size boost (multi-timeframe confirmation)
-    - Sector aligned: +10% size boost (sector supports direction)
-    - Both aligned: +30% total boost
-    
+
+    Adjustments applied in order:
+    1. Trend aligned: +20% size boost
+    2. Sector aligned: +10% size boost
+    3. Gap risk multiplier: reduces sizing for high overnight/weekend gap exposure
+
     Capped at 2.5%, floored at 0.1%.
     """
     p = (confidence or 0) / 100.0
@@ -364,18 +462,23 @@ def _suggested_risk_pct(
             base_pct = _tier_fallback()
     else:
         base_pct = _tier_fallback()
-    
-    # Apply alignment boosts
+
+    # Alignment boosts
     multiplier = 1.0
     if trend_aligned:
-        multiplier += 0.20  # +20% for multi-TF alignment
+        multiplier += 0.20
     if sector_aligned:
-        multiplier += 0.10  # +10% for sector alignment
-    
-    final_pct = base_pct * multiplier
-    
-    # Cap at 2.5%, floor at 0.1%
-    return round(min(2.5, max(0.1, final_pct)), 2)
+        multiplier += 0.10
+
+    # Cap first (Kelly gives large raw values; cap represents portfolio discipline)
+    capped_pct = min(2.5, max(0.1, base_pct * multiplier))
+
+    # Gap risk reduction applied to the already-capped value so it always has effect
+    gap_mult = max(gap_max_penalty, float(gap_sizing_mult))
+    final_pct = capped_pct * gap_mult
+
+    # Reapply floor only (cap already applied above)
+    return round(max(0.1, final_pct), 2)
 
 
 @dataclass
@@ -399,6 +502,23 @@ class Candidate:
     min_confidence_gate: Optional[int] = None
     shadow_b_threshold: Optional[int] = None
     shadow_b_pass: Optional[bool] = None
+    # Earnings proximity flag (stocks only)
+    near_earnings: bool = False
+    days_to_earnings: Optional[int] = None
+    # Gap risk: overnight/weekend gap exposure vs SL distance
+    gap_risk_level: str = "low"   # low | medium | high
+    gap_risk_note: str = ""       # human-readable factors that fired
+    # Volume Profile snapshot (daily approximation, 60-day lookback)
+    vpoc: Optional[float] = None
+    vah: Optional[float] = None
+    val: Optional[float] = None
+    vp_bias: str = "at_vpoc"          # above_vpoc | below_vpoc | at_vpoc
+    vp_overextension: Optional[float] = None
+    in_value_area: bool = False        # True = choppy equilibrium zone
+    # Relative Strength vs SPX and sector ETF (stocks only)
+    rs_20d: Optional[float] = None    # RS ratio vs ^GSPC over 20 trading days
+    rs_60d: Optional[float] = None    # RS ratio vs ^GSPC over 60 trading days
+    sector_rs: Optional[float] = None # RS ratio vs sector ETF (XLK/XLE/XLF/…) over 20 days
 
 
 # ---------------------------------------------------------------------------
@@ -1056,6 +1176,81 @@ def _build_candidate(
         else:
             regime_note = "High-impact event"
 
+    # Earnings proximity penalty: reduce confidence for stocks reporting within ±window_days
+    near_earnings = False
+    days_to_earnings: Optional[int] = None
+    if category == "stocks":
+        from app.core.preferences import get_earnings_calendar_config
+        from app.services.earnings_calendar import is_near_earnings as _is_near_earnings
+        earnings_cfg = get_earnings_calendar_config()
+        if earnings_cfg["earnings_window_days"] > 0:
+            near_earnings, days_to_earnings = _is_near_earnings(symbol, earnings_cfg["earnings_window_days"])
+            if near_earnings:
+                pen = earnings_cfg["earnings_confidence_penalty"]
+                confidence = max(0, confidence - pen)
+                logger.debug("[ENGINE] %s: earnings penalty=%d (days=%s) → conf=%d", asset_id, pen, days_to_earnings, confidence)
+                suffix = f"earnings ±{days_to_earnings}d" if days_to_earnings is not None else "earnings window"
+                if regime_note:
+                    regime_note = f"{regime_note}; {suffix}"
+                else:
+                    regime_note = suffix
+                if earnings_cfg["earnings_skip_enabled"]:
+                    _log_engine_skip(
+                        "earnings_proximity",
+                        category=category,
+                        asset_id=asset_id,
+                        symbol=symbol,
+                        policy=pol.key,
+                        days_to_earnings=days_to_earnings,
+                    )
+                    return None
+
+    # ── Volume Profile confidence adjustments ────────────────────────────────
+    # Priority order: VP > swing S/R for signal quality assessment.
+    # Daily-bar VP is an approximation — used as a filter/modifier, not hard gate.
+    if snap and snap.vpoc is not None:
+        vp_notes: list[str] = []
+
+        # 1. Price inside value area → choppy equilibrium zone → reduce confidence
+        if snap.in_value_area():
+            confidence = max(0, confidence - 8)
+            vp_notes.append("in value area (choppy)")
+            logger.debug("[ENGINE] %s: VP: price in value area → -8 conf=%d", asset_id, confidence)
+
+        # 2. Price near a Low Volume Node → fast directional move expected → boost
+        lvn_nearby = (
+            (snap.nearest_lvn_above() is not None and abs(snap.nearest_lvn_above() - price) / price < 0.012)
+            or (snap.nearest_lvn_below() is not None and abs(snap.nearest_lvn_below() - price) / price < 0.012)
+        )
+        if lvn_nearby:
+            confidence = min(100, confidence + 5)
+            vp_notes.append("near LVN (fast move zone)")
+            logger.debug("[ENGINE] %s: VP: near LVN → +5 conf=%d", asset_id, confidence)
+
+        # 3. Overextension from VPOC → mean reversion risk
+        ext = abs(snap.vp_overextension) if snap.vp_overextension is not None else 0.0
+        if ext > 2.0:
+            confidence = max(0, confidence - 10)
+            vp_notes.append(f"overextended {ext:.1f}x VA from VPOC")
+            logger.debug("[ENGINE] %s: VP: overextension %.1f → -10 conf=%d", asset_id, ext, confidence)
+        elif ext > 1.3:
+            confidence = max(0, confidence - 5)
+            vp_notes.append(f"extended {ext:.1f}x VA from VPOC")
+            logger.debug("[ENGINE] %s: VP: overextension %.1f → -5 conf=%d", asset_id, ext, confidence)
+
+        # 4. Direction aligns with VP bias → confirm
+        if (direction == "long" and snap.vp_bias == "below_vpoc") or \
+           (direction == "short" and snap.vp_bias == "above_vpoc"):
+            # Price below VPOC + long = moving toward fair value = VP-confirmed
+            confidence = min(100, confidence + 4)
+            vp_notes.append(f"VP-confirmed ({snap.vp_bias})")
+            logger.debug("[ENGINE] %s: VP: bias confirms direction → +4 conf=%d", asset_id, confidence)
+
+        if vp_notes and regime_note:
+            regime_note = f"{regime_note}; VP: {', '.join(vp_notes)}"
+        elif vp_notes:
+            regime_note = f"VP: {', '.join(vp_notes)}"
+
     if (
         pol.news_boost_min_mentions > 0
         and sentiment_count >= pol.news_boost_min_mentions
@@ -1116,6 +1311,42 @@ def _build_candidate(
         suffix = f"indicator conflict penalty: {conflict_penalty} (skip if ≥{pol.conflict_skip_threshold})"
         vol_notes = f"{vol_notes}; {suffix}" if vol_notes else suffix
 
+    # ── Relative Strength vs SPX and sector ETF (stocks only) ───────────────
+    rs_20d: Optional[float] = None
+    rs_60d: Optional[float] = None
+    sector_rs: Optional[float] = None
+
+    if category == "stocks":
+        symbol_for_rs = get_yf_symbol(category, asset_id) or asset_id.upper()
+        try:
+            rs_20d = compute_relative_strength(symbol_for_rs, "^GSPC", period=20)
+            rs_60d = compute_relative_strength(symbol_for_rs, "^GSPC", period=60)
+            sector_etf = get_sector_etf_for_asset(asset_id)
+            if sector_etf:
+                sector_rs = compute_relative_strength(symbol_for_rs, sector_etf, period=20)
+        except Exception:
+            pass
+
+        if rs_20d is not None:
+            # Direction-aware: strong RS confirms long, denies short — and vice versa
+            if rs_20d > 1.2:
+                rs_adj = +5 if direction == "long" else -5
+                rs_note = f"RS strong ({rs_20d:.2f}× SPX 20d)"
+            elif rs_20d < 0.8:
+                rs_adj = -8 if direction == "long" else +5
+                rs_note = f"RS weak ({rs_20d:.2f}× SPX 20d)"
+            else:
+                rs_adj = 0
+                rs_note = None
+            if rs_adj != 0:
+                confidence = max(0, min(100, confidence + rs_adj))
+                logger.debug("[ENGINE] %s: RS adj=%d (rs_20d=%.2f, dir=%s) → conf=%d",
+                             asset_id, rs_adj, rs_20d, direction, confidence)
+                if rs_note and regime_note:
+                    regime_note = f"{regime_note}; {rs_note}"
+                elif rs_note:
+                    regime_note = rs_note
+
     # Determine if sector is aligned with trade direction
     sector_aligned = False
     if sector_regime:
@@ -1123,8 +1354,52 @@ def _build_candidate(
             sector_aligned = True
         elif sector_regime.regime == "risk_off" and direction == "short":
             sector_aligned = True
+
+    # Extend sector_aligned with per-stock RS vs sector ETF
+    if sector_aligned and sector_rs is not None and sector_rs < 0.9:
+        # Sector is bullish but this stock is weak relative to its peers — not truly aligned
+        sector_aligned = False
+        logger.debug("[ENGINE] %s: sector_aligned revoked — sector_rs=%.2f < 0.9", asset_id, sector_rs)
+    elif not sector_aligned and sector_rs is not None and sector_rs > 1.15:
+        # Stock is outperforming its sector even if sector regime is neutral — grant alignment
+        sector_aligned = True
+        logger.debug("[ENGINE] %s: sector_aligned granted — sector_rs=%.2f > 1.15", asset_id, sector_rs)
     
-    suggested_risk = _suggested_risk_pct(confidence, rr, trend_aligned=trend_aligned, sector_aligned=sector_aligned)
+    # Gap risk: compute from overnight gap distribution + holding period + timing
+    from app.core.preferences import get_gap_risk_config
+    gap_cfg = get_gap_risk_config()
+    gap_risk_level = "low"
+    gap_risk_note = ""
+    gap_sizing_mult = 1.0
+    if gap_cfg["gap_risk_enabled"]:
+        gap_risk_level, gap_sizing_mult, gap_risk_note = _compute_gap_risk(
+            snap=snap,
+            expiry_days=expiry_days,
+            near_earnings=near_earnings,
+            category=category,
+            today=date.today(),
+            max_penalty=gap_cfg["gap_risk_max_penalty"],
+        )
+        if gap_risk_level != "low":
+            logger.debug(
+                "[ENGINE] %s: gap_risk=%s mult=%.2f note=%s",
+                asset_id, gap_risk_level, gap_sizing_mult, gap_risk_note,
+            )
+            suffix = f"gap risk {gap_risk_level}"
+            if gap_risk_note:
+                suffix = f"gap risk {gap_risk_level} ({gap_risk_note})"
+            if regime_note:
+                regime_note = f"{regime_note}; {suffix}"
+            else:
+                regime_note = suffix
+
+    suggested_risk = _suggested_risk_pct(
+        confidence, rr,
+        trend_aligned=trend_aligned,
+        sector_aligned=sector_aligned,
+        gap_sizing_mult=gap_sizing_mult,
+        gap_max_penalty=gap_cfg["gap_risk_max_penalty"],
+    )
     return Candidate(
         asset_category=category,
         asset_id=asset_id,
@@ -1141,6 +1416,19 @@ def _build_candidate(
         market_regime_note=regime_note,
         _score=score,
         suggested_risk_pct=suggested_risk,
+        near_earnings=near_earnings,
+        days_to_earnings=days_to_earnings,
+        gap_risk_level=gap_risk_level,
+        gap_risk_note=gap_risk_note,
+        vpoc=snap.vpoc if snap else None,
+        vah=snap.vah if snap else None,
+        val=snap.val if snap else None,
+        vp_bias=snap.vp_bias if snap else "at_vpoc",
+        vp_overextension=snap.vp_overextension if snap else None,
+        in_value_area=snap.in_value_area() if snap else False,
+        rs_20d=rs_20d,
+        rs_60d=rs_60d,
+        sector_rs=sector_rs,
     )
 
 
@@ -1360,6 +1648,7 @@ def build_daily_candidates(
     exclude_taken: Optional[set[tuple[str, str]]] = None,
     active_events: Optional[list[str]] = None,
     risk_budget_1r: float = 25.0,
+    closed_trades: Optional[list] = None,
 ) -> list[Candidate]:
     """
     Build today's batch: up to ``max_per_category`` recommendations **per** category
@@ -1400,6 +1689,28 @@ def build_daily_candidates(
             sample,
             more,
         )
+
+    # Circuit breaker: check risk mode before running the batch
+    from app.core.preferences import get_circuit_breaker_config
+    from app.services.circuit_breaker import CircuitBreakerState, compute_state as _cb_compute
+    cb_state = CircuitBreakerState()  # default: normal
+    cb_cfg = get_circuit_breaker_config()
+    if cb_cfg["circuit_breaker_enabled"] and closed_trades is not None:
+        cb_state = _cb_compute(
+            closed_trades,
+            max_consecutive_losses=cb_cfg["max_consecutive_losses"],
+            max_daily_loss_r=cb_cfg["max_daily_loss_r"],
+            drawdown_gate_r=cb_cfg["drawdown_gate_r"],
+        )
+        if cb_state.is_paused:
+            logger.warning("[CIRCUIT_BREAKER] mode=paused — skipping batch generation")
+            return []
+        if cb_state.is_defensive:
+            logger.info(
+                "[CIRCUIT_BREAKER] mode=defensive — confidence penalty +%d, sizing ×%.1f",
+                cb_state.confidence_penalty(),
+                cb_state.sizing_multiplier(),
+            )
 
     out: list[Candidate] = []
     batch_ctx: dict[str, Any] = {
@@ -1490,6 +1801,18 @@ def build_daily_candidates(
                 "[ENGINE] High-impact macro day: applied confidence penalty %d to %d candidates",
                 MACRO_DAY_CONFIDENCE_PENALTY,
                 len(out),
+            )
+
+        # Circuit breaker defensive mode: penalize confidence + shrink sizing
+        if cb_state.is_defensive:
+            pen = cb_state.confidence_penalty()
+            mul = cb_state.sizing_multiplier()
+            for c in out:
+                c.confidence_score = max(0, (c.confidence_score or 0) - pen)
+                c.suggested_risk_pct = round((c.suggested_risk_pct or 0.0) * mul, 2)
+            logger.info(
+                "[CIRCUIT_BREAKER] defensive: applied conf penalty %d + sizing ×%.1f to %d candidates",
+                pen, mul, len(out),
             )
 
         # Shadow profile B: alternate min-confidence gate (does not change who is in the batch)

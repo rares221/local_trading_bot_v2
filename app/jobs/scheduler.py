@@ -44,6 +44,19 @@ from app.services.regime_monitor import (
 )
 
 
+# Gap risk cache: populated by job_update_active_trades(), consumed by /api/active-trades
+# Key: yfinance symbol (e.g. "AAPL"), value: {"level": "low"|"medium"|"high", "note": str}
+_gap_risk_by_symbol: dict[str, dict] = {}
+
+# Volume Profile cache: populated by job_update_active_trades() + job_daily_batch()
+# Key: yfinance symbol, value: vpoc/vah/val/hvn_levels/lvn_levels/vp_bias/vp_overextension/in_value_area
+_vp_by_symbol: dict[str, dict] = {}
+
+# Relative Strength cache: populated by job_daily_batch()
+# Key: yfinance symbol, value: {rs_20d, rs_60d, sector_rs}
+_rs_by_symbol: dict[str, dict] = {}
+
+
 async def job_ingest_and_sentiment() -> None:
     """Fetch RSS feeds, save items, run sentiment and asset tagging."""
     from app.services.ticker_resolver import reset_run_counter
@@ -127,7 +140,11 @@ async def job_daily_batch() -> None:
             payload = analysis.payload or {}
             by_asset_sentiment = payload.get("by_asset_sentiment") or None
             active_events = payload.get("active_events") or None
-            print(f"[BATCH] Sentiment tags: {len(by_asset_sentiment) if by_asset_sentiment else 0}, excluded taken: {len(exclude_taken)}")
+            # Fetch closed trades for circuit breaker evaluation
+            q_closed = select(ActiveTrade).where(ActiveTrade.outcome.isnot(None))
+            result_closed = await session.execute(q_closed)
+            closed_trades = result_closed.scalars().all()
+            print(f"[BATCH] Sentiment tags: {len(by_asset_sentiment) if by_asset_sentiment else 0}, excluded taken: {len(exclude_taken)}, closed trades: {len(closed_trades)}")
             progress.update(55, "batch", "Building candidate recommendations…")
             # Run heavy sync work off the asyncio loop so HTTP (e.g. /api/recommendations) stays responsive.
             _build = partial(
@@ -138,9 +155,26 @@ async def job_daily_batch() -> None:
                 exclude_taken=exclude_taken,
                 active_events=active_events,
                 risk_budget_1r=get_risk_budget_1r(),
+                closed_trades=list(closed_trades),
             )
             candidates = await asyncio.to_thread(_build)
             print(f"[BATCH] Candidates built: {len(candidates)}")
+            # Populate VP + RS caches from candidates (snap was already computed inside engine)
+            for _c in candidates:
+                _sym = get_yf_symbol(_c.asset_category, _c.asset_id)
+                if _sym and _c.vpoc is not None:
+                    _vp_by_symbol[_sym] = {
+                        "vpoc": _c.vpoc, "vah": _c.vah, "val": _c.val,
+                        "hvn_levels": [], "lvn_levels": [],
+                        "vp_bias": _c.vp_bias, "vp_overextension": _c.vp_overextension,
+                        "in_value_area": _c.in_value_area,
+                    }
+                if _sym and (_c.rs_20d is not None or _c.rs_60d is not None):
+                    _rs_by_symbol[_sym] = {
+                        "rs_20d": _c.rs_20d,
+                        "rs_60d": _c.rs_60d,
+                        "sector_rs": _c.sector_rs,
+                    }
             for c in candidates:
                 print(f"  [{c.asset_category}] {c.asset_id} dir={c.direction} conf={c.confidence_score} rr={c.risk_reward}")
             if not candidates:
@@ -157,9 +191,15 @@ async def job_daily_batch() -> None:
                 progress.update(llm_pct, "batch", f"LLM rationale {i + 1}/{total_candidates} — {c.asset_id}")
                 rationale_text = None
                 try:
+                    from datetime import date as _date
+                    from app.services.technicals import classify_horizon as _classify_horizon
                     ctx = await build_research_context(session, c.asset_id, c.asset_category)
                     ctx["buy_in_price"] = c.buy_in_price
                     ctx["direction"] = c.direction
+                    if c.expiry_date and "expiry_days" not in ctx:
+                        _ed = max(1, (c.expiry_date - _date.today()).days)
+                        ctx["expiry_days"] = _ed
+                        ctx["horizon"] = _classify_horizon(_ed)
                     rationale_text = await generate_rationale(ctx)
                 except Exception as exc:
                     print(f"  [BATCH] LLM rationale failed for {c.asset_id}: {exc}")
@@ -270,6 +310,43 @@ async def job_update_active_trades() -> None:
         analysis = await get_latest_analysis(session)
         by_asset_sentiment = (analysis.payload or {}).get("by_asset_sentiment", {}) if analysis and analysis.payload else {}
 
+        # Circuit breaker: evaluate from closed trades and log/notify if active
+        try:
+            from app.services.circuit_breaker import compute_state as _cb_compute
+            from app.core.preferences import get_circuit_breaker_config
+            _cb_cfg = get_circuit_breaker_config()
+            if _cb_cfg["circuit_breaker_enabled"]:
+                _closed_q = select(ActiveTrade).where(ActiveTrade.outcome.isnot(None))
+                _closed_result = await session.execute(_closed_q)
+                _closed_trades = _closed_result.scalars().all()
+                _cb_state = _cb_compute(
+                    list(_closed_trades),
+                    max_consecutive_losses=_cb_cfg["max_consecutive_losses"],
+                    max_daily_loss_r=_cb_cfg["max_daily_loss_r"],
+                    drawdown_gate_r=_cb_cfg["drawdown_gate_r"],
+                )
+                if _cb_state.mode != "normal":
+                    print(
+                        f"[CB] mode={_cb_state.mode} | "
+                        f"rolling_loss={_cb_state.rolling_loss_r}R | "
+                        f"streak={_cb_state.consecutive_losses} | "
+                        f"drawdown={_cb_state.drawdown_r}R | "
+                        f"triggers={_cb_state.triggered_by}"
+                    )
+                    try:
+                        from app.services.notifications import send_notification
+                        await send_notification("circuit_breaker", {
+                            "mode": _cb_state.mode,
+                            "rolling_loss_r": _cb_state.rolling_loss_r,
+                            "consecutive_losses": _cb_state.consecutive_losses,
+                            "drawdown_r": _cb_state.drawdown_r,
+                            "triggered_by": _cb_state.triggered_by,
+                        })
+                    except Exception:
+                        pass
+        except Exception as _cb_err:
+            print(f"[UPDATE_TRADES] Circuit breaker check failed (non-critical): {_cb_err}")
+
         q = select(ActiveTrade).options(selectinload(ActiveTrade.recommendation))
         result = await session.execute(q)
         now = datetime.now(timezone.utc)
@@ -285,6 +362,39 @@ async def job_update_active_trades() -> None:
             if not snap or snap.price <= 0:
                 trade.last_updated = now
                 continue
+
+            # Volume Profile cache: store VP data from snap (already computed, zero extra cost)
+            if symbol not in _vp_by_symbol and snap.vpoc is not None:
+                _vp_by_symbol[symbol] = {
+                    "vpoc": snap.vpoc,
+                    "vah": snap.vah,
+                    "val": snap.val,
+                    "hvn_levels": snap.hvn_levels,
+                    "lvn_levels": snap.lvn_levels,
+                    "vp_bias": snap.vp_bias,
+                    "vp_overextension": snap.vp_overextension,
+                    "in_value_area": snap.in_value_area(),
+                }
+
+            # Gap risk: compute once per symbol while snap is available (no extra API call)
+            if symbol not in _gap_risk_by_symbol:
+                try:
+                    from app.services.recommendations.engine import _compute_gap_risk
+                    from app.core.preferences import get_gap_risk_config
+                    _gap_cfg = get_gap_risk_config()
+                    if _gap_cfg["gap_risk_enabled"]:
+                        _expiry_days = (trade.expiry - date.today()).days if trade.expiry else 7
+                        _gap_lvl, _, _gap_note = _compute_gap_risk(
+                            snap=snap,
+                            expiry_days=max(0, _expiry_days),
+                            near_earnings=False,
+                            category=rec.asset_category,
+                            today=date.today(),
+                            max_penalty=_gap_cfg["gap_risk_max_penalty"],
+                        )
+                        _gap_risk_by_symbol[symbol] = {"level": _gap_lvl, "note": _gap_note}
+                except Exception as _gap_err:
+                    print(f"[UPDATE_TRADES] Gap risk compute failed for {symbol}: {_gap_err}")
 
             direction = getattr(rec, "direction", "long") or "long"
             current_price = snap.price
@@ -395,19 +505,186 @@ async def job_update_active_trades() -> None:
             else:
                 trade.signal_flip_count = max(flip_count - 1, 0)
 
+            # SL trails (trailing stop); TP stays fixed at the per-leg strategy target.
+            # Overwriting suggested_tp with ATR from current price would make all legs
+            # of a multi-leg strategy look identical (same ATR, same price, same risk tier).
+            # The TP is a fixed exit target chosen at trade creation — don't override it.
+            leg_tp = trade.current_tp  # per-leg strategy TP (set at creation, never changed)
             trade.suggested_sl = sl
-            trade.suggested_tp = tp
+            trade.suggested_tp = leg_tp  # keeps per-leg TP; no misleading arrow in UI
             trade.suggested_at = now
             trade.last_updated = now
             level = ActiveTradeLevel(
                 active_trade_id=trade.id,
                 sl=sl,
-                tp=tp,
+                tp=leg_tp,
                 created_at=now,
                 source=f"scheduled_update_{phase}",
             )
             session.add(level)
         await session.commit()
+
+        # P9: copy outcomes + quality_score to llm_rationale_logs
+        await _verify_outcomes_for_logs(session)
+        await session.commit()
+
+
+def _calculate_quality_score(
+    outcome: str,
+    validation_flags: list[str],
+    retry_count: int,
+    pnl_r: float | None,
+    metrics_accuracy_score: float | None = None,
+    news_verified: bool | None = None,
+) -> int:
+    score = 5  # baseline
+
+    if outcome == "hit_tp":
+        score += 3
+    elif outcome == "hit_sl":
+        score -= 3
+    # expired: no change
+
+    if metrics_accuracy_score is not None:
+        if metrics_accuracy_score >= 0.85:
+            score += 2
+        elif metrics_accuracy_score >= 0.65:
+            score += 1
+        elif metrics_accuracy_score < 0.50:
+            score -= 2
+
+    if news_verified is True:
+        score += 1
+    elif news_verified is False:
+        score -= 1
+
+    for flag in validation_flags:
+        if flag in ("V3_direction_conflict", "V4a_price_hallucination", "V4b_indicator_hallucination"):
+            score -= 2
+        elif flag in ("V4c_news_hallucination", "V4d_temporal_hallucination", "V5_too_generic"):
+            score -= 1
+
+    score -= retry_count
+
+    if outcome == "hit_tp" and pnl_r is not None and pnl_r >= 2.0:
+        score += 1
+
+    return max(0, min(10, score))
+
+
+async def _verify_outcomes_for_logs(session: AsyncSession) -> None:
+    """
+    P9: For every closed ActiveTrade that has a linked LLMRationaleLog without an outcome,
+    copy outcome data and calculate quality_score.
+    Runs at the end of job_update_active_trades.
+    """
+    from app.models.llm_rationale_log import LLMRationaleLog
+    from sqlalchemy import and_
+
+    try:
+        # Find closed trades with unresolved rationale logs
+        q = (
+            select(ActiveTrade, Recommendation)
+            .join(Recommendation, ActiveTrade.recommendation_id == Recommendation.id)
+            .where(ActiveTrade.outcome.isnot(None))
+        )
+        rows = (await session.execute(q)).all()
+
+        if not rows:
+            return
+
+        rec_ids = list({rec.id for _, rec in rows})
+
+        # Load all unresolved logs for these recommendations in one query
+        logs_q = (
+            select(LLMRationaleLog)
+            .where(
+                LLMRationaleLog.recommendation_id.in_(rec_ids),
+                LLMRationaleLog.outcome.is_(None),
+            )
+        )
+        logs = (await session.execute(logs_q)).scalars().all()
+
+        if not logs:
+            return
+
+        # Build lookup: recommendation_id → (trade, rec)
+        trade_by_rec: dict[str, tuple] = {}
+        for trade, rec in rows:
+            if rec.id not in trade_by_rec:
+                trade_by_rec[rec.id] = (trade, rec)
+
+        updated = 0
+        for log in logs:
+            pair = trade_by_rec.get(log.recommendation_id)
+            if not pair:
+                continue
+            trade, rec = pair
+
+            entry_price = rec.buy_in_price or 0.0
+            original_sl = trade.current_sl or 0.0
+            closing_price = trade.closing_price or 0.0
+            direction = getattr(rec, "direction", "long") or "long"
+            risk = abs(entry_price - original_sl)
+
+            pnl_r: float | None = None
+            if risk > 0 and closing_price:
+                if direction == "long":
+                    pnl_r = round((closing_price - entry_price) / risk, 3)
+                else:
+                    pnl_r = round((entry_price - closing_price) / risk, 3)
+
+            # P12: verify metrics claims if metrics_at_entry is available
+            metrics_accuracy: float | None = log.metrics_accuracy_score
+            metrics_verification: str | None = log.metrics_verification
+            if log.metrics_at_entry and metrics_accuracy is None:
+                try:
+                    from app.services.research.hallucination import verify_metrics_claims
+                    import json as _json
+                    metrics_dict = log.get_metrics_at_entry()
+                    if metrics_dict:
+                        mc_result = verify_metrics_claims(log.rationale_text, metrics_dict)
+                        metrics_accuracy = mc_result.get("accuracy_score")
+                        metrics_verification = _json.dumps(mc_result, default=str)
+                except Exception as _me:
+                    print(f"[VERIFY_OUTCOMES] metrics claims check failed (non-fatal): {_me}")
+
+            flags = log.get_validation_flags()
+            quality = _calculate_quality_score(
+                outcome=trade.outcome,
+                validation_flags=flags,
+                retry_count=log.retry_count or 0,
+                pnl_r=pnl_r,
+                metrics_accuracy_score=metrics_accuracy,
+                news_verified=log.news_verified,
+            )
+
+            log.outcome = trade.outcome
+            log.outcome_at = trade.outcome_at
+            log.closing_price = closing_price or None
+            log.pnl_r = pnl_r
+            log.metrics_accuracy_score = metrics_accuracy
+            log.metrics_verification = metrics_verification
+            log.quality_score = quality
+            updated += 1
+
+        if updated:
+            await session.flush()
+            print(f"[VERIFY_OUTCOMES] Updated {updated} rationale log(s) with outcome data")
+    except Exception as exc:
+        print(f"[VERIFY_OUTCOMES] Failed (non-fatal): {exc}")
+
+
+async def job_build_hallucination_profile() -> None:
+    """P13: Weekly aggregation of V4 flag rates per provider/model."""
+    async with async_session_factory() as session:
+        try:
+            from app.services.research.bias_detector import build_hallucination_profile
+            profile = await build_hallucination_profile(session, days_back=30)
+            entries = len(profile.get("entries") or [])
+            print(f"[HALLUCINATION_PROFILE] Built profile with {entries} provider/model entries")
+        except Exception as exc:
+            print(f"[HALLUCINATION_PROFILE] Failed (non-fatal): {exc}")
 
 
 async def job_daily_briefing() -> None:
@@ -467,6 +744,14 @@ def start_scheduler() -> AsyncIOScheduler:
         hour=4,
         minute=0,
         id="cleanup_feed_items",
+    )
+    scheduler.add_job(
+        job_build_hallucination_profile,
+        "cron",
+        day_of_week="sun",
+        hour=6,
+        minute=0,
+        id="build_hallucination_profile",
     )
     scheduler.start()
     return scheduler

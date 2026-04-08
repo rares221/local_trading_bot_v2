@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from app.core.config import settings
 from app.core.database import init_db
 from app.api.routes import router
+from app.api.backtest_routes import router as backtest_router
 from app.jobs.scheduler import start_scheduler
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -26,10 +27,12 @@ def _setup_app_logging() -> None:
     handler.setLevel(logging.INFO)
     handler.setFormatter(fmt)
     for name in (
+        "app.main",
         "app.api.routes",
         "app.services.recommendations.engine",
         "app.jobs.scheduler",
         "app.services.technicals",
+        "scripts.migrate_sqlite_to_pg",
     ):
         log = logging.getLogger(name)
         log.setLevel(logging.INFO)
@@ -47,10 +50,9 @@ async def lifespan(app: FastAPI):
         await init_db()
     except Exception:
         logger.exception(
-            "Database initialization failed. If you are not using the project virtualenv, run: "
-            ".venv\\Scripts\\python -m pip install -r requirements.txt "
-            "then .venv\\Scripts\\python -m uvicorn app.main:app --reload. "
-            "If SQLite failed mid-migration, restore data/*.db from backup or remove the DB file once (data is wiped)."
+            "Database initialization failed. "
+            "For SQLite: restore data/*.db from backup or remove the DB file. "
+            "For PostgreSQL: ensure DATABASE_URL is set and TimescaleDB is running."
         )
         raise
     try:
@@ -61,9 +63,9 @@ async def lifespan(app: FastAPI):
     # Refresh macro calendar cache if stale (runs in background, non-blocking)
     try:
         from app.services.macro_calendar import refresh_dates
-        refresh_dates(force=False)  # Only fetches if cache is stale
+        refresh_dates(force=False)
     except Exception:
-        pass  # Fallback to static dates if fetch fails
+        pass
     scheduler = start_scheduler()
     yield
     scheduler.shutdown(wait=False)
@@ -74,6 +76,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.include_router(router, prefix="/api", tags=["api"])
+app.include_router(backtest_router, prefix="/api", tags=["backtest"])
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
@@ -141,3 +144,9 @@ async def journal_page() -> HTMLResponse:
 async def calendar_page() -> HTMLResponse:
     """Macro calendar: FOMC, CPI, NFP dates that affect recommendation confidence."""
     return HTMLResponse(content=_read_static("calendar.html"))
+
+
+@app.get("/backtest", response_class=HTMLResponse)
+async def backtest_page() -> HTMLResponse:
+    """Backtesting: run historical replay and view results (win rate, Sharpe, drawdown)."""
+    return HTMLResponse(content=_read_static("backtest.html"))

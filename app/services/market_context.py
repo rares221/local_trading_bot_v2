@@ -661,5 +661,48 @@ def get_sector_for_asset(asset_id: str, category: str) -> str | None:
     # Category-based fallback
     if category == "commodities":
         return "commodities"
-    
+
+    return None
+
+
+# Direct asset → sector ETF mapping (Yahoo Finance symbols).
+# Used for per-stock Relative Strength calculation vs its own sector.
+SECTOR_ETF_DIRECT: dict[str, str] = {
+    # Tech
+    "AAPL": "XLK", "MSFT": "XLK", "GOOGL": "XLK", "GOOG": "XLK",
+    "META": "XLK", "NVDA": "XLK", "AMD": "XLK", "INTC": "XLK",
+    "TSLA": "XLK", "AMZN": "XLK", "NFLX": "XLK", "CRM": "XLK",
+    "ORCL": "XLK", "ADBE": "XLK", "CSCO": "XLK",
+    # Energy
+    "XOM": "XLE", "CVX": "XLE", "COP": "XLE", "SLB": "XLE",
+    "OXY": "XLE", "BP": "XLE", "SHEL": "XLE",
+    # Financials
+    "JPM": "XLF", "BAC": "XLF", "WFC": "XLF", "GS": "XLF",
+    "MS": "XLF", "C": "XLF", "BLK": "XLF", "SCHW": "XLF", "AXP": "XLF",
+    # Healthcare
+    "JNJ": "XLV", "UNH": "XLV", "PFE": "XLV", "ABBV": "XLV",
+    "MRK": "XLV", "LLY": "XLV", "TMO": "XLV", "ABT": "XLV", "BMY": "XLV",
+    # Consumer
+    "WMT": "XLY", "HD": "XLY", "MCD": "XLY", "NKE": "XLY",
+    "SBUX": "XLY", "TGT": "XLY", "LOW": "XLY", "COST": "XLY",
+    # Industrials
+    "CAT": "XLI", "BA": "XLI", "HON": "XLI", "UPS": "XLI",
+    "GE": "XLI", "MMM": "XLI", "LMT": "XLI", "RTX": "XLI",
+    # Materials/Mining stocks
+    "NEM": "XLB", "FCX": "XLB",
+}
+
+
+def get_sector_etf_for_asset(asset_id: str) -> Optional[str]:
+    """
+    Return the sector ETF Yahoo Finance symbol for a given stock ticker.
+    First checks the direct map; falls back through get_sector_for_asset → SECTOR_ETFS.
+    Returns None for assets with no mapping (commodities, crypto, FX, indices).
+    """
+    etf = SECTOR_ETF_DIRECT.get(asset_id.upper())
+    if etf:
+        return etf
+    sector = get_sector_for_asset(asset_id, "stocks")
+    if sector:
+        return SECTOR_ETFS.get(sector)
     return None

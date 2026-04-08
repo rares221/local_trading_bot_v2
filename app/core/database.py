@@ -1,30 +1,19 @@
 from collections.abc import AsyncGenerator
-from pathlib import Path
 
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from .config import settings
 from .base import Base
 
 
-# Create data dir so SQLite file can be created
-def _ensure_data_dir() -> None:
-    url = settings.database_url
-    if "sqlite" in url:
-        # ./data/trading.db -> ./data
-        path = Path(url.replace("sqlite+aiosqlite:///", ""))
-        if path.suffix:
-            path = path.parent
-        path.mkdir(parents=True, exist_ok=True)
-
-
-_ensure_data_dir()
-
 engine = create_async_engine(
     settings.database_url,
     echo=settings.debug,
+    pool_size=10,
+    max_overflow=20,
+    pool_pre_ping=True,
 )
+
 async_session_factory = async_sessionmaker(
     engine,
     class_=AsyncSession,
@@ -33,165 +22,28 @@ async_session_factory = async_sessionmaker(
     autoflush=False,
 )
 
-
-def _add_rationale_text_column_if_missing(sync_conn) -> None:
-    """Add recommendations.rationale_text if missing (Option B migration)."""
-    result = sync_conn.execute(text("PRAGMA table_info(recommendations)"))
-    rows = result.fetchall()
-    if not rows:
-        return
-    has_col = any(row[1] == "rationale_text" for row in rows)
-    if not has_col:
-        sync_conn.execute(text("ALTER TABLE recommendations ADD COLUMN rationale_text TEXT"))
-
-
-def _migrate_daily_briefings(sync_conn) -> None:
-    """Create daily_briefings table if missing."""
-    sync_conn.execute(text(
-        "CREATE TABLE IF NOT EXISTS daily_briefings ("
-        "id VARCHAR(36) PRIMARY KEY, "
-        "created_at TIMESTAMP NOT NULL, "
-        "content_text TEXT NOT NULL, "
-        "payload JSON)"
-    ))
-
-
-def _migrate_active_trades_and_levels(sync_conn) -> None:
-    """Add suggested_* to active_trades; ensure active_trade_levels exists; backfill initial level for existing trades."""
-    import uuid
-    result = sync_conn.execute(text("PRAGMA table_info(active_trades)"))
-    rows = result.fetchall()
-    if rows:
-        names = [row[1] for row in rows]
-        for col, typ in [("suggested_sl", "REAL"), ("suggested_tp", "REAL"), ("suggested_at", "TEXT")]:
-            if col not in names:
-                sync_conn.execute(text(f"ALTER TABLE active_trades ADD COLUMN {col} {typ}"))
-    sync_conn.execute(text(
-        "CREATE TABLE IF NOT EXISTS active_trade_levels ("
-        "id VARCHAR(36) PRIMARY KEY, "
-        "active_trade_id VARCHAR(36) NOT NULL, "
-        "sl REAL NOT NULL, tp REAL NOT NULL, "
-        "created_at TIMESTAMP NOT NULL, "
-        "source VARCHAR(32) NOT NULL, "
-        "FOREIGN KEY(active_trade_id) REFERENCES active_trades(id))"
-    ))
-    # Backfill: one 'initial' level per active_trade that has no levels yet
-    cursor = sync_conn.execute(text(
-        "SELECT at.id, at.current_sl, at.current_tp, at.user_taken_at FROM active_trades at "
-        "WHERE NOT EXISTS (SELECT 1 FROM active_trade_levels l WHERE l.active_trade_id = at.id)"
-    ))
-    for row in cursor.fetchall():
-        sync_conn.execute(
-            text(
-                "INSERT INTO active_trade_levels (id, active_trade_id, sl, tp, created_at, source) "
-                "VALUES (:id, :aid, :sl, :tp, :created_at, 'initial')"
-            ),
-            {"id": str(uuid.uuid4()), "aid": row[0], "sl": row[1], "tp": row[2], "created_at": row[3]}
-        )
-
-
-def _ensure_columns(sync_conn, table: str, columns: list[tuple[str, str, str]]) -> None:
-    """
-    Generic column adder. For each (name, sql_type, default_expr) tuple,
-    ALTERs the table if the column doesn't exist yet.
-    default_expr can be empty string for nullable columns.
-    """
-    result = sync_conn.execute(text(f"PRAGMA table_info({table})"))
-    rows = result.fetchall()
-    if not rows:
-        return
-    existing = {row[1] for row in rows}
-    for col, typ, default in columns:
-        if col not in existing:
-            stmt = f"ALTER TABLE {table} ADD COLUMN {col} {typ}"
-            if default:
-                stmt += f" DEFAULT {default}"
-            sync_conn.execute(text(stmt))
-
-
-def _migrate_engine_v2_v3(sync_conn) -> None:
-    """Add columns introduced in Engine v2.1 and v3."""
-    # recommendations: direction, confidence_score, risk_reward, volatility_notes
-    _ensure_columns(sync_conn, "recommendations", [
-        ("direction",          "VARCHAR(8)",  "'long'"),
-        ("confidence_score",   "INTEGER",     ""),
-        ("risk_reward",        "REAL",        ""),
-        ("volatility_notes",   "TEXT",        ""),
-        ("suggested_risk_pct", "REAL",        ""),
-        ("min_confidence_gate", "INTEGER",   ""),
-        ("shadow_b_threshold", "INTEGER",    ""),
-        ("shadow_b_pass",     "BOOLEAN",     ""),
-        ("instrument_type",   "VARCHAR(16)", ""),
-    ])
-    # active_trades: trade lifecycle (v3) + signal flip tracking + outcome logging
-    _ensure_columns(sync_conn, "active_trades", [
-        ("trade_phase",       "VARCHAR(24)", "'open'"),
-        ("breakeven_hit",     "BOOLEAN",     "0"),
-        ("highest_price",     "REAL",        ""),
-        ("lowest_price",      "REAL",        ""),
-        ("signal_flip_count", "INTEGER",     "0"),
-        ("outcome",           "VARCHAR(24)", ""),
-        ("outcome_at",        "TEXT",        ""),
-        ("closing_price",     "REAL",        ""),
-    ])
-
-
-def _migrate_active_trades_strategy_multi_leg(sync_conn) -> None:
-    """
-    Replace UNIQUE(recommendation_id) with UNIQUE(recommendation_id, strategy_leg);
-    add strategy_leg + position_fraction. Required for split-Take strategies.
-    """
-    rows = sync_conn.execute(text("PRAGMA table_info(active_trades)")).fetchall()
-    if not rows:
-        return
-    colnames = [r[1] for r in rows]
-    if "strategy_leg" in colnames:
-        return
-
-    parts: list[str] = []
-    for r in rows:
-        _cid, name, ctype, notnull, _dflt, pk = r
-        coltype = (ctype or "NUMERIC").strip()
-        if not coltype:
-            coltype = "NUMERIC"
-        line = f'"{name}" {coltype}'
-        if pk:
-            line += " NOT NULL PRIMARY KEY"
-        elif notnull:
-            line += " NOT NULL"
-        parts.append(line)
-    parts.append('"strategy_leg" VARCHAR(32) NOT NULL DEFAULT \'vanilla\'')
-    parts.append('"position_fraction" REAL NOT NULL DEFAULT 1.0')
-    cols_sql = ", ".join(parts)
-    create_sql = (
-        f"CREATE TABLE active_trades_new ({cols_sql}, "
-        "UNIQUE (recommendation_id, strategy_leg), "
-        "FOREIGN KEY (recommendation_id) REFERENCES recommendations (id))"
-    )
-    old_cols_q = ", ".join(f'"{c}"' for c in colnames)
-    sync_conn.execute(text("PRAGMA foreign_keys=OFF"))
-    sync_conn.execute(text(create_sql))
-    sync_conn.execute(
-        text(
-            f"INSERT INTO active_trades_new ({old_cols_q}, strategy_leg, position_fraction) "
-            f"SELECT {old_cols_q}, 'vanilla', 1.0 FROM active_trades"
-        )
-    )
-    sync_conn.execute(text("DROP TABLE active_trades"))
-    sync_conn.execute(text("ALTER TABLE active_trades_new RENAME TO active_trades"))
-    sync_conn.execute(text("PRAGMA foreign_keys=ON"))
+# Alias used by background tasks that create their own sessions
+AsyncSessionLocal = async_session_factory
 
 
 async def init_db() -> None:
-    import app.models  # noqa: F401 - register all models with Base.metadata
+    """
+    Initialize database.
+    Schema is managed by Alembic migrations — this only ensures the
+    TimescaleDB extension exists before migrations run.
+    """
+    import app.models  # noqa: F401 — register all models with Base.metadata
 
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-        await conn.run_sync(_add_rationale_text_column_if_missing)
-        await conn.run_sync(_migrate_daily_briefings)
-        await conn.run_sync(_migrate_active_trades_and_levels)
-        await conn.run_sync(_migrate_engine_v2_v3)
-        await conn.run_sync(_migrate_active_trades_strategy_multi_leg)
+        await conn.run_sync(_ensure_timescaledb_extension)
+
+
+def _ensure_timescaledb_extension(sync_conn) -> None:
+    from sqlalchemy import text
+    try:
+        sync_conn.execute(text("CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE"))
+    except Exception:
+        pass
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:

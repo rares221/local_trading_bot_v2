@@ -5,6 +5,7 @@ Pure pandas/numpy — no external TA library needed.
 """
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 import math
 from dataclasses import dataclass, field
@@ -24,6 +25,35 @@ _ohlcv_cache: dict[str, pd.DataFrame] = {}
 # Separate cache for intraday (key = symbol) to avoid overwriting daily
 _ohlcv_intraday_cache: dict[str, pd.DataFrame] = {}
 
+# ---------------------------------------------------------------------------
+# Backtest mode: when set, fetch_ohlcv slices data up to this date.
+# Use set_backtest_mode() / clear_backtest_mode() from the replay engine.
+# ---------------------------------------------------------------------------
+_backtest_cutoff: Optional[pd.Timestamp] = None
+
+
+def set_backtest_mode(cutoff: Optional[pd.Timestamp]) -> None:
+    """Enable/disable backtest mode. When enabled, fetch_ohlcv returns data <= cutoff."""
+    global _backtest_cutoff
+    _backtest_cutoff = cutoff
+
+
+def clear_backtest_mode() -> None:
+    """Return to live mode (no date slicing)."""
+    global _backtest_cutoff
+    _backtest_cutoff = None
+
+
+def _apply_backtest_cutoff(df: pd.DataFrame) -> Optional[pd.DataFrame]:
+    """Slice df to <= _backtest_cutoff if in backtest mode. Returns None if empty after slice."""
+    if _backtest_cutoff is None or df is None or df.empty:
+        return df
+    try:
+        sliced = df[df.index <= _backtest_cutoff]
+        return sliced if not sliced.empty else None
+    except Exception:
+        return df
+
 
 def clear_cache() -> None:
     _ohlcv_cache.clear()
@@ -34,13 +64,16 @@ def fetch_ohlcv(symbol: str, period: str = "90d", interval: Optional[str] = None
     """
     Fetch OHLCV history from yfinance with caching. Returns None on failure.
     interval: None or "1d" for daily; "1h" for hourly (uses 30d period, cached separately).
+    In backtest mode (_backtest_cutoff set), returns data sliced to that date.
     """
     use_interval = interval or "1d"
     cache_key = symbol if use_interval == "1d" else f"{symbol}_{use_interval}"
     cache = _ohlcv_cache if use_interval == "1d" else _ohlcv_intraday_cache
     if cache_key in cache:
         cached = cache[cache_key]
-        return cached if not cached.empty else None
+        if cached.empty:
+            return None
+        return _apply_backtest_cutoff(cached)
     # yfinance logs and some builds also print "$TICKER: possibly delisted" to the console;
     # keep loggers quiet (failures still return None / empty df).
     log = logging.getLogger("yfinance")
@@ -49,12 +82,19 @@ def fetch_ohlcv(symbol: str, period: str = "90d", interval: Optional[str] = None
     try:
         ticker = yf.Ticker(symbol)
         kwargs = {"period": "30d" if use_interval == "1h" else period, "interval": use_interval}
-        df = ticker.history(**kwargs)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(ticker.history, **kwargs)
+            try:
+                df = future.result(timeout=30)
+            except concurrent.futures.TimeoutError:
+                logger.warning("[TECHNICALS] yfinance timeout (30s) for symbol=%s", symbol)
+                cache[cache_key] = pd.DataFrame()
+                return None
         if df is None or df.empty or "Close" not in df.columns:
             cache[cache_key] = pd.DataFrame()
             return None
         cache[cache_key] = df
-        return df
+        return _apply_backtest_cutoff(df)
     except Exception:
         cache[cache_key] = pd.DataFrame()
         return None
@@ -97,6 +137,45 @@ def get_return_correlation(symbol_a: str, symbol_b: str, period_days: int = 60) 
     try:
         c = ret_a.loc[common].corr(ret_b.loc[common])
         return float(c) if pd.notna(c) else None
+    except Exception:
+        return None
+
+
+def compute_relative_strength(symbol: str, benchmark: str, period: int = 20) -> Optional[float]:
+    """
+    Relative Strength ratio of symbol vs benchmark over N trading days.
+
+    Returns (1 + cumulative_return_symbol) / (1 + cumulative_return_benchmark).
+    > 1.0  = symbol outperforms benchmark (strong)
+    < 1.0  = symbol underperforms benchmark (weak)
+    = 1.0  = in line with benchmark
+
+    Uses the existing fetch_ohlcv() cache and respects backtest mode cutoff.
+    Returns None if data is insufficient or an error occurs.
+    Output is clamped to [0.1, 10.0] to avoid extreme values from bad data.
+    """
+    if not symbol or not benchmark or symbol == benchmark:
+        return None
+    min_bars = period + 1
+    fetch_period = "250d" if period > 60 else "90d"
+    df_sym = fetch_ohlcv(symbol, period=fetch_period)
+    df_bm  = fetch_ohlcv(benchmark, period=fetch_period)
+    if df_sym is None or df_bm is None:
+        return None
+    if len(df_sym) < min_bars or len(df_bm) < min_bars:
+        return None
+    try:
+        close_sym = df_sym["Close"].dropna()
+        close_bm  = df_bm["Close"].dropna()
+        if len(close_sym) < min_bars or len(close_bm) < min_bars:
+            return None
+        ret_sym = float(close_sym.iloc[-1]) / float(close_sym.iloc[-period]) - 1
+        ret_bm  = float(close_bm.iloc[-1]) / float(close_bm.iloc[-period]) - 1
+        if close_sym.iloc[-period] <= 0 or close_bm.iloc[-period] <= 0:
+            return None
+        rs = (1 + ret_sym) / (1 + ret_bm)
+        # Clamp to avoid extreme values from bad/sparse data
+        return round(max(0.1, min(10.0, rs)), 4)
     except Exception:
         return None
 
@@ -332,6 +411,17 @@ class TechnicalSnapshot:
     trend_strength: str = "weak"  # "weak" | "moderate" | "strong"
     vwap: Optional[float] = None  # volume-weighted average price (e.g. 20d)
     volatility_regime: str = "stable"  # "expanding" | "contracting" | "stable" (ATR slope)
+    # Gap risk metrics: computed from Open vs prev Close across OHLCV history
+    overnight_gap_pct_avg: Optional[float] = None  # mean |Open - prev_Close| / prev_Close
+    overnight_gap_pct_p95: Optional[float] = None  # 95th percentile gap (tail risk)
+    # Volume Profile (daily-bar approximation, 60-day lookback)
+    vpoc: Optional[float] = None          # Volume Point of Control: price with highest traded volume
+    vah: Optional[float] = None           # Value Area High: upper bound of 70% volume zone
+    val: Optional[float] = None           # Value Area Low: lower bound of 70% volume zone
+    hvn_levels: list[float] = field(default_factory=list)  # High Volume Nodes (institutional interest)
+    lvn_levels: list[float] = field(default_factory=list)  # Low Volume Nodes (price moves fast here)
+    vp_bias: str = "at_vpoc"             # "above_vpoc" | "below_vpoc" | "at_vpoc"
+    vp_overextension: Optional[float] = None  # (price - vpoc) / (vah - val); >1.5 = overextended
 
     @property
     def price_above_vwap(self) -> bool:
@@ -417,6 +507,28 @@ class TechnicalSnapshot:
                 return r
         return None
 
+    # ── Volume Profile helpers ────────────────────────────────────────────────
+
+    def in_value_area(self) -> bool:
+        """Price is inside the 70% value area (choppy equilibrium zone)."""
+        return self.vah is not None and self.val is not None and self.val < self.price < self.vah
+
+    def nearest_hvn_below(self) -> Optional[float]:
+        candidates = [h for h in self.hvn_levels if h < self.price]
+        return max(candidates) if candidates else None
+
+    def nearest_hvn_above(self) -> Optional[float]:
+        candidates = [h for h in self.hvn_levels if h > self.price]
+        return min(candidates) if candidates else None
+
+    def nearest_lvn_above(self) -> Optional[float]:
+        candidates = [l for l in self.lvn_levels if l > self.price]
+        return min(candidates) if candidates else None
+
+    def nearest_lvn_below(self) -> Optional[float]:
+        candidates = [l for l in self.lvn_levels if l < self.price]
+        return max(candidates) if candidates else None
+
 
 def calc_atr_regime(df: pd.DataFrame, lookback: int = 10, period: int = 14) -> str:
     """
@@ -459,6 +571,148 @@ def calc_vwap(df: pd.DataFrame, period: int = 20) -> Optional[float]:
     return float(vwap)
 
 
+def compute_volume_profile(
+    df: pd.DataFrame,
+    lookback: int = 60,
+    n_bins: int = 120,
+    value_area_pct: float = 0.70,
+    hvn_percentile: float = 0.65,
+    lvn_percentile: float = 0.25,
+) -> Optional[dict]:
+    """
+    Build a Volume Profile from daily OHLCV bars (TPO-style approximation).
+
+    Each day's volume is distributed uniformly across its High-Low range into
+    price bins. Accumulating across lookback days produces a volume histogram
+    from which VPOC, VAH, VAL, HVN and LVN levels are derived.
+
+    Returns dict with keys: vpoc, vah, val, hvn_levels, lvn_levels,
+    vp_bias, vp_overextension — or None if data insufficient.
+    """
+    required = {"High", "Low", "Close", "Volume"}
+    if df is None or df.empty or not required.issubset(df.columns):
+        return None
+
+    tail = df.tail(lookback).copy()
+    if len(tail) < 10:
+        return None
+
+    # Drop zero-volume bars (halts, data gaps)
+    tail = tail[tail["Volume"] > 0]
+    if tail.empty:
+        return None
+
+    price_min = float(tail["Low"].min())
+    price_max = float(tail["High"].max())
+    if price_max <= price_min:
+        return None
+
+    bin_size = (price_max - price_min) / n_bins
+    if bin_size <= 0:
+        return None
+
+    # Bin centers
+    bin_edges = np.linspace(price_min, price_max, n_bins + 1)
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+    vol_hist = np.zeros(n_bins)
+
+    for _, row in tail.iterrows():
+        lo = float(row["Low"])
+        hi = float(row["High"])
+        vol = float(row["Volume"])
+        if hi <= lo:
+            # Single-price bar — put all volume in nearest bin
+            idx = int((lo - price_min) / bin_size)
+            idx = max(0, min(n_bins - 1, idx))
+            vol_hist[idx] += vol
+            continue
+        # Find bins that overlap [lo, hi]
+        i_start = max(0, int((lo - price_min) / bin_size))
+        i_end = min(n_bins - 1, int((hi - price_min) / bin_size))
+        n_covered = i_end - i_start + 1
+        vol_per_bin = vol / n_covered
+        vol_hist[i_start:i_end + 1] += vol_per_bin
+
+    if vol_hist.sum() <= 0:
+        return None
+
+    # VPOC: bin with highest volume
+    vpoc_idx = int(np.argmax(vol_hist))
+    vpoc = float(bin_centers[vpoc_idx])
+
+    # Value Area: expand from VPOC until 70% of total volume captured
+    total_vol = vol_hist.sum()
+    target_vol = total_vol * value_area_pct
+    lo_idx = hi_idx = vpoc_idx
+    accumulated = vol_hist[vpoc_idx]
+
+    while accumulated < target_vol:
+        can_expand_up = hi_idx + 1 < n_bins
+        can_expand_dn = lo_idx - 1 >= 0
+        if not can_expand_up and not can_expand_dn:
+            break
+        vol_up = vol_hist[hi_idx + 1] if can_expand_up else -1
+        vol_dn = vol_hist[lo_idx - 1] if can_expand_dn else -1
+        if vol_up >= vol_dn:
+            hi_idx += 1
+            accumulated += vol_hist[hi_idx]
+        else:
+            lo_idx -= 1
+            accumulated += vol_hist[lo_idx]
+
+    vah = float(bin_edges[hi_idx + 1])   # upper edge of highest VA bin
+    val = float(bin_edges[lo_idx])        # lower edge of lowest VA bin
+
+    # HVN: bins above hvn_percentile of all non-zero volume bins
+    nonzero = vol_hist[vol_hist > 0]
+    hvn_thresh = float(np.percentile(nonzero, hvn_percentile * 100)) if len(nonzero) > 0 else 0
+    lvn_thresh = float(np.percentile(nonzero, lvn_percentile * 100)) if len(nonzero) > 0 else 0
+
+    hvn_raw = [float(bin_centers[i]) for i in range(n_bins) if vol_hist[i] >= hvn_thresh]
+    lvn_raw = [float(bin_centers[i]) for i in range(n_bins) if 0 < vol_hist[i] <= lvn_thresh]
+
+    # Cluster HVN/LVN levels: merge within 0.5% of each other
+    def _cluster(levels: list[float], tol: float = 0.005) -> list[float]:
+        if not levels:
+            return []
+        levels = sorted(levels)
+        clusters: list[list[float]] = [[levels[0]]]
+        for lv in levels[1:]:
+            if abs(lv - clusters[-1][-1]) / max(clusters[-1][-1], 1e-9) <= tol:
+                clusters[-1].append(lv)
+            else:
+                clusters.append([lv])
+        return [float(np.mean(c)) for c in clusters]
+
+    hvn_levels = _cluster(hvn_raw)
+    lvn_levels = _cluster(lvn_raw)
+
+    # VP bias and overextension
+    current_price = float(df["Close"].iloc[-1])
+    va_width = vah - val
+    if va_width > 0:
+        vp_overextension = (current_price - vpoc) / va_width
+    else:
+        vp_overextension = 0.0
+
+    if current_price > vpoc * 1.005:
+        vp_bias = "above_vpoc"
+    elif current_price < vpoc * 0.995:
+        vp_bias = "below_vpoc"
+    else:
+        vp_bias = "at_vpoc"
+
+    return {
+        "vpoc": round(vpoc, 4),
+        "vah": round(vah, 4),
+        "val": round(val, 4),
+        "hvn_levels": [round(h, 4) for h in hvn_levels],
+        "lvn_levels": [round(l, 4) for l in lvn_levels],
+        "vp_bias": vp_bias,
+        "vp_overextension": round(vp_overextension, 4),
+    }
+
+
 def build_snapshot(symbol: str) -> Optional[TechnicalSnapshot]:
     """Build full technical snapshot for one symbol."""
     df = fetch_ohlcv(symbol)
@@ -482,6 +736,29 @@ def build_snapshot(symbol: str) -> Optional[TechnicalSnapshot]:
     avg_daily = calc_avg_daily_move(df)
     vwap = calc_vwap(df, period=20)
     vol_regime = calc_atr_regime(df, lookback=10)
+
+    # Volume Profile (daily-bar approximation, 60-day lookback)
+    vp = compute_volume_profile(df)
+    vpoc = vp["vpoc"] if vp else None
+    vah = vp["vah"] if vp else None
+    val = vp["val"] if vp else None
+    hvn_levels = vp["hvn_levels"] if vp else []
+    lvn_levels = vp["lvn_levels"] if vp else []
+    vp_bias = vp["vp_bias"] if vp else "at_vpoc"
+    vp_overextension = vp["vp_overextension"] if vp else None
+
+    # Overnight gap distribution: |Open[t] - Close[t-1]| / Close[t-1]
+    overnight_gap_pct_avg: Optional[float] = None
+    overnight_gap_pct_p95: Optional[float] = None
+    if "Open" in df.columns and len(df) >= 5:
+        try:
+            gaps = (df["Open"] - df["Close"].shift(1)).abs() / df["Close"].shift(1)
+            gaps = gaps.dropna()
+            if len(gaps) >= 3:
+                overnight_gap_pct_avg = float(gaps.mean())
+                overnight_gap_pct_p95 = float(gaps.quantile(0.95))
+        except Exception:
+            pass
 
     # Trend bias from all indicators
     bull, bear = 0, 0
@@ -562,6 +839,15 @@ def build_snapshot(symbol: str) -> Optional[TechnicalSnapshot]:
         trend_strength=trend_strength,
         vwap=_r(vwap, 4) if vwap is not None else None,
         volatility_regime=vol_regime,
+        overnight_gap_pct_avg=_r(overnight_gap_pct_avg, 6),
+        overnight_gap_pct_p95=_r(overnight_gap_pct_p95, 6),
+        vpoc=_r(vpoc, 4) if vpoc is not None else None,
+        vah=_r(vah, 4) if vah is not None else None,
+        val=_r(val, 4) if val is not None else None,
+        hvn_levels=[round(h, 4) for h in hvn_levels],
+        lvn_levels=[round(l, 4) for l in lvn_levels],
+        vp_bias=vp_bias,
+        vp_overextension=_r(vp_overextension, 4) if vp_overextension is not None else None,
     )
 
 
@@ -619,27 +905,59 @@ def compute_atr_levels(
 
     sl, tp = sl_base, tp_base
 
-    # S/R-aware adjustment
+    # ── Volume Profile-aware adjustment (priority over swing S/R) ────────────
+    if snapshot and snapshot.vpoc is not None:
+        min_sl_dist = price * 0.995  # SL never tighter than 0.5% from price
+
+        if direction == "long":
+            # SL: prefer nearest HVN below (institutional support) or VAL
+            for vp_anchor in [snapshot.nearest_hvn_below(), snapshot.val]:
+                if vp_anchor and vp_anchor < price:
+                    vp_sl = vp_anchor * 0.998
+                    if sl_base < vp_sl < min_sl_dist:
+                        sl = vp_sl
+                        break
+
+            # TP: avoid placing TP inside an HVN (price stalls/reverses there)
+            hvn_above = snapshot.nearest_hvn_above()
+            if hvn_above and price < hvn_above < tp_base:
+                tp = hvn_above * 0.997  # just below the HVN — realistic exit
+            # VAH as TP cap: strong resistance at value area boundary
+            if snapshot.vah and price < snapshot.vah < tp_base:
+                tp = snapshot.vah * 0.998
+
+        else:  # short
+            # SL: prefer nearest HVN above or VAH
+            for vp_anchor in [snapshot.nearest_hvn_above(), snapshot.vah]:
+                if vp_anchor and vp_anchor > price:
+                    vp_sl = vp_anchor * 1.002
+                    max_sl_dist = price * 1.005
+                    if sl_base > vp_sl > max_sl_dist:
+                        sl = vp_sl
+                        break
+
+            # TP: avoid placing TP inside an HVN below
+            hvn_below = snapshot.nearest_hvn_below()
+            if hvn_below and tp_base < hvn_below < price:
+                tp = hvn_below * 1.003  # just above the HVN
+            # VAL as TP cap: strong support at value area boundary
+            if snapshot.val and tp_base < snapshot.val < price:
+                tp = snapshot.val * 1.002
+
+    # ── Swing S/R fallback (when VP levels don't apply) ──────────────────────
     if snapshot:
         if direction == "long":
-            # SL: snap to nearest support below price if it provides a tighter stop
             support = snapshot.nearest_support_below()
             if support is not None and support < price:
-                # Place SL slightly below the support (0.2% buffer)
                 sr_sl = support * 0.998
-                # Only use if it's between the ATR-based SL and price (tighter but not too tight)
-                min_sl = price * 0.995  # never tighter than 0.5%
+                min_sl = price * 0.995
                 if sr_sl > sl_base and sr_sl < min_sl:
-                    pass  # too tight, keep ATR level
-                elif sr_sl > sl_base:
                     sl = sr_sl
 
-            # TP: consider nearest resistance above for a realistic target
             resistance = snapshot.nearest_resistance_above()
             if resistance is not None and resistance > price:
-                # Use resistance as TP if it's between price and ATR-based TP
                 if resistance < tp_base:
-                    tp = resistance * 0.998  # just below resistance
+                    tp = resistance * 0.998
         else:  # short
             resistance = snapshot.nearest_resistance_above()
             if resistance is not None and resistance > price:
@@ -663,7 +981,7 @@ def estimate_expiry_days(
     take_profit: float,
     snapshot: Optional[TechnicalSnapshot] = None,
     min_days: int = 1,
-    max_days: int = 30,
+    max_days: int = 60,
 ) -> int:
     if not snapshot or not snapshot.avg_daily_move or snapshot.avg_daily_move <= 0:
         return max_days // 2
@@ -672,6 +990,11 @@ def estimate_expiry_days(
         return min_days
     estimated = math.ceil(distance_pct / snapshot.avg_daily_move)
     return max(min_days, min(estimated, max_days))
+
+
+def classify_horizon(expiry_days: int) -> str:
+    """Classify trade horizon: near (≤14 trading days) or far (>14 trading days)."""
+    return "near" if expiry_days <= 14 else "far"
 
 
 # ---------------------------------------------------------------------------

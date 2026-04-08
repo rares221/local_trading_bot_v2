@@ -1,0 +1,708 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Backtesting — Trading Bot</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/common.css">
+  <script src="/static/js/icons.js"></script>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --border: #2a2d3e;
+      --accent: #6c63ff;
+      --accent2: #00d4aa;
+      --danger: #ff4d6d;
+      --warn: #f4a261;
+      --text: #e2e8f0;
+      --muted: #8892a4;
+      --win: #00d4aa;
+      --loss: #ff4d6d;
+      --expired: #f4a261;
+    }
+    .container { max-width: 1200px; margin: 0 auto; padding: 24px; }
+    h1 { font-size: 22px; font-weight: 700; margin-bottom: 4px; }
+    .subtitle { color: var(--muted); font-size: 13px; margin-bottom: 24px; }
+
+    .grid { display: grid; gap: 20px; }
+    .grid-2 { grid-template-columns: 1fr 1fr; }
+    .grid-4 { grid-template-columns: repeat(4, 1fr); }
+    @media (max-width: 768px) { .grid-2, .grid-4 { grid-template-columns: 1fr; } }
+
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 20px; }
+    .card h2 { font-size: 14px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 16px; }
+
+    label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+    input, select { width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); padding: 8px 12px; font-size: 14px; outline: none; }
+    input:focus, select:focus { border-color: var(--accent); }
+    .form-group { margin-bottom: 14px; }
+
+    .btn { display: inline-flex; align-items: center; gap: 8px; padding: 10px 20px; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; border: none; transition: opacity 0.15s; }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-primary:hover:not(:disabled) { opacity: 0.85; }
+    .btn-danger { background: var(--danger); color: #fff; }
+    .btn-sm { padding: 5px 12px; font-size: 12px; }
+
+    .stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+    .stat-label { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+    .stat-value { font-size: 24px; font-weight: 700; }
+    .stat-value.win { color: var(--win); }
+    .stat-value.loss { color: var(--loss); }
+    .stat-value.neutral { color: var(--text); }
+
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+    .badge-running { background: rgba(108,99,255,0.2); color: var(--accent); }
+    .badge-completed { background: rgba(0,212,170,0.2); color: var(--win); }
+    .badge-failed { background: rgba(255,77,109,0.2); color: var(--loss); }
+    .badge-hit_tp { background: rgba(0,212,170,0.2); color: var(--win); }
+    .badge-hit_sl { background: rgba(255,77,109,0.2); color: var(--loss); }
+    .badge-expired { background: rgba(244,162,97,0.2); color: var(--expired); }
+
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th { text-align: left; padding: 8px 12px; color: var(--muted); font-weight: 600; border-bottom: 1px solid var(--border); font-size: 11px; text-transform: uppercase; }
+    td { padding: 8px 12px; border-bottom: 1px solid rgba(42,45,62,0.5); }
+    tr:hover td { background: rgba(255,255,255,0.02); }
+
+    .bucket-table { width: 100%; }
+    .bucket-bar { height: 6px; background: var(--border); border-radius: 3px; margin-top: 4px; }
+    .bucket-fill { height: 100%; border-radius: 3px; background: var(--accent); transition: width 0.4s; }
+
+    .disclaimer { font-size: 11px; color: var(--muted); background: rgba(244,162,97,0.08); border: 1px solid rgba(244,162,97,0.2); border-radius: 6px; padding: 10px; margin-top: 20px; }
+
+    #status-msg { font-size: 13px; color: var(--muted); padding: 8px 0; min-height: 24px; }
+    #status-msg.error { color: var(--danger); }
+
+    .runs-list { display: flex; flex-direction: column; gap: 10px; }
+    .run-row { display: flex; align-items: center; gap: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; cursor: pointer; transition: border-color 0.15s; flex-wrap: wrap; }
+    .run-row:hover { border-color: var(--accent); }
+    .run-row.selected { border-color: var(--accent); }
+    .run-id { font-family: monospace; font-size: 11px; color: var(--muted); }
+    .run-dates { font-size: 13px; }
+    .run-metrics { font-size: 12px; color: var(--muted); margin-left: auto; }
+
+    .tabs { display: flex; gap: 4px; margin-bottom: 16px; }
+    .tab { padding: 7px 16px; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; background: transparent; border: 1px solid var(--border); color: var(--muted); transition: all 0.15s; }
+    .tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+    .hidden { display: none !important; }
+    .spin { animation: spin 1s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .pnl-pos { color: var(--win); }
+    .pnl-neg { color: var(--loss); }
+
+    .no-data { color: var(--muted); font-size: 13px; text-align: center; padding: 32px; }
+    .loading-overlay { position: relative; }
+  </style>
+</head>
+<body>
+
+<nav class="nav">
+    <a href="/dashboard"><span data-icon="sliders-horizontal"></span> Configuration</a>
+    <a href="/recommendations"><span data-icon="list-checks"></span> Recommendations</a>
+    <a href="/trade-builder"><span data-icon="sliders-horizontal"></span> Trade builder</a>
+    <a href="/research"><span data-icon="search"></span> Research</a>
+    <a href="/analysis"><span data-icon="bar-chart-2"></span> Analysis</a>
+    <a href="/active-trades"><span data-icon="activity"></span> Active trades</a>
+    <a href="/backtest" class="active"><span data-icon="history"></span> Backtest</a>
+    <a href="/journal"><span data-icon="book-open"></span> Journal</a>
+    <a href="/briefing"><span data-icon="newspaper"></span> Briefing</a>
+    <a href="/calendar"><span data-icon="calendar"></span> Calendar</a>
+</nav>
+
+<div class="container">
+  <h1>Backtesting</h1>
+  <p class="subtitle">Historical replay of the recommendation engine — technical signals only (no live sentiment).</p>
+
+  <div style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.25);border-radius:9px;padding:14px 18px;margin-bottom:20px;font-size:13px;line-height:1.6;color:rgba(226,232,240,.8);">
+    <strong style="color:#a5b4fc;">ℹ What is this page for?</strong><br>
+    This is a <strong>strategy validation tool</strong> — it replays the recommendation engine on historical data to answer questions like:
+    <em>"Does a higher confidence score actually lead to more profitable trades?"</em> or
+    <em>"Does moderate vs aggressive risk tier perform better?"</em><br><br>
+    Runs on all 28 tracked symbols over a custom date range. It takes ~2–5 minutes to complete.<br>
+    <strong>For a quick analysis of a specific trade you have open</strong>, use the
+    <a href="/active-trades" style="color:#818cf8;text-decoration:underline;">Active Trades</a>
+    page — each card has a <strong>Backtest button</strong> that runs a focused analysis on that symbol.
+  </div>
+
+  <div class="grid grid-2" style="margin-bottom:24px;">
+    <!-- Left: Run form -->
+    <div class="card">
+      <h2>New Backtest Run</h2>
+      <div class="form-group">
+        <label>Start Date</label>
+        <input type="date" id="start-date" />
+      </div>
+      <div class="form-group">
+        <label>End Date</label>
+        <input type="date" id="end-date" />
+      </div>
+      <div class="form-group">
+        <label>Risk Tier</label>
+        <select id="risk-tier">
+          <option value="conservative">Conservative (ATR 1.5x SL / 2.5x TP)</option>
+          <option value="moderate" selected>Moderate (ATR 2.0x SL / 3.5x TP)</option>
+          <option value="aggressive">Aggressive (ATR 3.0x SL / 5.0x TP)</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Min Confidence Gate</label>
+        <select id="min-confidence">
+          <option value="30">30 — Very permissive</option>
+          <option value="40" selected>40 — Default</option>
+          <option value="50">50 — Standard</option>
+          <option value="60">60 — High conviction only</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>History Period (for data pre-fetch)</label>
+        <select id="history-period">
+          <option value="2y">2 years</option>
+          <option value="3y" selected>3 years</option>
+          <option value="5y">5 years</option>
+        </select>
+      </div>
+      <div id="status-msg"></div>
+      <button class="btn btn-primary" id="run-btn" onclick="startBacktest()">
+        ▶ Run Backtest
+      </button>
+    </div>
+
+    <!-- Right: Runs list -->
+    <div class="card">
+      <h2>Previous Runs <span id="runs-count" style="font-weight:400;font-size:12px;color:var(--muted);"></span></h2>
+      <div id="runs-list" class="runs-list">
+        <div class="no-data">No runs yet.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Results section (hidden until a run is selected) -->
+  <div id="results-section" class="hidden">
+    <div class="grid grid-4" style="margin-bottom:20px;" id="metric-cards">
+      <!-- filled by JS -->
+    </div>
+
+    <div class="card" id="horizon-chart-card" style="margin-bottom:20px; display:none; position:relative;">
+      <h2>Horizon Forecast</h2>
+      <canvas id="horizon-canvas" style="display:block; border-radius:6px; width:100%;"></canvas>
+      <div id="horizon-tooltip" style="display:none; position:absolute; bottom:calc(100% + 8px); left:50%; transform:translateX(-50%);
+        background:rgba(15,17,30,0.96); border:1px solid rgba(108,99,255,0.35); border-radius:8px;
+        padding:10px 14px; font-size:12px; line-height:1.5; color:rgba(226,232,240,0.85);
+        max-width:340px; text-align:center; pointer-events:none; z-index:10;
+        box-shadow:0 4px 20px rgba(0,0,0,0.5);">
+        Horizon Forecast — normalized to entry=100. Shows projected price trajectory toward TP,
+        with SL (red) and TP (green) lines. The glowing cyan wall marks the day-14 near/far
+        horizon boundary. R/R derived from backtest projected avg.
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:20px;">
+      <h2>Win Rate by Confidence Bucket</h2>
+      <div id="bucket-chart"></div>
+    </div>
+
+    <div class="card">
+      <div class="tabs">
+        <div class="tab active" onclick="showTab('trades')">Trades</div>
+        <div class="tab" onclick="showTab('symbol-stats')">By Symbol</div>
+        <div class="tab" onclick="showTab('direction-stats')">By Direction</div>
+      </div>
+
+      <div id="tab-trades">
+        <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
+          <select id="filter-outcome" onchange="loadTrades()" style="width:auto;">
+            <option value="">All outcomes</option>
+            <option value="hit_tp">hit_tp</option>
+            <option value="hit_sl">hit_sl</option>
+            <option value="expired">expired</option>
+          </select>
+          <select id="filter-symbol" onchange="loadTrades()" style="width:auto;">
+            <option value="">All symbols</option>
+          </select>
+          <button class="btn btn-primary btn-sm" onclick="loadMoreTrades()" id="load-more-btn" style="margin-left:auto;">Load more</button>
+        </div>
+        <div id="trades-table-wrap">
+          <div class="no-data">Select a run to view trades.</div>
+        </div>
+      </div>
+
+      <div id="tab-symbol-stats" class="hidden">
+        <div id="symbol-stats-wrap"></div>
+      </div>
+      <div id="tab-direction-stats" class="hidden">
+        <div id="direction-stats-wrap"></div>
+      </div>
+    </div>
+
+    <div class="disclaimer" id="disclaimer-box"></div>
+  </div>
+</div>
+
+<script>
+let _currentRunId = null;
+let _tradesOffset = 0;
+const _tradesLimit = 50;
+let _allSymbols = [];
+
+// Set default dates: 1 year ago to today
+(function initDates() {
+  const today = new Date();
+  const oneYearAgo = new Date(today);
+  oneYearAgo.setFullYear(today.getFullYear() - 1);
+  document.getElementById('end-date').value = today.toISOString().slice(0, 10);
+  document.getElementById('start-date').value = oneYearAgo.toISOString().slice(0, 10);
+})();
+
+async function startBacktest() {
+  const btn = document.getElementById('run-btn');
+  const msg = document.getElementById('status-msg');
+  const body = {
+    start_date: document.getElementById('start-date').value,
+    end_date: document.getElementById('end-date').value,
+    risk_tier: document.getElementById('risk-tier').value,
+    min_confidence: parseInt(document.getElementById('min-confidence').value),
+    period: document.getElementById('history-period').value,
+  };
+  if (!body.start_date || !body.end_date) {
+    msg.textContent = 'Please select start and end dates.';
+    msg.className = 'error';
+    return;
+  }
+  btn.disabled = true;
+  msg.className = '';
+  msg.textContent = '⏳ Starting backtest…';
+  try {
+    const res = await fetch('/api/backtest/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Unknown error');
+    msg.textContent = `✓ Run started (${data.run_id.slice(0, 8)}…). Pre-fetching historical data and replaying — this may take a few minutes.`;
+    loadRuns();
+    pollRun(data.run_id);
+  } catch (e) {
+    msg.textContent = `Error: ${e.message}`;
+    msg.className = 'error';
+    btn.disabled = false;
+  }
+}
+
+function pollRun(runId, attempts = 0) {
+  if (attempts > 120) return; // give up after 10 min
+  setTimeout(async () => {
+    try {
+      const res = await fetch(`/api/backtest/runs/${runId}`);
+      const data = await res.json();
+      loadRuns();
+      if (data.status === 'running') {
+        pollRun(runId, attempts + 1);
+      } else {
+        const msg = document.getElementById('status-msg');
+        if (data.status === 'completed') {
+          msg.textContent = `✓ Completed: ${data.total_trades ?? 0} trades, win rate ${pct(data.win_rate)}`;
+          document.getElementById('run-btn').disabled = false;
+        } else {
+          msg.textContent = `✗ Failed: ${data.error_message || 'unknown error'}`;
+          msg.className = 'error';
+          document.getElementById('run-btn').disabled = false;
+        }
+        if (_currentRunId === runId) showResults(data);
+      }
+    } catch {}
+  }, 5000);
+}
+
+async function loadRuns() {
+  const res = await fetch('/api/backtest/runs');
+  if (!res.ok) return;
+  const data = await res.json();
+  const runs = data.runs || [];
+  const el = document.getElementById('runs-list');
+  document.getElementById('runs-count').textContent = `(${runs.length})`;
+  if (!runs.length) { el.innerHTML = '<div class="no-data">No runs yet.</div>'; return; }
+
+  el.innerHTML = runs.map(r => `
+    <div class="run-row ${r.id === _currentRunId ? 'selected' : ''}" onclick="selectRun('${r.id}')">
+      <div>
+        <div class="run-dates">${r.start_date} → ${r.end_date}</div>
+        <div class="run-id">${r.id.slice(0,8)}… · ${r.risk_tier} · min_conf ${r.min_confidence ?? '?'}</div>
+      </div>
+      <span class="badge badge-${r.status}">${r.status}</span>
+      <div class="run-metrics">
+        ${r.status === 'completed' ? `${r.total_trades ?? 0} trades &nbsp;|&nbsp; WR ${pct(r.win_rate)} &nbsp;|&nbsp; Sharpe ${fmt(r.sharpe_ratio)}` : ''}
+      </div>
+      <button class="btn btn-danger btn-sm" onclick="deleteRun(event,'${r.id}')">✕</button>
+    </div>
+  `).join('');
+}
+
+async function selectRun(runId) {
+  _currentRunId = runId;
+  loadRuns();
+  const res = await fetch(`/api/backtest/runs/${runId}`);
+  const data = await res.json();
+  showResults(data);
+  _tradesOffset = 0;
+  loadTrades();
+}
+
+function showResults(data) {
+  const sec = document.getElementById('results-section');
+  sec.classList.remove('hidden');
+
+  const m = data.metrics || {};
+  const cards = [
+    { label: 'Win Rate', value: pct(data.win_rate), cls: winCls(data.win_rate, 0.5) },
+    { label: 'Sharpe Ratio', value: fmt(data.sharpe_ratio), cls: winCls(data.sharpe_ratio, 0) },
+    { label: 'Max Drawdown (R)', value: fmt(data.max_drawdown), cls: data.max_drawdown > 5 ? 'loss' : 'neutral' },
+    { label: 'Avg P&L (R)', value: fmt(data.avg_rr_realized), cls: winCls(data.avg_rr_realized, 0) },
+    { label: 'Total Signals', value: (data.total_signals ?? '—').toString(), cls: 'neutral' },
+    { label: 'Total Trades', value: (data.total_trades ?? '—').toString(), cls: 'neutral' },
+    { label: 'Wins', value: (m.wins ?? '—').toString(), cls: 'win' },
+    { label: 'Losses', value: (m.losses ?? '—').toString(), cls: 'loss' },
+  ];
+  document.getElementById('metric-cards').innerHTML = cards.map(c =>
+    `<div class="stat-card"><div class="stat-label">${c.label}</div><div class="stat-value ${c.cls}">${c.value}</div></div>`
+  ).join('');
+
+  // Confidence bucket chart
+  const buckets = m.by_confidence_bucket || {};
+  const bucketEl = document.getElementById('bucket-chart');
+  if (!Object.keys(buckets).length) {
+    bucketEl.innerHTML = '<div class="no-data">No bucket data.</div>';
+  } else {
+    bucketEl.innerHTML = `<table class="bucket-table">
+      <thead><tr><th>Confidence</th><th>Trades</th><th>Win Rate</th><th>Avg P&amp;L (R)</th><th>Bar</th></tr></thead>
+      <tbody>
+      ${Object.entries(buckets).map(([b, bdata]) => `
+        <tr>
+          <td>${b}</td>
+          <td>${bdata.total}</td>
+          <td class="${winCls(bdata.win_rate, 0.5)}">${pct(bdata.win_rate)}</td>
+          <td class="${winCls(bdata.avg_pnl_r, 0)}">${fmt(bdata.avg_pnl_r)}</td>
+          <td style="width:160px"><div class="bucket-bar"><div class="bucket-fill" style="width:${Math.round((bdata.win_rate||0)*100)}%"></div></div></td>
+        </tr>
+      `).join('')}
+      </tbody>
+    </table>`;
+  }
+
+  // By symbol stats
+  const symStats = m.by_symbol || {};
+  document.getElementById('symbol-stats-wrap').innerHTML = Object.keys(symStats).length
+    ? `<table><thead><tr><th>Symbol</th><th>Trades</th><th>Win Rate</th><th>Avg P&L (R)</th></tr></thead><tbody>
+    ${Object.entries(symStats).sort((a,b)=>b[1].total-a[1].total).map(([sym, ss]) => `
+      <tr><td>${sym}</td><td>${ss.total}</td>
+      <td class="${winCls(ss.win_rate,0.5)}">${pct(ss.win_rate)}</td>
+      <td class="${winCls(ss.avg_pnl_r,0)}">${fmt(ss.avg_pnl_r)}</td></tr>
+    `).join('')}
+    </tbody></table>`
+    : '<div class="no-data">No data.</div>';
+
+  // By direction
+  const dirStats = m.by_direction || {};
+  document.getElementById('direction-stats-wrap').innerHTML = Object.keys(dirStats).length
+    ? `<table><thead><tr><th>Direction</th><th>Trades</th><th>Wins</th><th>Win Rate</th></tr></thead><tbody>
+    ${Object.entries(dirStats).map(([d, ds]) => `
+      <tr><td>${d}</td><td>${ds.total}</td><td>${ds.wins}</td>
+      <td class="${winCls(ds.win_rate,0.5)}">${pct(ds.win_rate)}</td></tr>
+    `).join('')}
+    </tbody></table>`
+    : '<div class="no-data">No data.</div>';
+
+  document.getElementById('disclaimer-box').textContent = data.disclaimer || '';
+  initBacktestHorizonChart(data);
+}
+
+async function loadTrades() {
+  if (!_currentRunId) return;
+  _tradesOffset = 0;
+  const outcome = document.getElementById('filter-outcome').value;
+  const symbol = document.getElementById('filter-symbol').value;
+  const url = `/api/backtest/runs/${_currentRunId}/trades?offset=0&limit=${_tradesLimit}${outcome?'&outcome='+outcome:''}${symbol?'&symbol='+encodeURIComponent(symbol):''}`;
+  const res = await fetch(url);
+  const data = await res.json();
+  renderTrades(data.trades || [], false);
+  _tradesOffset = (data.trades || []).length;
+
+  // Populate symbol filter from first load (all symbols)
+  if (!_allSymbols.length && data.trades) {
+    _allSymbols = [...new Set(data.trades.map(t => t.symbol))].sort();
+    const sel = document.getElementById('filter-symbol');
+    _allSymbols.forEach(s => {
+      const o = document.createElement('option');
+      o.value = s; o.textContent = s;
+      sel.appendChild(o);
+    });
+  }
+}
+
+async function loadMoreTrades() {
+  if (!_currentRunId) return;
+  const outcome = document.getElementById('filter-outcome').value;
+  const symbol = document.getElementById('filter-symbol').value;
+  const url = `/api/backtest/runs/${_currentRunId}/trades?offset=${_tradesOffset}&limit=${_tradesLimit}${outcome?'&outcome='+outcome:''}${symbol?'&symbol='+encodeURIComponent(symbol):''}`;
+  const res = await fetch(url);
+  const data = await res.json();
+  renderTrades(data.trades || [], true);
+  _tradesOffset += (data.trades || []).length;
+}
+
+function renderTrades(trades, append) {
+  const wrap = document.getElementById('trades-table-wrap');
+  if (!trades.length && !append) {
+    wrap.innerHTML = '<div class="no-data">No trades match the filter.</div>';
+    return;
+  }
+  const rows = trades.map(t => `
+    <tr>
+      <td>${t.entry_date}</td>
+      <td>${t.symbol}</td>
+      <td>${t.direction}</td>
+      <td>${t.risk_tier}</td>
+      <td>${t.confidence_score}</td>
+      <td>${fmt(t.risk_reward)}</td>
+      <td>${fmt(t.entry_price)}</td>
+      <td>${fmt(t.stop_loss)}</td>
+      <td>${fmt(t.take_profit)}</td>
+      <td><span class="badge badge-${t.outcome}">${t.outcome ?? '—'}</span></td>
+      <td>${t.outcome_date ?? '—'}</td>
+      <td class="${pnlCls(t.pnl_r)}">${fmt(t.pnl_r)}</td>
+      <td>${t.bars_held ?? '—'}</td>
+      <td>${t.volatility_regime ?? '—'}</td>
+      <td>${t.trend_bias ?? '—'}</td>
+    </tr>
+  `).join('');
+  const header = `<table><thead><tr>
+    <th>Date</th><th>Symbol</th><th>Dir</th><th>Tier</th><th>Conf</th><th>R:R</th>
+    <th>Entry</th><th>SL</th><th>TP</th><th>Outcome</th><th>Out. Date</th><th>P&amp;L (R)</th><th>Bars</th><th>Vol Regime</th><th>Trend</th>
+  </tr></thead><tbody>`;
+  if (append) {
+    const existing = wrap.querySelector('tbody');
+    if (existing) { existing.insertAdjacentHTML('beforeend', rows); return; }
+  }
+  wrap.innerHTML = header + rows + '</tbody></table>';
+}
+
+async function deleteRun(e, runId) {
+  e.stopPropagation();
+  if (!confirm('Delete this backtest run and all its trades?')) return;
+  await fetch(`/api/backtest/runs/${runId}`, { method: 'DELETE' });
+  if (_currentRunId === runId) {
+    _currentRunId = null;
+    document.getElementById('results-section').classList.add('hidden');
+  }
+  loadRuns();
+}
+
+function showTab(name) {
+  document.querySelectorAll('.tabs .tab').forEach((t, i) => {
+    const tabs = ['trades','symbol-stats','direction-stats'];
+    t.classList.toggle('active', tabs[i] === name);
+  });
+  ['trades','symbol-stats','direction-stats'].forEach(n => {
+    document.getElementById(`tab-${n}`).classList.toggle('hidden', n !== name);
+  });
+}
+
+// Helpers
+function pct(v) { return v != null ? (v * 100).toFixed(1) + '%' : '—'; }
+function fmt(v) { return v != null ? parseFloat(v).toFixed(3) : '—'; }
+function winCls(v, threshold) {
+  if (v == null) return 'neutral';
+  return v > threshold ? 'win' : (v < threshold ? 'loss' : 'neutral');
+}
+function pnlCls(v) {
+  if (v == null) return '';
+  return v > 0 ? 'pnl-pos' : (v < 0 ? 'pnl-neg' : '');
+}
+
+// ── Horizon Chart ──────────────────────────────────────────────────────────
+function drawHorizonChart(canvasEl, opts) {
+  const DPR = window.devicePixelRatio || 1;
+  const W_CSS = canvasEl.parentElement.clientWidth || 700;
+  const H_CSS = 300;
+  canvasEl.width  = W_CSS * DPR;
+  canvasEl.height = H_CSS * DPR;
+  canvasEl.style.width  = W_CSS + 'px';
+  canvasEl.style.height = H_CSS + 'px';
+  const ctx = canvasEl.getContext('2d');
+  ctx.scale(DPR, DPR);
+  const W = W_CSS, H = H_CSS;
+
+  const entry      = parseFloat(opts.entry)      || 100;
+  const sl         = parseFloat(opts.sl)         || entry * 0.97;
+  const tp         = parseFloat(opts.tp)         || entry * 1.06;
+  const expiryDays = parseInt(opts.expiry_days)  || 14;
+  const atrPct     = parseFloat(opts.atr_pct)    || 0;
+
+  const TOTAL_DAYS = Math.max(30, Math.ceil(expiryDays * 1.25));
+  const WALL_DAY   = 14;
+  const ML = 70, MR = 80, MT = 32, MB = 38;
+  const CW = W - ML - MR, CH = H - MT - MB;
+
+  // Centered Y around entry
+  const distUp   = Math.abs(tp - entry);
+  const distDown = Math.abs(entry - sl);
+  const maxDist  = Math.max(distUp, distDown, entry * 0.01);
+  const pad      = maxDist * 0.30;
+  const priceMin = entry - maxDist - pad;
+  const priceMax = entry + maxDist + pad;
+
+  const fmt2 = v => v < 10 ? v.toFixed(3) : v < 1000 ? v.toFixed(2) : Math.round(v) + '';
+  function xd(d) { return ML + (d / TOTAL_DAYS) * CW; }
+  function yp(p) { return MT + (1 - (p - priceMin) / (priceMax - priceMin)) * CH; }
+
+  const wallX = xd(WALL_DAY);
+
+  // Backgrounds
+  const ng = ctx.createLinearGradient(ML, 0, wallX, 0);
+  ng.addColorStop(0, '#0d3a5e'); ng.addColorStop(0.5, '#0f4c75'); ng.addColorStop(1, '#0d2e56');
+  ctx.fillStyle = ng; ctx.fillRect(ML, MT, wallX - ML, CH);
+  const sg = ctx.createRadialGradient(ML+30, MT+28, 0, ML+30, MT+28, 100);
+  sg.addColorStop(0, 'rgba(255,210,80,0.13)'); sg.addColorStop(1, 'rgba(255,210,80,0)');
+  ctx.fillStyle = sg; ctx.fillRect(ML, MT, wallX - ML, CH);
+  const fg = ctx.createLinearGradient(wallX, 0, W - MR, 0);
+  fg.addColorStop(0, '#0a1020'); fg.addColorStop(1, '#050810');
+  ctx.fillStyle = fg; ctx.fillRect(wallX, MT, W - MR - wallX, CH);
+  function rng(n) { let x = Math.sin(n*9301+49297)*233280; return x-Math.floor(x); }
+  for (let i=0;i<55;i++) {
+    const sx=wallX+rng(i*3+1)*(W-MR-wallX), sy=MT+rng(i*3+2)*CH;
+    const sr=rng(i*3)*1.4+0.3, alpha=(0.25+rng(i*7)*0.65).toFixed(2);
+    ctx.beginPath(); ctx.arc(sx,sy,sr,0,Math.PI*2);
+    ctx.fillStyle=`rgba(255,255,255,${alpha})`; ctx.fill();
+  }
+  // ATR cone
+  if (atrPct>0) {
+    ctx.save(); ctx.beginPath();
+    for (let d=0;d<=TOTAL_DAYS;d++) {
+      const s=entry*(atrPct/100)*Math.sqrt(d), x=xd(d), y=yp(Math.min(priceMax,entry+s));
+      d===0?ctx.moveTo(x,y):ctx.lineTo(x,y);
+    }
+    for (let d=TOTAL_DAYS;d>=0;d--)
+      ctx.lineTo(xd(d), yp(Math.max(priceMin, entry-entry*(atrPct/100)*Math.sqrt(d))));
+    ctx.closePath(); ctx.fillStyle='rgba(108,99,255,0.07)'; ctx.fill(); ctx.restore();
+  }
+  // Per-day vertical grid
+  ctx.save();
+  for (let d=1; d<=TOTAL_DAYS; d++) {
+    const isMajor = d%7===0 || d===14 || d===expiryDays;
+    const isNear  = d<=WALL_DAY;
+    if (!isNear && d%3!==0 && !isMajor) continue;
+    ctx.strokeStyle = isMajor ? 'rgba(255,255,255,0.10)' : 'rgba(255,255,255,0.04)';
+    ctx.lineWidth = isMajor ? 1 : 0.5;
+    ctx.beginPath(); ctx.moveTo(xd(d),MT); ctx.lineTo(xd(d),MT+CH); ctx.stroke();
+  }
+  ctx.restore();
+  // Horizontal grid
+  ctx.save(); ctx.strokeStyle='rgba(255,255,255,0.05)'; ctx.lineWidth=1;
+  for (let i=0;i<=6;i++) {
+    const y=yp(priceMin+(priceMax-priceMin)*(i/6));
+    ctx.beginPath(); ctx.moveTo(ML,y); ctx.lineTo(W-MR,y); ctx.stroke();
+  }
+  ctx.restore();
+  // Entry reference
+  ctx.save(); ctx.setLineDash([3,5]); ctx.strokeStyle='rgba(248,250,252,0.15)'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(ML,yp(entry)); ctx.lineTo(W-MR,yp(entry)); ctx.stroke(); ctx.restore();
+  // SL / TP lines
+  ctx.save(); ctx.setLineDash([6,4]); ctx.strokeStyle='rgba(255,77,109,0.75)'; ctx.lineWidth=1.5;
+  ctx.beginPath(); ctx.moveTo(ML,yp(sl)); ctx.lineTo(W-MR,yp(sl)); ctx.stroke(); ctx.restore();
+  ctx.save(); ctx.setLineDash([6,4]); ctx.strokeStyle='rgba(0,212,170,0.75)'; ctx.lineWidth=1.5;
+  ctx.beginPath(); ctx.moveTo(ML,yp(tp)); ctx.lineTo(W-MR,yp(tp)); ctx.stroke(); ctx.restore();
+  // Trend line
+  ctx.save(); ctx.strokeStyle='#a78bfa'; ctx.lineWidth=2.5; ctx.shadowColor='#a78bfa'; ctx.shadowBlur=10;
+  ctx.beginPath(); ctx.moveTo(xd(0),yp(entry)); ctx.lineTo(xd(expiryDays),yp(tp)); ctx.stroke(); ctx.restore();
+  // Per-day dots on trend
+  ctx.save();
+  for (let d=1; d<=Math.min(expiryDays,TOTAL_DAYS); d++) {
+    if (d>WALL_DAY && d%3!==0) continue;
+    const t=d/expiryDays, px=xd(d), py=yp(entry+(tp-entry)*t);
+    const r = (d%7===0||d===expiryDays) ? 3.5 : 2;
+    ctx.beginPath(); ctx.arc(px,py,r,0,Math.PI*2);
+    ctx.fillStyle = d%7===0 ? 'rgba(167,139,250,0.9)' : 'rgba(167,139,250,0.45)';
+    ctx.shadowColor='#a78bfa'; ctx.shadowBlur = d%7===0 ? 6 : 0;
+    ctx.fill();
+  }
+  ctx.restore();
+  // Heliosphere wall
+  const wg=ctx.createLinearGradient(wallX-4,0,wallX+4,0);
+  wg.addColorStop(0,'rgba(0,220,255,0)'); wg.addColorStop(0.5,'rgba(0,220,255,0.88)'); wg.addColorStop(1,'rgba(0,220,255,0)');
+  ctx.save(); ctx.lineWidth=3; ctx.strokeStyle=wg; ctx.shadowColor='#00dcff'; ctx.shadowBlur=18;
+  ctx.beginPath(); ctx.moveTo(wallX,MT); ctx.lineTo(wallX,MT+CH); ctx.stroke(); ctx.restore();
+  // Entry dot
+  ctx.save(); ctx.beginPath(); ctx.arc(xd(0),yp(entry),5.5,0,Math.PI*2);
+  ctx.fillStyle='#f8fafc'; ctx.shadowColor='#fff'; ctx.shadowBlur=12; ctx.fill(); ctx.restore();
+  if (expiryDays<=TOTAL_DAYS) {
+    ctx.save(); ctx.beginPath(); ctx.arc(xd(expiryDays),yp(tp),4.5,0,Math.PI*2);
+    ctx.fillStyle='#00d4aa'; ctx.shadowColor='#00d4aa'; ctx.shadowBlur=10; ctx.fill(); ctx.restore();
+  }
+  // Zone labels
+  ctx.save(); ctx.font='bold 10px Inter,sans-serif'; ctx.textAlign='center';
+  ctx.fillStyle='rgba(120,220,255,0.55)';
+  ctx.fillText('NEAR HORIZON  ≤14d', ML+(wallX-ML)/2, MT+14);
+  if (TOTAL_DAYS>14) {
+    ctx.fillStyle='rgba(160,160,220,0.32)';
+    ctx.fillText('FAR HORIZON · context', wallX+(W-MR-wallX)/2, MT+14);
+  }
+  ctx.restore();
+  // X axis labels
+  ctx.save(); ctx.font='10px Inter,sans-serif'; ctx.textAlign='center';
+  const tickStep = TOTAL_DAYS<=20 ? 1 : TOTAL_DAYS<=35 ? 7 : TOTAL_DAYS<=70 ? 14 : 30;
+  for (let d=0; d<=TOTAL_DAYS; d++) {
+    const isStep=d%tickStep===0, isWall=d===14, isExpiry=d===expiryDays;
+    if (!isStep && !isWall && !isExpiry) continue;
+    ctx.fillStyle = isWall ? 'rgba(0,220,255,0.65)' : (isExpiry&&d!==0) ? 'rgba(0,212,170,0.75)' : 'rgba(255,255,255,0.4)';
+    ctx.fillText('d'+d, xd(d), MT+CH+16);
+  }
+  ctx.restore();
+  // Y axis labels
+  ctx.save(); ctx.font='10px Inter,sans-serif'; ctx.textAlign='right'; ctx.fillStyle='rgba(255,255,255,0.35)';
+  for (let i=0;i<=6;i++) {
+    const p=priceMin+(priceMax-priceMin)*(i/6);
+    ctx.fillText(fmt2(p), ML-6, yp(p)+3.5);
+  }
+  ctx.restore();
+  // Right-side labels
+  ctx.save(); ctx.font='bold 11px Inter,sans-serif'; ctx.textAlign='left';
+  const lx = W-MR+6;
+  ctx.fillStyle='rgba(0,212,170,0.9)';    ctx.fillText('TP  '+fmt2(tp),    lx, yp(tp)+4);
+  ctx.fillStyle='rgba(248,250,252,0.75)'; ctx.fillText('▶ '+fmt2(entry),   lx, yp(entry)+4);
+  ctx.fillStyle='rgba(255,77,109,0.9)';   ctx.fillText('SL  '+fmt2(sl),    lx, yp(sl)+4);
+  ctx.restore();
+}
+
+function initBacktestHorizonChart(data) {
+  const card = document.getElementById('horizon-chart-card');
+  const canvas = document.getElementById('horizon-canvas');
+  const tooltip = document.getElementById('horizon-tooltip');
+  // Normalize: entry=100, compute SL/TP from risk tier and projected R/R
+  const riskPct = { low: 2.0, moderate: 3.5, high: 5.0 }[data.risk_tier] || 3.0;
+  const entry = 100;
+  const sl    = entry * (1 - riskPct / 100);
+  const rr    = parseFloat(data.avg_rr_projected) || 2.0;
+  const tp    = entry + (entry - sl) * rr;
+  const atrPct = riskPct / 2;
+  card.style.display = 'block';
+  drawHorizonChart(canvas, { entry, sl, tp, expiry_days: 14, atr_pct: atrPct, horizon: 'near' });
+  let _hcTimer = null;
+  card.addEventListener('mouseenter', () => {
+    _hcTimer = setTimeout(() => { tooltip.style.display = 'block'; }, 3000);
+  });
+  card.addEventListener('mouseleave', () => {
+    clearTimeout(_hcTimer); tooltip.style.display = 'none';
+  });
+}
+
+// Init
+loadRuns();
+</script>
+</body>
+</html>

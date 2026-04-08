@@ -4,7 +4,9 @@ uvicorn[standard]>=0.27.0
 
 # Database
 sqlalchemy>=2.0.0
-aiosqlite>=0.19.0
+asyncpg>=0.29.0
+psycopg2-binary>=2.9.9
+alembic>=1.13.0
 
 # Phase 1: ingestion and data
 feedparser>=6.0.10
@@ -26,3 +28,8 @@ pydantic-settings>=2.1.0
 # Research rationale (Option B): multi-provider LLM (OpenAI, Anthropic, Ollama, OpenRouter)
 openai>=1.12.0
 anthropic>=0.39.0
+
+# Testing
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+pytest-mock>=3.12.0

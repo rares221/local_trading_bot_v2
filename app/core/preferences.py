@@ -60,10 +60,36 @@ def get_research_llm_config() -> dict[str, Any]:
             provider = "openai"
     model = (data.get("research_llm_model") or "").strip() or (settings.research_llm_model or "").strip()
     ollama_base_url = (data.get("ollama_base_url") or "").strip() or (settings.ollama_base_url or "http://localhost:11434").strip()
-    return {"research_llm_provider": provider, "research_llm_model": model, "ollama_base_url": ollama_base_url}
+    try:
+        thinking_budget = int(data.get("research_llm_thinking_budget", settings.research_llm_thinking_budget or 0))
+    except (TypeError, ValueError):
+        thinking_budget = 0
+    # Clamp to provider maximum — silently caps over-specified budgets.
+    try:
+        from app.services.research.providers import clamp_thinking_budget
+        thinking_budget = clamp_thinking_budget(provider, thinking_budget)
+    except Exception:
+        thinking_budget = max(0, thinking_budget)
+    try:
+        from app.services.research.providers import get_max_thinking_budget
+        max_budget = get_max_thinking_budget(provider)
+    except Exception:
+        max_budget = 0
+    return {
+        "research_llm_provider": provider,
+        "research_llm_model": model,
+        "ollama_base_url": ollama_base_url,
+        "thinking_budget": thinking_budget,
+        "thinking_budget_max": max_budget,  # provider ceiling — use for UI slider / validation
+    }
 
 
-def set_research_llm_config(provider: str | None = None, model: str | None = None, ollama_base_url: str | None = None) -> dict[str, Any]:
+def set_research_llm_config(
+    provider: str | None = None,
+    model: str | None = None,
+    ollama_base_url: str | None = None,
+    thinking_budget: int | None = None,
+) -> dict[str, Any]:
     """Save research LLM preferences. Omit a key to leave unchanged. Returns current full config."""
     data = _load_prefs()
     if provider is not None:
@@ -75,6 +101,15 @@ def set_research_llm_config(provider: str | None = None, model: str | None = Non
         data["research_llm_model"] = model.strip()
     if ollama_base_url is not None:
         data["ollama_base_url"] = ollama_base_url.strip() or "http://localhost:11434"
+    if thinking_budget is not None:
+        # Clamp to provider max before persisting.
+        resolved_provider = data.get("research_llm_provider") or settings.research_llm_provider or "openai"
+        try:
+            from app.services.research.providers import clamp_thinking_budget
+            thinking_budget = clamp_thinking_budget(resolved_provider, thinking_budget)
+        except Exception:
+            thinking_budget = max(0, thinking_budget)
+        data["research_llm_thinking_budget"] = thinking_budget
     _save_prefs(data)
     return get_research_llm_config()
 
@@ -388,3 +423,152 @@ def apply_non_commodity_engine_patch(patch: dict[str, Any]) -> dict[str, int | f
                 )
     _save_prefs(data)
     return get_non_commodity_engine_gates()
+
+
+# ---------------------------------------------------------------------------
+# Earnings Calendar config
+# ---------------------------------------------------------------------------
+_DEFAULT_EARNINGS_WINDOW_DAYS = 2
+_DEFAULT_EARNINGS_CONFIDENCE_PENALTY = 15
+_DEFAULT_EARNINGS_SKIP_ENABLED = False
+
+
+def get_earnings_calendar_config() -> dict[str, Any]:
+    """
+    Return earnings calendar settings:
+    - earnings_window_days: ±days around earnings to apply penalty (default 2)
+    - earnings_confidence_penalty: confidence points deducted (default 15)
+    - earnings_skip_enabled: if True, skip the candidate entirely (default False)
+    """
+    data = _load_prefs()
+    try:
+        window = max(0, int(data.get("earnings_window_days", _DEFAULT_EARNINGS_WINDOW_DAYS)))
+    except (TypeError, ValueError):
+        window = _DEFAULT_EARNINGS_WINDOW_DAYS
+    try:
+        penalty = max(0, min(50, int(data.get("earnings_confidence_penalty", _DEFAULT_EARNINGS_CONFIDENCE_PENALTY))))
+    except (TypeError, ValueError):
+        penalty = _DEFAULT_EARNINGS_CONFIDENCE_PENALTY
+    skip = bool(data.get("earnings_skip_enabled", _DEFAULT_EARNINGS_SKIP_ENABLED))
+    return {
+        "earnings_window_days": window,
+        "earnings_confidence_penalty": penalty,
+        "earnings_skip_enabled": skip,
+    }
+
+
+def set_earnings_calendar_config(
+    window_days: int | None = None,
+    confidence_penalty: int | None = None,
+    skip_enabled: bool | None = None,
+) -> dict[str, Any]:
+    """Persist earnings calendar settings. Returns current config."""
+    data = _load_prefs()
+    if window_days is not None:
+        data["earnings_window_days"] = max(0, int(window_days))
+    if confidence_penalty is not None:
+        data["earnings_confidence_penalty"] = max(0, min(50, int(confidence_penalty)))
+    if skip_enabled is not None:
+        data["earnings_skip_enabled"] = bool(skip_enabled)
+    _save_prefs(data)
+    return get_earnings_calendar_config()
+
+
+# ---------------------------------------------------------------------------
+# Circuit Breaker config
+# ---------------------------------------------------------------------------
+_DEFAULT_CB_ENABLED = True
+_DEFAULT_CB_MAX_CONSECUTIVE_LOSSES = 5
+_DEFAULT_CB_MAX_DAILY_LOSS_R = 3.0
+_DEFAULT_CB_DRAWDOWN_GATE_R = 8.0
+
+
+def get_circuit_breaker_config() -> dict[str, Any]:
+    """
+    Return circuit breaker settings:
+    - circuit_breaker_enabled: master switch (default True)
+    - max_consecutive_losses: losing streak before defensive mode (default 5)
+    - max_daily_loss_r: R-multiples lost today before defensive mode (default 3.0)
+    - drawdown_gate_r: peak-to-trough R drawdown before paused mode (default 8.0)
+    """
+    data = _load_prefs()
+    enabled = bool(data.get("circuit_breaker_enabled", _DEFAULT_CB_ENABLED))
+    try:
+        max_cons = max(1, int(data.get("max_consecutive_losses", _DEFAULT_CB_MAX_CONSECUTIVE_LOSSES)))
+    except (TypeError, ValueError):
+        max_cons = _DEFAULT_CB_MAX_CONSECUTIVE_LOSSES
+    try:
+        max_daily = max(0.5, float(data.get("max_daily_loss_r", _DEFAULT_CB_MAX_DAILY_LOSS_R)))
+    except (TypeError, ValueError):
+        max_daily = _DEFAULT_CB_MAX_DAILY_LOSS_R
+    try:
+        drawdown = max(1.0, float(data.get("drawdown_gate_r", _DEFAULT_CB_DRAWDOWN_GATE_R)))
+    except (TypeError, ValueError):
+        drawdown = _DEFAULT_CB_DRAWDOWN_GATE_R
+    return {
+        "circuit_breaker_enabled": enabled,
+        "max_consecutive_losses": max_cons,
+        "max_daily_loss_r": max_daily,
+        "drawdown_gate_r": drawdown,
+    }
+
+
+def set_circuit_breaker_config(
+    enabled: bool | None = None,
+    max_consecutive_losses: int | None = None,
+    max_daily_loss_r: float | None = None,
+    drawdown_gate_r: float | None = None,
+) -> dict[str, Any]:
+    """Persist circuit breaker settings. Returns current config."""
+    data = _load_prefs()
+    if enabled is not None:
+        data["circuit_breaker_enabled"] = bool(enabled)
+    if max_consecutive_losses is not None:
+        data["max_consecutive_losses"] = max(1, int(max_consecutive_losses))
+    if max_daily_loss_r is not None:
+        data["max_daily_loss_r"] = max(0.5, float(max_daily_loss_r))
+    if drawdown_gate_r is not None:
+        data["drawdown_gate_r"] = max(1.0, float(drawdown_gate_r))
+    _save_prefs(data)
+    return get_circuit_breaker_config()
+
+
+# ---------------------------------------------------------------------------
+# Gap Risk config
+# ---------------------------------------------------------------------------
+_DEFAULT_GAP_RISK_ENABLED = True
+_DEFAULT_GAP_RISK_MAX_PENALTY = 0.50  # sizing can't drop below 50% of calculated value
+
+
+def get_gap_risk_config() -> dict[str, Any]:
+    """
+    Return gap risk settings:
+    - gap_risk_enabled: master switch (default True)
+    - gap_risk_max_penalty: floor for the gap sizing multiplier (default 0.50)
+      i.e. sizing is never reduced by more than 50% due to gap risk alone
+    """
+    data = _load_prefs()
+    enabled = bool(data.get("gap_risk_enabled", _DEFAULT_GAP_RISK_ENABLED))
+    try:
+        max_pen = float(data.get("gap_risk_max_penalty", _DEFAULT_GAP_RISK_MAX_PENALTY))
+        max_pen = max(0.1, min(1.0, max_pen))
+    except (TypeError, ValueError):
+        max_pen = _DEFAULT_GAP_RISK_MAX_PENALTY
+    return {
+        "gap_risk_enabled": enabled,
+        "gap_risk_max_penalty": max_pen,
+    }
+
+
+def set_gap_risk_config(
+    enabled: bool | None = None,
+    max_penalty: float | None = None,
+) -> dict[str, Any]:
+    """Persist gap risk settings. Returns current config."""
+    data = _load_prefs()
+    if enabled is not None:
+        data["gap_risk_enabled"] = bool(enabled)
+    if max_penalty is not None:
+        data["gap_risk_max_penalty"] = max(0.1, min(1.0, float(max_penalty)))
+    _save_prefs(data)
+    return get_gap_risk_config()

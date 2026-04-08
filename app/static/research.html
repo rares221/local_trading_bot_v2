@@ -18,6 +18,7 @@
     <a href="/research" class="active"><span data-icon="search"></span> Research</a>
     <a href="/analysis"><span data-icon="bar-chart-2"></span> Analysis</a>
     <a href="/active-trades"><span data-icon="activity"></span> Active trades</a>
+    <a href="/backtest"><span data-icon="history"></span> Backtest</a>
     <a href="/journal"><span data-icon="book-open"></span> Journal</a>
     <a href="/briefing"><span data-icon="newspaper"></span> Briefing</a>
     <a href="/calendar"><span data-icon="calendar"></span> Calendar</a>
@@ -55,37 +56,879 @@
     </section>
 
     <section class="card" id="result-card" style="display:none;">
-      <h2 class="section-title" id="result-title">Research result</h2>
       <div id="result-loading" class="loading-overlay" style="display:none;"><span class="spinner spinner--lg"></span> Generating research&hellip;</div>
       <div id="result-summary" style="display:none;">
-        <p class="meta" style="font-weight:600;margin-bottom:4px;">Summary</p>
-        <div id="result-text" class="block-summary"></div>
+        <div id="result-header" class="rs-header"></div>
+        <div id="result-sections" class="rs-sections"></div>
       </div>
       <div id="result-empty" class="alert alert--warning" style="display:none;">No summary returned. Check that an LLM provider is configured on the <a href="/dashboard">Dashboard</a>.</div>
-      <details id="result-context" style="margin-top:var(--space-2);display:none;">
-        <summary style="cursor:pointer;font-weight:600;font-size:14px;">Context (sentiment, price, headlines)</summary>
-        <pre id="result-json" class="block-payload mt-1"></pre>
+      <details id="result-context" class="rs-context-details" style="margin-top:var(--space-2);display:none;">
+        <summary class="rs-context-summary">
+          <span data-icon="bar-chart-2" data-icon-size="14"></span> Market Context
+        </summary>
+        <div id="result-context-body" class="rs-context-body"></div>
       </details>
+      <div id="horizon-chart-wrap" style="display:none; margin-top:20px; position:relative;">
+        <canvas id="horizon-canvas" style="display:block; border-radius:8px; width:100%;"></canvas>
+        <div id="horizon-tooltip" class="hc-tooltip" style="display:none;">
+          Horizon Forecast — shows the projected price trajectory from entry toward Take Profit,
+          with Stop Loss (red) and TP (green) boundaries. The glowing cyan wall marks the day-14
+          near/far horizon boundary. The purple cone represents ATR-based price uncertainty.
+        </div>
+      </div>
     </section>
 
     <p class="disclaimer">Educational and research purposes only. Not financial advice.</p>
   </main>
 
+  <style>
+    /* ── Horizon Chart ── */
+    .hc-tooltip {
+      position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%);
+      background: rgba(15,17,30,0.96); border: 1px solid rgba(108,99,255,0.35);
+      border-radius: 8px; padding: 10px 14px; font-size: 12px; line-height: 1.5;
+      color: rgba(226,232,240,0.85); max-width: 340px; text-align: center;
+      pointer-events: none; z-index: 10;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+    }
+    /* ── Research Summary UI ── */
+    .rs-header {
+      display: flex; align-items: flex-start; justify-content: space-between;
+      flex-wrap: wrap; gap: var(--space-2);
+      padding-bottom: var(--space-2);
+      border-bottom: 1px solid rgba(255,255,255,.07);
+      margin-bottom: var(--space-2);
+    }
+    .rs-header-left { display: flex; flex-direction: column; gap: 4px; }
+    .rs-asset-name { font-size: 1.35rem; font-weight: 700; letter-spacing: -.02em; color: #f8fafc; }
+    .rs-asset-sub  { font-size: 13px; color: rgba(248,250,252,.45); }
+    .rs-header-badges { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 4px; }
+
+    .rs-badge {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 4px 10px; border-radius: 6px;
+      font-size: 12px; font-weight: 600;
+    }
+    .rs-badge--long    { background: rgba(16,185,129,.15); color: #6ee7b7; border: 1px solid rgba(16,185,129,.25); }
+    .rs-badge--short   { background: rgba(239,68,68,.15);  color: #fca5a5; border: 1px solid rgba(239,68,68,.25); }
+    .rs-badge--neutral { background: rgba(248,250,252,.08); color: rgba(248,250,252,.6); border: 1px solid rgba(255,255,255,.1); }
+    .rs-badge--sent-bull { background: rgba(16,185,129,.12); color: #6ee7b7; }
+    .rs-badge--sent-bear { background: rgba(239,68,68,.12);  color: #fca5a5; }
+    .rs-badge--sent-neut { background: rgba(248,250,252,.08); color: rgba(248,250,252,.5); }
+    .rs-badge--risk-low  { background: rgba(16,185,129,.12); color: #6ee7b7; }
+    .rs-badge--risk-med  { background: rgba(245,158,11,.12); color: #fcd34d; }
+    .rs-badge--risk-high { background: rgba(239,68,68,.12);  color: #fca5a5; }
+
+    .rs-sections { display: flex; flex-direction: column; gap: var(--space-2); }
+
+    .rs-section {
+      border-radius: var(--radius);
+      border: 1px solid;
+      padding: var(--space-2) var(--space-3);
+    }
+    .rs-section--rationale {
+      background: rgba(16,185,129,.06);
+      border-color: rgba(16,185,129,.2);
+    }
+    .rs-section--risk {
+      background: rgba(239,68,68,.06);
+      border-color: rgba(239,68,68,.2);
+    }
+    .rs-section--neutral {
+      background: rgba(99,102,241,.06);
+      border-color: rgba(99,102,241,.2);
+    }
+
+    .rs-section-hd {
+      display: flex; align-items: center; gap: 10px;
+      margin-bottom: 10px;
+    }
+    .rs-section-icon {
+      width: 34px; height: 34px; border-radius: 8px; flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .rs-section--rationale .rs-section-icon { background: rgba(16,185,129,.15); color: #10b981; }
+    .rs-section--risk      .rs-section-icon { background: rgba(239,68,68,.15);  color: #ef4444; }
+    .rs-section--neutral   .rs-section-icon { background: rgba(99,102,241,.15); color: #6366f1; }
+
+    .rs-section-label {
+      font-size: 13px; font-weight: 700; letter-spacing: .02em; text-transform: uppercase;
+    }
+    .rs-section--rationale .rs-section-label { color: #34d399; }
+    .rs-section--risk      .rs-section-label { color: #f87171; }
+    .rs-section--neutral   .rs-section-label { color: #a5b4fc; }
+
+    .rs-section-sublabel {
+      font-size: 11px; color: rgba(248,250,252,.35); margin-top: 1px;
+    }
+    .rs-section-text {
+      font-size: 14px; line-height: 1.7; color: rgba(248,250,252,.85);
+    }
+
+    /* ── Context section ── */
+    .rs-context-details { margin-top: var(--space-2); }
+    .rs-context-summary {
+      cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+      font-size: 13px; font-weight: 600; color: rgba(248,250,252,.5);
+      padding: 6px 0; user-select: none;
+      transition: color .15s;
+    }
+    .rs-context-summary:hover { color: rgba(248,250,252,.8); }
+    .rs-context-body { margin-top: var(--space-2); display: flex; flex-direction: column; gap: var(--space-2); }
+
+    .rs-ctx-grid {
+      display: flex; flex-wrap: wrap; gap: 10px;
+    }
+    .rs-ctx-chip {
+      display: flex; flex-direction: column; gap: 2px;
+      background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.07);
+      border-radius: 8px; padding: 8px 14px;
+    }
+    .rs-ctx-chip-label { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: rgba(248,250,252,.35); }
+    .rs-ctx-chip-value { font-size: 14px; font-weight: 600; font-family: var(--font-mono); color: #f8fafc; }
+
+    .rs-headlines { display: flex; flex-direction: column; gap: 6px; }
+    .rs-headline-item {
+      display: flex; align-items: flex-start; gap: 8px;
+      font-size: 13px; color: rgba(248,250,252,.65); line-height: 1.5;
+    }
+    .rs-headline-dot {
+      width: 5px; height: 5px; border-radius: 50%;
+      background: rgba(99,102,241,.6); flex-shrink: 0; margin-top: 7px;
+    }
+    .rs-technicals {
+      font-size: 13px; color: rgba(248,250,252,.55);
+      padding: 8px 12px; background: rgba(255,255,255,.03);
+      border-radius: 6px; border-left: 3px solid rgba(99,102,241,.4);
+    }
+
+    /* ── Trade Setup card ── */
+    .rs-setup {
+      border-radius: var(--radius);
+      border: 1px solid rgba(99,102,241,.25);
+      background: rgba(99,102,241,.06);
+      padding: var(--space-2) var(--space-3);
+    }
+    .rs-setup-hd {
+      display: flex; align-items: center; gap: 10px; margin-bottom: 14px;
+    }
+    .rs-setup-icon {
+      width: 34px; height: 34px; border-radius: 8px; flex-shrink: 0;
+      background: rgba(99,102,241,.15); color: #6366f1;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .rs-setup-title { font-size: 13px; font-weight: 700; letter-spacing: .02em; text-transform: uppercase; color: #a5b4fc; }
+    .rs-setup-sub   { font-size: 11px; color: rgba(248,250,252,.35); margin-top: 1px; }
+    .rs-setup-source { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 4px; margin-left: 8px; }
+    .rs-setup-source--rec  { background: rgba(16,185,129,.12); color: #6ee7b7; }
+    .rs-setup-source--calc { background: rgba(99,102,241,.12); color: #a5b4fc; }
+
+    .rs-levels {
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 14px;
+    }
+    .rs-level {
+      background: rgba(0,0,0,.2); border-radius: 8px; padding: 12px 14px;
+      border: 1px solid rgba(255,255,255,.07);
+      display: flex; flex-direction: column; gap: 4px;
+    }
+    .rs-level-label {
+      font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em;
+      color: rgba(248,250,252,.35);
+    }
+    .rs-level-price {
+      font-size: 1.15rem; font-weight: 700; font-family: var(--font-mono);
+      font-variant-numeric: tabular-nums;
+    }
+    .rs-level--entry .rs-level-price { color: #f8fafc; }
+    .rs-level--sl    .rs-level-price { color: #f87171; }
+    .rs-level--tp    .rs-level-price { color: #34d399; }
+    .rs-level-pct {
+      font-size: 12px; font-family: var(--font-mono); font-variant-numeric: tabular-nums;
+    }
+    .rs-level--sl .rs-level-pct { color: rgba(248,113,113,.7); }
+    .rs-level--tp .rs-level-pct { color: rgba(52,211,153,.7); }
+    .rs-level--entry .rs-level-pct { color: rgba(248,250,252,.35); font-size: 11px; }
+
+    .rs-rr-bar {
+      display: flex; align-items: center; gap: 10px; margin-top: 4px;
+    }
+    .rs-rr-label { font-size: 12px; color: rgba(248,250,252,.45); white-space: nowrap; }
+    .rs-rr-track {
+      flex: 1; height: 6px; border-radius: 3px;
+      background: linear-gradient(to right, rgba(239,68,68,.4), rgba(52,211,153,.4));
+      position: relative; overflow: hidden;
+    }
+    .rs-rr-marker {
+      position: absolute; top: 0; bottom: 0; width: 2px; background: #f8fafc;
+      border-radius: 1px;
+    }
+    .rs-rr-value { font-size: 13px; font-weight: 700; font-family: var(--font-mono); white-space: nowrap; }
+    .rs-rr-good { color: #34d399; }
+    .rs-rr-bad  { color: #f87171; }
+    .rs-rr-ok   { color: #fcd34d; }
+
+    .rs-no-levels {
+      font-size: 13px; color: rgba(248,250,252,.4); font-style: italic;
+      padding: 4px 0;
+    }
+
+    /* ── RS strip ── */
+    .rs-rs-strip {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+      background: rgba(16,185,129,.05); border: 1px solid rgba(16,185,129,.2);
+      border-radius: 8px; padding: 9px 14px;
+      font-size: 12px; color: rgba(248,250,252,.65); cursor: default;
+    }
+    .rs-rs-strip strong { color: #cbd5e1; font-size: 13px; }
+    .rs-rs-badge-strong { background: rgba(16,185,129,.15); color: #6ee7b7; border: 1px solid rgba(16,185,129,.3); border-radius: 4px; padding: 1px 6px; font-size: 10px; font-weight: 700; }
+    .rs-rs-badge-weak   { background: rgba(239,68,68,.15);  color: #fca5a5; border: 1px solid rgba(239,68,68,.3);  border-radius: 4px; padding: 1px 6px; font-size: 10px; font-weight: 700; }
+    .rs-rs-badge-neut   { background: rgba(248,250,252,.08); color: rgba(248,250,252,.5); border: 1px solid rgba(255,255,255,.1); border-radius: 4px; padding: 1px 6px; font-size: 10px; font-weight: 700; }
+
+    /* ── VP strip ── */
+    .rs-vp-strip {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+      background: rgba(99,102,241,.06); border: 1px solid rgba(99,102,241,.2);
+      border-radius: 8px; padding: 9px 14px;
+      font-size: 12px; color: rgba(248,250,252,.65);
+      cursor: default;
+    }
+    .rs-vp-strip strong { color: #cbd5e1; font-size: 13px; }
+    .rs-vp-badge-va {
+      background: rgba(99,102,241,.15); color: #a5b4fc;
+      border: 1px solid rgba(99,102,241,.3);
+      border-radius: 4px; padding: 1px 6px; font-size: 10px; font-weight: 700;
+    }
+    .rs-vp-dist-pos { color: #4ade80; }
+    .rs-vp-dist-neg { color: #f87171; }
+
+    /* ── Global fixed tooltip (shared with VP strip) ── */
+    #rs-tooltip-global {
+      display: none; position: fixed; z-index: 9999;
+      width: 260px; background: #1e293b; border: 1px solid rgba(255,255,255,.12);
+      border-radius: 10px; padding: 12px 14px;
+      font-size: 12.5px; line-height: 1.6; color: rgba(248,250,252,.85);
+      box-shadow: 0 8px 32px rgba(0,0,0,.5);
+      pointer-events: none;
+    }
+    #rs-tooltip-global::after {
+      content: ''; position: absolute; bottom: -7px;
+      left: var(--arrow-left, 50%); transform: translateX(-50%);
+      border: 6px solid transparent; border-bottom: none;
+      border-top-color: #1e293b;
+    }
+    #rs-tooltip-global strong { color: #fde68a; display: block; margin-bottom: 4px; }
+  </style>
   <script>
     function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+    // ── Parse "**Label:** content" sections from LLM output ──
+    function parseSections(text) {
+      const sections = [];
+      const re = /\*\*([^*]+?)\*\*:?\s*/g;
+      let match, lastIdx = 0, lastLabel = null;
+
+      while ((match = re.exec(text)) !== null) {
+        if (lastLabel !== null) {
+          sections.push({ label: lastLabel, content: text.slice(lastIdx, match.index).trim() });
+        } else if (match.index > 0) {
+          // text before first label
+          const pre = text.slice(0, match.index).trim();
+          if (pre) sections.push({ label: null, content: pre });
+        }
+        lastLabel = match[1].trim();
+        lastIdx = re.lastIndex;
+      }
+      if (lastLabel !== null) {
+        sections.push({ label: lastLabel, content: text.slice(lastIdx).trim() });
+      }
+      if (sections.length === 0) {
+        sections.push({ label: null, content: text.trim() });
+      }
+      return sections;
+    }
+
+    // ── Global fixed tooltip for VP strip ──
+    (function() {
+      const TIP_DELAY = 3000;
+      let _timer = null;
+      let _tip = null;
+      function ensureTip() {
+        if (_tip) return _tip;
+        _tip = document.createElement('div');
+        _tip.id = 'rs-tooltip-global';
+        document.body.appendChild(_tip);
+        return _tip;
+      }
+      function showTip(anchor) {
+        const tip = ensureTip();
+        tip.innerHTML = anchor.dataset.tipHtml || '';
+        tip.style.display = 'block';
+        const r = anchor.getBoundingClientRect();
+        const tw = 260;
+        let left = r.left + r.width / 2 - tw / 2;
+        left = Math.max(8, Math.min(left, window.innerWidth - tw - 8));
+        const top = r.top - tip.offsetHeight - 10;
+        tip.style.left = left + 'px';
+        tip.style.top  = (top < 8 ? r.bottom + 10 : top) + 'px';
+        const arrowLeft = (r.left + r.width / 2) - left;
+        tip.style.setProperty('--arrow-left', arrowLeft + 'px');
+      }
+      function hideTip() { if (_tip) _tip.style.display = 'none'; }
+      window.initRsTooltips = function() {
+        document.querySelectorAll('.rs-vp-tooltip-anchor').forEach(el => {
+          const fresh = el.cloneNode(true);
+          el.parentNode.replaceChild(fresh, el);
+          fresh.addEventListener('mouseenter', () => { _timer = setTimeout(() => showTip(fresh), TIP_DELAY); });
+          fresh.addEventListener('mouseleave', () => { clearTimeout(_timer); hideTip(); });
+        });
+      };
+    })();
+
+    // ── RS strip for research context panel ──
+    function renderRsStrip(ctx) {
+      if (ctx.rs_20d == null) return '';
+      const rs20 = ctx.rs_20d, rs60 = ctx.rs_60d, srs = ctx.sector_rs;
+      const etf = ctx.sector_etf || 'sector';
+      const dir = (ctx.direction || 'long').toLowerCase();
+
+      const isStrong = rs20 > 1.2, isWeak = rs20 < 0.8;
+      const badgeCls = isStrong ? 'rs-rs-badge-strong' : isWeak ? 'rs-rs-badge-weak' : 'rs-rs-badge-neut';
+      const badgeLabel = isStrong ? 'RS STRONG' : isWeak ? 'RS WEAK' : 'RS NEUTRAL';
+      const biasLabel = rs20 > 1.0
+        ? '↑ outperforming market'
+        : rs20 < 1.0 ? '↓ underperforming market' : 'in line with market';
+
+      let extraHtml = '';
+      if (rs60 != null) extraHtml += `<span>60d: ${rs60.toFixed(2)}×</span>`;
+      if (srs != null) {
+        const sc = srs > 1.1 ? 'color:#6ee7b7' : srs < 0.9 ? 'color:#fca5a5' : 'color:rgba(248,250,252,.5)';
+        extraHtml += `<span style="${sc}">vs ${esc(etf)}: ${srs.toFixed(2)}×</span>`;
+      }
+
+      // Tooltip
+      const confImpact = isStrong
+        ? (dir === 'long' ? 'Confidence was increased +5 pts (confirms long direction).' : 'Confidence was reduced -5 pts (strong stock is harder to short).')
+        : isWeak
+          ? (dir === 'long' ? 'Confidence was reduced -8 pts (buying a laggard carries more risk).' : 'Confidence was increased +5 pts (weak stocks tend to keep falling).')
+          : 'No confidence adjustment — RS is in neutral range (0.8–1.2×).';
+      const sectorNote = srs != null
+        ? ` vs its own sector (${esc(etf)}): <strong>${srs.toFixed(2)}×</strong> — ${srs > 1.0 ? 'outperforming peers' : 'underperforming peers'}.`
+        : '';
+      const tipHtml = `<strong>Relative Strength (RS) — 20-day</strong>`
+        + `RS measures how this stock performed <strong>compared to the S&amp;P 500</strong> over the last 20 trading days. `
+        + `A ratio of <strong>${rs20.toFixed(2)}×</strong> means it ${rs20 >= 1.0 ? 'gained ' + ((rs20-1)*100).toFixed(1) + '% MORE' : 'gained ' + ((1-rs20)*100).toFixed(1) + '% LESS'} than the index. `
+        + `${sectorNote} ${confImpact}`;
+
+      return '<div class="rs-rs-strip rs-vp-tooltip-anchor" data-tip-html="' + tipHtml.replace(/"/g, '&quot;') + '">'
+        + '<strong>RS vs SPX</strong>'
+        + `<span class="${badgeCls}">${badgeLabel}</span>`
+        + `<span>${esc(biasLabel)} · ${rs20.toFixed(2)}×</span>`
+        + extraHtml
+        + '</div>';
+    }
+
+    // ── VP strip for research context panel ──
+    function renderVpStrip(ctx) {
+      if (!ctx.vpoc) return '';
+      const vpoc = ctx.vpoc, vah = ctx.vah, val = ctx.val;
+      const bias = ctx.vp_bias || 'at_vpoc';
+      const ext  = ctx.vp_overextension != null ? Math.abs(ctx.vp_overextension) : null;
+      const price = ctx.buy_in_price != null ? parseFloat(ctx.buy_in_price) : null;
+      const dist = (price != null && vpoc) ? ((price - vpoc) / vpoc * 100) : null;
+
+      function fmtN(v) {
+        if (v == null) return '—';
+        return v >= 1000 ? v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : v.toFixed(2);
+      }
+
+      const biasLabel = bias === 'above_vpoc' ? '↑ above fair value' : bias === 'below_vpoc' ? '↓ below fair value' : 'at fair value';
+      const vaLabel   = vah && val ? ' · VA $' + fmtN(val) + '–$' + fmtN(vah) : '';
+      const distHtml  = dist != null
+        ? '<span class="' + (dist > 0 ? 'rs-vp-dist-pos' : dist < 0 ? 'rs-vp-dist-neg' : '') + '">'
+          + (dist > 0 ? '+' : '') + dist.toFixed(1) + '% vs VPOC</span>'
+        : '';
+      const vaHtml  = ctx.in_value_area ? '<span class="rs-vp-badge-va" title="Price inside 70% value area — choppy equilibrium zone">IN VA</span>' : '';
+      const extHtml = ext != null && ext > 1.3
+        ? '<span style="color:#c4b5fd;font-size:11px;">ext ' + ext.toFixed(1) + '×</span>'
+        : '';
+
+      // Tooltip content
+      const distExplain = dist != null
+        ? ' Price is currently <strong>' + Math.abs(dist).toFixed(1) + '%</strong> ' + (dist < 0 ? 'below' : 'above') + ' that level.'
+        : '';
+      const vaExplain = vah && val
+        ? ' The <strong>Value Area ($' + fmtN(val) + '–$' + fmtN(vah) + ')</strong> is the range where 70% of all trading volume happened — think of it as the &quot;comfort zone&quot; institutions traded in.'
+        : '';
+      const inVaExplain = ctx.in_value_area
+        ? ' <strong>IN VA</strong>: price is inside this equilibrium zone — expect choppy movement; breakouts from here are harder.'
+        : '';
+      const extExplain = ext != null && ext > 1.3
+        ? ' <strong>ext ' + ext.toFixed(1) + '×</strong>: price is ' + ext.toFixed(1) + ' value-area widths from VPOC — statistically stretched, mean reversion risk is elevated.'
+        : '';
+      const tipHtml = '<strong>Volume Profile (VPOC)</strong>'
+        + '<strong>VPOC = $' + fmtN(vpoc) + '</strong> is the price where the most volume was traded in the last 60 days — treated as &quot;fair value&quot; by institutions.'
+        + distExplain + vaExplain + inVaExplain + extExplain;
+
+      return '<div class="rs-vp-strip rs-vp-tooltip-anchor" data-tip-html="' + tipHtml.replace(/"/g, '&quot;') + '">'
+        + '<strong>VPOC $' + fmtN(vpoc) + '</strong>'
+        + '<span>' + esc(biasLabel) + esc(vaLabel) + '</span>'
+        + distHtml + vaHtml + extHtml
+        + '</div>';
+    }
+
+    // ── Map label → visual config ──
+    const SECTION_MAP = {
+      'rationale':  { cls: 'rationale', iconKey: 'trending-up',      title: 'Why This Trade Might Work', sub: 'The trade thesis — conditions that support this direction' },
+      'main risk':  { cls: 'risk',      iconKey: 'alert-triangle',    title: 'Main Risk',                 sub: 'What could go wrong and cause a loss' },
+      'risk':       { cls: 'risk',      iconKey: 'alert-triangle',    title: 'Risk Factor',               sub: 'Key risk to watch' },
+      'bias':       { cls: 'neutral',   iconKey: 'compass',           title: 'Market Bias',               sub: 'Overall market sentiment direction' },
+      'setup':      { cls: 'neutral',   iconKey: 'crosshair',         title: 'Trade Setup',               sub: 'How and where to enter' },
+      'catalyst':   { cls: 'neutral',   iconKey: 'zap',               title: 'Catalyst',                  sub: 'Event or condition driving the move' },
+    };
+
+    function getSectionCfg(label) {
+      if (!label) return { cls: 'neutral', iconKey: 'file-text', title: 'Analysis', sub: '' };
+      const key = label.toLowerCase();
+      for (const [k, v] of Object.entries(SECTION_MAP)) {
+        if (key.includes(k)) return v;
+      }
+      return { cls: 'neutral', iconKey: 'info', title: label, sub: '' };
+    }
+
+    // ── Render trade setup card ──
+    function renderTradeSetup(ctx) {
+      const entry  = ctx.buy_in_price != null ? parseFloat(ctx.buy_in_price) : null;
+      const sl     = ctx.stop_loss    != null ? parseFloat(ctx.stop_loss)    : null;
+      const tp     = ctx.take_profit  != null ? parseFloat(ctx.take_profit)  : null;
+      const dir    = (ctx.direction   || 'long').toLowerCase();
+      const source = ctx.levels_source || 'unavailable';
+
+      function fmt(v) {
+        if (v == null) return '—';
+        return v >= 1000 ? '$' + v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                         : '$' + v.toFixed(2);
+      }
+      function pct(from, to) {
+        if (from == null || to == null || from === 0) return '';
+        const p = ((to - from) / from * 100);
+        return (p >= 0 ? '+' : '') + p.toFixed(2) + '%';
+      }
+
+      if (source === 'unavailable') return '';
+
+      let levelsHtml = '';
+      if (entry != null) {
+        const slPct  = sl != null ? pct(entry, sl) : '—';
+        const tpPct  = tp != null ? pct(entry, tp) : '—';
+        const dirLabel = dir === 'short' ? 'Short entry' : 'Long entry';
+
+        levelsHtml = '<div class="rs-levels">' +
+          '<div class="rs-level rs-level--entry">' +
+            '<div class="rs-level-label">Entry</div>' +
+            '<div class="rs-level-price">' + fmt(entry) + '</div>' +
+            '<div class="rs-level-pct">' + esc(dirLabel) + '</div>' +
+          '</div>' +
+          '<div class="rs-level rs-level--sl">' +
+            '<div class="rs-level-label">Stop Loss</div>' +
+            '<div class="rs-level-price">' + (sl != null ? fmt(sl) : '<span style="color:rgba(248,250,252,.3)">—</span>') + '</div>' +
+            '<div class="rs-level-pct">' + esc(slPct) + '</div>' +
+          '</div>' +
+          '<div class="rs-level rs-level--tp">' +
+            '<div class="rs-level-label">Take Profit</div>' +
+            '<div class="rs-level-price">' + (tp != null ? fmt(tp) : '<span style="color:rgba(248,250,252,.3)">—</span>') + '</div>' +
+            '<div class="rs-level-pct">' + esc(tpPct) + '</div>' +
+          '</div>' +
+        '</div>';
+
+        // R:R bar
+        if (sl != null && tp != null && entry !== sl) {
+          const risk   = Math.abs(entry - sl);
+          const reward = Math.abs(tp - entry);
+          const rr     = reward / risk;
+          const rrStr  = rr.toFixed(2) + ':1';
+          const rrCls  = rr >= 2 ? 'rs-rr-good' : rr >= 1.5 ? 'rs-rr-ok' : 'rs-rr-bad';
+          // marker at 1/3 of bar = 1:1 breakeven; scale 0–3:1
+          const markerPct = Math.min(Math.max((1 / 3) * 100, 5), 95);
+          levelsHtml +=
+            '<div class="rs-rr-bar">' +
+              '<span class="rs-rr-label">Risk / Reward</span>' +
+              '<div class="rs-rr-track"><div class="rs-rr-marker" style="left:' + markerPct.toFixed(1) + '%"></div></div>' +
+              '<span class="rs-rr-value ' + rrCls + '">' + esc(rrStr) + '</span>' +
+            '</div>';
+        }
+      }
+
+      const sourceBadge = source === 'recommendation'
+        ? '<span class="rs-setup-source rs-setup-source--rec">' + icon('check-circle', 10) + ' From recommendation</span>'
+        : '<span class="rs-setup-source rs-setup-source--calc">' + icon('cpu', 10) + ' ATR-calculated</span>';
+
+      const subText = source === 'recommendation'
+        ? 'Levels from the most recent recommendation for this asset'
+        : 'Estimated using ATR + volatility regime · not a guarantee';
+
+      return '<div class="rs-setup">' +
+        '<div class="rs-setup-hd">' +
+          '<div class="rs-setup-icon">' + icon('crosshair', 16) + '</div>' +
+          '<div>' +
+            '<div class="rs-setup-title">Suggested Trade Levels' + sourceBadge + '</div>' +
+            '<div class="rs-setup-sub">' + esc(subText) + '</div>' +
+          '</div>' +
+        '</div>' +
+        levelsHtml +
+      '</div>';
+    }
+
+    // ── Render summary ──
+    function renderSummary(summaryText, ctx) {
+      const sections = parseSections(summaryText);
+
+      // Header
+      const hdr = document.getElementById('result-header');
+      const assetId = ctx.asset_id || '';
+      const direction = (ctx.direction || '').toLowerCase();
+      const sentiment = ctx.sentiment_avg;
+      const riskTier = ctx.risk_tier || '';
+      const fundamentals = ctx.fundamentals || {};
+      const shortName = fundamentals.short_name || '';
+
+      let dirBadge = '';
+      if (direction === 'long') {
+        dirBadge = '<span class="rs-badge rs-badge--long">' + icon('trending-up', 12) + ' LONG</span>';
+      } else if (direction === 'short') {
+        dirBadge = '<span class="rs-badge rs-badge--short">' + icon('trending-down', 12) + ' SHORT</span>';
+      }
+
+      let sentBadge = '';
+      if (sentiment !== null && sentiment !== undefined) {
+        const val = parseFloat(sentiment);
+        let cls = 'rs-badge--sent-neut', label = 'Neutral';
+        if (val > 0.1) { cls = 'rs-badge--sent-bull'; label = 'Bullish'; }
+        else if (val < -0.1) { cls = 'rs-badge--sent-bear'; label = 'Bearish'; }
+        sentBadge = '<span class="rs-badge ' + cls + '">' + icon('activity', 12) + ' Sentiment: ' + label + ' (' + val.toFixed(2) + ')</span>';
+      }
+
+      let riskBadge = '';
+      if (riskTier) {
+        const rk = riskTier.toLowerCase();
+        let cls = 'rs-badge--risk-med';
+        if (rk.includes('low')) cls = 'rs-badge--risk-low';
+        else if (rk.includes('high')) cls = 'rs-badge--risk-high';
+        riskBadge = '<span class="rs-badge ' + cls + '">' + icon('shield', 12) + ' Risk: ' + esc(riskTier) + '</span>';
+      }
+
+      hdr.innerHTML =
+        '<div class="rs-header-left">' +
+          '<div class="rs-asset-name">' + esc(assetId.toUpperCase()) + (shortName ? ' <span style="font-weight:400;font-size:1rem;color:rgba(248,250,252,.5)">· ' + esc(shortName) + '</span>' : '') + '</div>' +
+          '<div class="rs-header-badges">' + dirBadge + sentBadge + riskBadge + '</div>' +
+        '</div>';
+
+      // Sections
+      const sectionsEl = document.getElementById('result-sections');
+      const setupHtml = renderTradeSetup(ctx);
+      sectionsEl.innerHTML = setupHtml + sections.map(function(s) {
+        const cfg = getSectionCfg(s.label);
+        return '<div class="rs-section rs-section--' + cfg.cls + '">' +
+          '<div class="rs-section-hd">' +
+            '<div class="rs-section-icon">' + icon(cfg.iconKey, 16) + '</div>' +
+            '<div>' +
+              '<div class="rs-section-label">' + esc(cfg.title) + '</div>' +
+              (cfg.sub ? '<div class="rs-section-sublabel">' + esc(cfg.sub) + '</div>' : '') +
+            '</div>' +
+          '</div>' +
+          '<p class="rs-section-text">' + esc(s.content) + '</p>' +
+        '</div>';
+      }).join('');
+    }
+
+    // ── Render context ──
+    function renderContext(ctx) {
+      if (!ctx) return;
+      const el = document.getElementById('result-context-body');
+      const parts = [];
+
+      // Metric chips
+      const chips = [];
+      if (ctx.buy_in_price != null) chips.push({ label: 'Price', value: '$' + ctx.buy_in_price });
+      if (ctx.sentiment_avg != null) {
+        const v = parseFloat(ctx.sentiment_avg);
+        const label = v > 0.1 ? 'Bullish' : v < -0.1 ? 'Bearish' : 'Neutral';
+        chips.push({ label: 'Sentiment', value: label + ' (' + v.toFixed(3) + ')' });
+      }
+      if (ctx.risk_tier) chips.push({ label: 'Risk Tier', value: ctx.risk_tier });
+      if (ctx.direction) chips.push({ label: 'Direction', value: ctx.direction.charAt(0).toUpperCase() + ctx.direction.slice(1) });
+      const f = ctx.fundamentals || {};
+      if (f.sector) chips.push({ label: 'Sector', value: f.sector });
+      if (f.industry) chips.push({ label: 'Industry', value: f.industry });
+
+      if (chips.length) {
+        parts.push('<div class="rs-ctx-grid">' +
+          chips.map(c => '<div class="rs-ctx-chip"><span class="rs-ctx-chip-label">' + esc(c.label) + '</span><span class="rs-ctx-chip-value">' + esc(c.value) + '</span></div>').join('') +
+        '</div>');
+      }
+
+      // Relative Strength strip
+      const rsHtml = renderRsStrip(ctx);
+      if (rsHtml) parts.push(rsHtml);
+
+      // Volume Profile strip
+      const vpHtml = renderVpStrip(ctx);
+      if (vpHtml) parts.push(vpHtml);
+
+      // Technicals
+      if (ctx.volatility_notes) {
+        parts.push('<div class="rs-technicals">' + icon('bar-chart-2', 13) + ' <strong>Technicals:</strong> ' + esc(ctx.volatility_notes) + '</div>');
+      }
+
+      // Headlines
+      const headlines = ctx.headlines || [];
+      if (headlines.length) {
+        parts.push('<div class="rs-headlines">' +
+          '<div class="rs-ctx-chip-label" style="margin-bottom:6px;">Recent Headlines</div>' +
+          headlines.slice(0, 5).map(h => '<div class="rs-headline-item"><span class="rs-headline-dot"></span>' + esc(h) + '</div>').join('') +
+        '</div>');
+      }
+
+      el.innerHTML = parts.join('');
+      document.getElementById('result-context').style.display = 'block';
+      initRsTooltips();
+    }
+
+    // ── Horizon Chart ──────────────────────────────────────────────────────────
+    function drawHorizonChart(canvasEl, opts) {
+      const DPR = window.devicePixelRatio || 1;
+      const W_CSS = canvasEl.parentElement.clientWidth || 700;
+      const H_CSS = 300;
+      canvasEl.width  = W_CSS * DPR;
+      canvasEl.height = H_CSS * DPR;
+      canvasEl.style.width  = W_CSS + 'px';
+      canvasEl.style.height = H_CSS + 'px';
+      const ctx = canvasEl.getContext('2d');
+      ctx.scale(DPR, DPR);
+      const W = W_CSS, H = H_CSS;
+
+      const entry      = parseFloat(opts.entry)      || 100;
+      const sl         = parseFloat(opts.sl)         || entry * 0.97;
+      const tp         = parseFloat(opts.tp)         || entry * 1.06;
+      const expiryDays = parseInt(opts.expiry_days)  || 14;
+      const atrPct     = parseFloat(opts.atr_pct)    || 0;
+
+      const TOTAL_DAYS = Math.max(30, Math.ceil(expiryDays * 1.25));
+      const WALL_DAY   = 14;
+      const ML = 70, MR = 80, MT = 32, MB = 38;
+      const CW = W - ML - MR, CH = H - MT - MB;
+
+      // ── Centered Y around entry ──────────────────────────────────────────
+      const distUp   = Math.abs(tp - entry);
+      const distDown = Math.abs(entry - sl);
+      const maxDist  = Math.max(distUp, distDown, entry * 0.01);
+      const pad      = maxDist * 0.30;
+      const priceMin = entry - maxDist - pad;
+      const priceMax = entry + maxDist + pad;
+
+      const fmt2 = v => v < 10 ? v.toFixed(3) : v < 1000 ? v.toFixed(2) : Math.round(v) + '';
+      function xd(d) { return ML + (d / TOTAL_DAYS) * CW; }
+      function yp(p) { return MT + (1 - (p - priceMin) / (priceMax - priceMin)) * CH; }
+
+      const wallX = xd(WALL_DAY);
+
+      // ── Backgrounds ──────────────────────────────────────────────────────
+      const ng = ctx.createLinearGradient(ML, 0, wallX, 0);
+      ng.addColorStop(0, '#0d3a5e'); ng.addColorStop(0.5, '#0f4c75'); ng.addColorStop(1, '#0d2e56');
+      ctx.fillStyle = ng; ctx.fillRect(ML, MT, wallX - ML, CH);
+      const sg = ctx.createRadialGradient(ML + 30, MT + 28, 0, ML + 30, MT + 28, 100);
+      sg.addColorStop(0, 'rgba(255,210,80,0.13)'); sg.addColorStop(1, 'rgba(255,210,80,0)');
+      ctx.fillStyle = sg; ctx.fillRect(ML, MT, wallX - ML, CH);
+      const fg = ctx.createLinearGradient(wallX, 0, W - MR, 0);
+      fg.addColorStop(0, '#0a1020'); fg.addColorStop(1, '#050810');
+      ctx.fillStyle = fg; ctx.fillRect(wallX, MT, W - MR - wallX, CH);
+      function rng(n) { let x = Math.sin(n * 9301 + 49297) * 233280; return x - Math.floor(x); }
+      for (let i = 0; i < 55; i++) {
+        const sx = wallX + rng(i*3+1)*(W-MR-wallX), sy = MT + rng(i*3+2)*CH;
+        const sr = rng(i*3)*1.4 + 0.3, alpha = (0.25 + rng(i*7)*0.65).toFixed(2);
+        ctx.beginPath(); ctx.arc(sx, sy, sr, 0, Math.PI*2);
+        ctx.fillStyle = `rgba(255,255,255,${alpha})`; ctx.fill();
+      }
+
+      // ── ATR cone ─────────────────────────────────────────────────────────
+      if (atrPct > 0) {
+        ctx.save(); ctx.beginPath();
+        for (let d = 0; d <= TOTAL_DAYS; d++) {
+          const s = entry*(atrPct/100)*Math.sqrt(d), x = xd(d), y = yp(Math.min(priceMax, entry+s));
+          d===0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y);
+        }
+        for (let d = TOTAL_DAYS; d >= 0; d--)
+          ctx.lineTo(xd(d), yp(Math.max(priceMin, entry - entry*(atrPct/100)*Math.sqrt(d))));
+        ctx.closePath(); ctx.fillStyle = 'rgba(108,99,255,0.07)'; ctx.fill(); ctx.restore();
+      }
+
+      // ── Per-day vertical grid lines ───────────────────────────────────────
+      // Near zone: every day; far zone: every 3 days (less crowded)
+      ctx.save();
+      for (let d = 1; d <= TOTAL_DAYS; d++) {
+        const isMajor = d % 7 === 0 || d === 14 || d === expiryDays;
+        const isNear  = d <= WALL_DAY;
+        if (!isNear && d % 3 !== 0 && !isMajor) continue;
+        ctx.strokeStyle = isMajor ? 'rgba(255,255,255,0.10)' : 'rgba(255,255,255,0.04)';
+        ctx.lineWidth = isMajor ? 1 : 0.5;
+        ctx.beginPath(); ctx.moveTo(xd(d), MT); ctx.lineTo(xd(d), MT+CH); ctx.stroke();
+      }
+      ctx.restore();
+
+      // ── Horizontal price grid ─────────────────────────────────────────────
+      ctx.save(); ctx.strokeStyle = 'rgba(255,255,255,0.05)'; ctx.lineWidth = 1;
+      for (let i = 0; i <= 6; i++) {
+        const y = yp(priceMin + (priceMax - priceMin) * (i / 6));
+        ctx.beginPath(); ctx.moveTo(ML, y); ctx.lineTo(W - MR, y); ctx.stroke();
+      }
+      ctx.restore();
+
+      // ── Entry horizontal reference ────────────────────────────────────────
+      ctx.save(); ctx.setLineDash([3,5]); ctx.strokeStyle='rgba(248,250,252,0.15)'; ctx.lineWidth=1;
+      ctx.beginPath(); ctx.moveTo(ML,yp(entry)); ctx.lineTo(W-MR,yp(entry)); ctx.stroke(); ctx.restore();
+
+      // ── SL line ───────────────────────────────────────────────────────────
+      ctx.save(); ctx.setLineDash([6,4]); ctx.strokeStyle='rgba(255,77,109,0.75)'; ctx.lineWidth=1.5;
+      ctx.beginPath(); ctx.moveTo(ML,yp(sl)); ctx.lineTo(W-MR,yp(sl)); ctx.stroke(); ctx.restore();
+
+      // ── TP line ───────────────────────────────────────────────────────────
+      ctx.save(); ctx.setLineDash([6,4]); ctx.strokeStyle='rgba(0,212,170,0.75)'; ctx.lineWidth=1.5;
+      ctx.beginPath(); ctx.moveTo(ML,yp(tp)); ctx.lineTo(W-MR,yp(tp)); ctx.stroke(); ctx.restore();
+
+      // ── Price trend line ──────────────────────────────────────────────────
+      ctx.save(); ctx.strokeStyle='#a78bfa'; ctx.lineWidth=2.5;
+      ctx.shadowColor='#a78bfa'; ctx.shadowBlur=10;
+      ctx.beginPath(); ctx.moveTo(xd(0),yp(entry)); ctx.lineTo(xd(expiryDays),yp(tp)); ctx.stroke();
+      ctx.restore();
+
+      // ── Per-day dots on trend line (near zone only, or every 3d far) ─────
+      ctx.save();
+      for (let d = 1; d <= Math.min(expiryDays, TOTAL_DAYS); d++) {
+        if (d > WALL_DAY && d % 3 !== 0) continue;
+        const t = d / expiryDays;
+        const px = xd(d);
+        const py = yp(entry + (tp - entry) * t);
+        const r  = (d % 7 === 0 || d === expiryDays) ? 3.5 : 2;
+        ctx.beginPath(); ctx.arc(px, py, r, 0, Math.PI*2);
+        ctx.fillStyle = d % 7 === 0 ? 'rgba(167,139,250,0.9)' : 'rgba(167,139,250,0.45)';
+        ctx.shadowColor = '#a78bfa'; ctx.shadowBlur = d % 7 === 0 ? 6 : 0;
+        ctx.fill();
+      }
+      ctx.restore();
+
+      // ── Heliosphere wall ──────────────────────────────────────────────────
+      const wg = ctx.createLinearGradient(wallX-4, 0, wallX+4, 0);
+      wg.addColorStop(0,'rgba(0,220,255,0)'); wg.addColorStop(0.5,'rgba(0,220,255,0.88)'); wg.addColorStop(1,'rgba(0,220,255,0)');
+      ctx.save(); ctx.lineWidth=3; ctx.strokeStyle=wg; ctx.shadowColor='#00dcff'; ctx.shadowBlur=18;
+      ctx.beginPath(); ctx.moveTo(wallX,MT); ctx.lineTo(wallX,MT+CH); ctx.stroke(); ctx.restore();
+
+      // ── Entry dot ─────────────────────────────────────────────────────────
+      ctx.save(); ctx.beginPath(); ctx.arc(xd(0),yp(entry),5.5,0,Math.PI*2);
+      ctx.fillStyle='#f8fafc'; ctx.shadowColor='#fff'; ctx.shadowBlur=12; ctx.fill(); ctx.restore();
+      // ── Expiry dot ────────────────────────────────────────────────────────
+      if (expiryDays<=TOTAL_DAYS) {
+        ctx.save(); ctx.beginPath(); ctx.arc(xd(expiryDays),yp(tp),4.5,0,Math.PI*2);
+        ctx.fillStyle='#00d4aa'; ctx.shadowColor='#00d4aa'; ctx.shadowBlur=10; ctx.fill(); ctx.restore();
+      }
+
+      // ── Zone labels ───────────────────────────────────────────────────────
+      ctx.save(); ctx.font='bold 10px Inter,sans-serif'; ctx.textAlign='center';
+      ctx.fillStyle='rgba(120,220,255,0.55)';
+      ctx.fillText('NEAR HORIZON  ≤14d', ML+(wallX-ML)/2, MT+14);
+      if (TOTAL_DAYS > 14) {
+        ctx.fillStyle='rgba(160,160,220,0.32)';
+        ctx.fillText('FAR HORIZON · context', wallX+(W-MR-wallX)/2, MT+14);
+      }
+      ctx.restore();
+
+      // ── X axis: per-day tick labels ───────────────────────────────────────
+      ctx.save(); ctx.font='10px Inter,sans-serif'; ctx.textAlign='center';
+      const tickStep = TOTAL_DAYS <= 20 ? 1 : TOTAL_DAYS <= 35 ? 7 : TOTAL_DAYS <= 70 ? 14 : 30;
+      for (let d = 0; d <= TOTAL_DAYS; d++) {
+        const isStep  = d % tickStep === 0;
+        const isWall  = d === 14;
+        const isExpiry = d === expiryDays;
+        if (!isStep && !isWall && !isExpiry) continue;
+        if (isWall) {
+          ctx.fillStyle = 'rgba(0,220,255,0.65)';
+        } else if (isExpiry && d !== 0) {
+          ctx.fillStyle = 'rgba(0,212,170,0.75)';
+        } else {
+          ctx.fillStyle = 'rgba(255,255,255,0.4)';
+        }
+        ctx.fillText('d' + d, xd(d), MT + CH + 16);
+      }
+      ctx.restore();
+
+      // ── Y axis: price labels ──────────────────────────────────────────────
+      ctx.save(); ctx.font='10px Inter,sans-serif'; ctx.textAlign='right';
+      ctx.fillStyle='rgba(255,255,255,0.35)';
+      for (let i = 0; i <= 6; i++) {
+        const p = priceMin + (priceMax - priceMin) * (i / 6);
+        ctx.fillText(fmt2(p), ML - 6, yp(p) + 3.5);
+      }
+      ctx.restore();
+
+      // ── Right-side SL / TP / Entry labels (pill style) ───────────────────
+      ctx.save(); ctx.font='bold 11px Inter,sans-serif'; ctx.textAlign='left';
+      const lx = W - MR + 6;
+      // TP
+      ctx.fillStyle='rgba(0,212,170,0.9)';
+      ctx.fillText('TP  ' + fmt2(tp), lx, yp(tp) + 4);
+      // Entry
+      ctx.fillStyle='rgba(248,250,252,0.75)';
+      ctx.fillText('▶ ' + fmt2(entry), lx, yp(entry) + 4);
+      // SL
+      ctx.fillStyle='rgba(255,77,109,0.9)';
+      ctx.fillText('SL  ' + fmt2(sl), lx, yp(sl) + 4);
+      ctx.restore();
+    }
+
+    function initHorizonChart(context) {
+      if (!context) return;
+      const wrap = document.getElementById('horizon-chart-wrap');
+      const canvas = document.getElementById('horizon-canvas');
+      const tooltip = document.getElementById('horizon-tooltip');
+      wrap.style.display = 'block';
+
+      // Derive risk % from tier for fallback SL/TP
+      const riskPct = { low: 2.0, moderate: 3.5, high: 5.0 }[context.risk_tier] || 3.0;
+      const entry = parseFloat(context.buy_in_price) || 100;
+      const sl    = parseFloat(context.stop_loss)    || entry * (1 - riskPct / 100);
+      const rr    = 2.0;
+      const tp    = parseFloat(context.take_profit)  || (entry + (entry - sl) * rr);
+
+      const horizon = context.horizon || (parseInt(context.expiry_days) > 14 ? 'far' : 'near');
+      const defaultDays = horizon === 'far' ? 30 : 14;
+      const expiryDays = Math.max(defaultDays, parseInt(context.expiry_days) || defaultDays);
+      drawHorizonChart(canvas, {
+        entry,
+        sl,
+        tp,
+        expiry_days: expiryDays,
+        direction: context.direction,
+        atr_pct: context.atr_pct,
+        horizon,
+      });
+      // 3-second hover tooltip
+      let _hcTimer = null;
+      wrap.addEventListener('mouseenter', () => {
+        _hcTimer = setTimeout(() => { tooltip.style.display = 'block'; }, 3000);
+      });
+      wrap.addEventListener('mouseleave', () => {
+        clearTimeout(_hcTimer); tooltip.style.display = 'none';
+      });
+    }
+
     const assetInput = document.getElementById('asset-id');
     const catSelect = document.getElementById('category');
     const resolveBtn = document.getElementById('resolve-btn');
     const resolveHint = document.getElementById('resolve-hint');
     const getBtn = document.getElementById('get-btn');
     const resultCard = document.getElementById('result-card');
-    const resultTitle = document.getElementById('result-title');
     const resultLoading = document.getElementById('result-loading');
     const resultSummary = document.getElementById('result-summary');
-    const resultText = document.getElementById('result-text');
     const resultEmpty = document.getElementById('result-empty');
     const resultContext = document.getElementById('result-context');
-    const resultJson = document.getElementById('result-json');
 
     resolveBtn.addEventListener('click', async () => {
       const raw = assetInput.value.trim();
@@ -121,7 +964,6 @@
       const category = catSelect.value;
 
       resultCard.style.display = 'block';
-      resultTitle.textContent = assetId + ' (' + category + ')';
       resultLoading.style.display = 'flex';
       resultSummary.style.display = 'none';
       resultEmpty.style.display = 'none';
@@ -134,13 +976,11 @@
         const r = await fetch('/api/research/summary?asset_id=' + encodeURIComponent(assetId) + '&category=' + encodeURIComponent(category) + '&generate=true');
         const d = await r.json();
         resultLoading.style.display = 'none';
-        if (d.context) {
-          resultContext.style.display = 'block';
-          resultJson.textContent = JSON.stringify(d.context, null, 2);
-        }
         if (d.summary && d.summary.trim()) {
+          renderSummary(d.summary.trim(), d.context || {});
           resultSummary.style.display = 'block';
-          resultText.textContent = d.summary.trim();
+          if (d.context) renderContext(d.context);
+          initHorizonChart(d.context || null);
         } else {
           resultEmpty.style.display = 'block';
         }

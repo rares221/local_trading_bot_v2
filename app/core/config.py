@@ -10,8 +10,13 @@ class Settings(BaseSettings):
     app_name: str = "local_trading_bot_v2"
     debug: bool = False
 
-    # Database (SQLite by default)
+    # Database — set to postgresql+asyncpg://... for TimescaleDB in production
     database_url: str = "sqlite+aiosqlite:///./data/trading.db"
+
+    # SQLite → PostgreSQL migration: set MIGRATION_ENABLED=true and point
+    # SQLITE_SOURCE_URL to the old SQLite file to transfer all data on startup.
+    migration_enabled: bool = False
+    sqlite_source_url: str = "sqlite:///./data/trading.db"
 
     # Data paths (reuse pattern from codeops-trading-app: optional file cache)
     data_dir: Path = Path("./data")
@@ -30,6 +35,8 @@ class Settings(BaseSettings):
     # Research / rationale (Option B): multi-provider LLM (Dexter-style).
     research_llm_provider: str = "openai"   # openai | anthropic | ollama | openrouter
     research_llm_model: str = ""           # empty = use provider default (e.g. gpt-4o-mini, llama3.1)
+    # Extended thinking for Anthropic models (0 = disabled). budget_tokens controls depth; max ~16000.
+    research_llm_thinking_budget: int = 0
     openai_api_key: str | None = None
     anthropic_api_key: str | None = None
     openrouter_api_key: str | None = None

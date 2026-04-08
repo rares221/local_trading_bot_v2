@@ -19,6 +19,29 @@ from app.models.daily_briefing import DailyBriefing
 
 logger = logging.getLogger(__name__)
 
+# Module-level cache for yfinance short names (persists for process lifetime; names rarely change)
+_yf_short_name_cache: dict[str, str] = {}
+
+def _get_short_name(symbol: str | None, asset_id: str) -> str | None:
+    """Fetch instrument short name from yfinance with in-memory caching. Never raises."""
+    if not symbol:
+        symbol = asset_id.upper()
+    if symbol in _yf_short_name_cache:
+        return _yf_short_name_cache[symbol]
+    try:
+        import yfinance as yf
+        info = yf.Ticker(symbol).fast_info
+        name = getattr(info, "description", None) or None
+        # fast_info doesn't have shortName; fall back to .info (cached by yfinance internally)
+        if not name:
+            full = yf.Ticker(symbol).info
+            name = full.get("shortName") or full.get("longName") or None
+        if name:
+            _yf_short_name_cache[symbol] = name
+        return name
+    except Exception:
+        return None
+
 DISCLAIMER = (
     "This analysis is for educational and research purposes only. Not financial advice. "
     "Past performance does not guarantee future results. Consult qualified financial professionals "
@@ -198,6 +221,11 @@ def _rec_to_item(r: Recommendation) -> dict:
         engine_policy_to_dict,
         get_asset_class_policy,
     )
+    from app.services.recommendations.engine import get_yf_symbol as _get_yf_sym
+    from app.jobs.scheduler import _vp_by_symbol, _rs_by_symbol
+    _sym = _get_yf_sym(r.asset_category or "", r.asset_id or "")
+    _vp = _vp_by_symbol.get(_sym, {}) if _sym else {}
+    _rs = _rs_by_symbol.get(_sym, {}) if _sym else {}
 
     score = getattr(r, "confidence_score", None)
     
@@ -232,6 +260,19 @@ def _rec_to_item(r: Recommendation) -> dict:
         "shadow_b_threshold": getattr(r, "shadow_b_threshold", None),
         "shadow_b_pass": getattr(r, "shadow_b_pass", None),
         "instrument_type": getattr(r, "instrument_type", None),
+        "near_earnings": getattr(r, "near_earnings", False),
+        "days_to_earnings": getattr(r, "days_to_earnings", None),
+        "gap_risk_level": getattr(r, "gap_risk_level", "low"),
+        "gap_risk_note": getattr(r, "gap_risk_note", ""),
+        "vpoc": _vp.get("vpoc"),
+        "vah": _vp.get("vah"),
+        "val": _vp.get("val"),
+        "vp_bias": _vp.get("vp_bias", "at_vpoc"),
+        "vp_overextension": _vp.get("vp_overextension"),
+        "in_value_area": _vp.get("in_value_area", False),
+        "rs_20d": _rs.get("rs_20d"),
+        "rs_60d": _rs.get("rs_60d"),
+        "sector_rs": _rs.get("sector_rs"),
         "engine_policy": engine_policy_to_dict(
             get_asset_class_policy(r.asset_category or "", r.asset_id or "")
         ),
@@ -427,6 +468,7 @@ async def mark_took_it(
     rec.status = "taken"
     now = datetime.now(timezone.utc)
     created_ids: list[str] = []
+    first_active_id: str | None = None
     for leg in legs:
         active = ActiveTrade(
             recommendation_id=rec.id,
@@ -441,6 +483,8 @@ async def mark_took_it(
         db.add(active)
         await db.flush()
         created_ids.append(active.id)
+        if first_active_id is None:
+            first_active_id = active.id
         level = ActiveTradeLevel(
             active_trade_id=active.id,
             sl=rec.stop_loss,
@@ -450,6 +494,19 @@ async def mark_took_it(
         )
         db.add(level)
     await db.commit()
+
+    # P8: capture live metrics snapshot into llm_rationale_log (fire-and-forget)
+    if first_active_id:
+        from app.services.research import capture_metrics_at_entry
+        asyncio.create_task(capture_metrics_at_entry(
+            recommendation_id=rec.id,
+            active_trade_id=first_active_id,
+            asset_id=rec.asset_id or "",
+            asset_category=rec.asset_category or "",
+            risk_tier=rec.risk_tier or "moderate",
+            direction=getattr(rec, "direction", "long") or "long",
+            sentiment_avg=None,
+        ))
     return _with_disclaimer({
         "ok": True,
         "recommendation_id": recommendation_id,
@@ -535,12 +592,18 @@ async def trade_builder_from_asset(
 
     rationale_text = None
     try:
+        from datetime import date as _date
+        from app.services.technicals import classify_horizon as _classify_horizon
         ctx = await build_research_context(db, cand.asset_id, cand.asset_category)
         ctx["buy_in_price"] = cand.buy_in_price
         ctx["direction"] = cand.direction
+        if cand.expiry_date and "expiry_days" not in ctx:
+            _ed = max(1, (cand.expiry_date - _date.today()).days)
+            ctx["expiry_days"] = _ed
+            ctx["horizon"] = _classify_horizon(_ed)
         rationale_text = await generate_rationale(ctx)
     except Exception:
-        pass
+        await db.rollback()
 
     now = datetime.now(timezone.utc)
     batch_id = date.today().isoformat()
@@ -718,12 +781,90 @@ async def list_active_trades(
     trades = result.scalars().unique().all()
     items = []
     from app.services.trade_strategies import strategy_label_for_leg
+    from app.services.recommendations.engine import get_yf_symbol
+
+    # Earnings proximity: cached per-ticker, safe to call for every trade
+    from app.services.earnings_calendar import is_near_earnings as _is_near_earnings
+    from app.core.preferences import get_earnings_calendar_config, get_gap_risk_config
+    from app.services.recommendations.engine import _compute_gap_risk
+    from app.jobs.scheduler import _gap_risk_by_symbol, _vp_by_symbol
+    _earnings_cfg = get_earnings_calendar_config()
+    _earnings_window = _earnings_cfg["earnings_window_days"]
+    _gap_cfg = get_gap_risk_config()
 
     for t in trades:
         rec = t.recommendation
         levels_sorted = sorted(t.levels or [], key=lambda L: L.created_at)
         conf_score = getattr(rec, "confidence_score", None) if rec else None
         strat_leg = getattr(t, "strategy_leg", None) or "vanilla"
+
+        symbol = get_yf_symbol(rec.asset_category, rec.asset_id) if rec else None
+
+        # Earnings check for stocks (cached 24h — no performance concern)
+        near_earnings = False
+        days_to_earnings = None
+        if rec and (rec.asset_category or "") == "stocks" and _earnings_window > 0 and symbol:
+            try:
+                near_earnings, days_to_earnings = _is_near_earnings(symbol, _earnings_window)
+            except Exception:
+                pass
+
+        # Volume Profile: read from scheduler cache (populated every 2h)
+        _vp = _vp_by_symbol.get(symbol, {}) if symbol else {}
+        vp_data = {
+            "vpoc": _vp.get("vpoc"),
+            "vah": _vp.get("vah"),
+            "val": _vp.get("val"),
+            "vp_bias": _vp.get("vp_bias", "at_vpoc"),
+            "vp_overextension": _vp.get("vp_overextension"),
+            "in_value_area": _vp.get("in_value_area", False),
+        }
+        # VPOC distance %: how far current price is from fair value
+        vp_distance_pct = None
+        if vp_data["vpoc"] and rec:
+            try:
+                _cur = float(rec.buy_in_price)  # use entry as proxy if no live price
+                vp_distance_pct = round((_cur - vp_data["vpoc"]) / vp_data["vpoc"] * 100, 2)
+            except Exception:
+                pass
+
+        # Gap risk: use scheduler cache when available (full computation with snap data);
+        # fall back to lightweight inline computation (factors 2-5, no snap needed).
+        # getattr(None, ..., None) is safe — Factor 1 simply won't fire without snap.
+        _gap_cached = _gap_risk_by_symbol.get(symbol) if symbol else None
+        if _gap_cached:
+            gap_risk_level = _gap_cached["level"]
+            gap_risk_note = _gap_cached["note"]
+        elif rec and _gap_cfg.get("gap_risk_enabled", True):
+            try:
+                _expiry_days = (t.expiry - date.today()).days if t.expiry else 7
+                gap_risk_level, _, gap_risk_note = _compute_gap_risk(
+                    snap=None,  # no snap in route context; Factor 1 skipped
+                    expiry_days=max(0, _expiry_days),
+                    near_earnings=near_earnings,
+                    category=rec.asset_category,
+                    today=date.today(),
+                    max_penalty=_gap_cfg.get("gap_risk_max_penalty", 0.50),
+                )
+            except Exception:
+                gap_risk_level = "low"
+                gap_risk_note = ""
+        else:
+            gap_risk_level = "low"
+            gap_risk_note = ""
+
+        # Short name: use cache-first lookup (non-blocking for cached entries)
+        short_name = None
+        if rec:
+            cached_sym = symbol or rec.asset_id.upper()
+            if cached_sym in _yf_short_name_cache:
+                short_name = _yf_short_name_cache[cached_sym]
+            else:
+                try:
+                    short_name = await asyncio.to_thread(_get_short_name, symbol, rec.asset_id)
+                except Exception:
+                    pass
+
         items.append({
             "id": t.id,
             "recommendation_id": t.recommendation_id,
@@ -732,6 +873,7 @@ async def list_active_trades(
             "position_fraction": getattr(t, "position_fraction", 1.0) or 1.0,
             "asset_id": rec.asset_id if rec else None,
             "asset_category": rec.asset_category if rec else None,
+            "short_name": short_name,
             "buy_in_price": rec.buy_in_price if rec else None,
             "direction": getattr(rec, "direction", "long") if rec else "long",
             "risk_tier": rec.risk_tier if rec else None,
@@ -753,12 +895,168 @@ async def list_active_trades(
             "outcome": getattr(t, "outcome", None),
             "outcome_at": (oat.isoformat() if (oat := getattr(t, "outcome_at", None)) else None),
             "closing_price": getattr(t, "closing_price", None),
+            "near_earnings": near_earnings,
+            "days_to_earnings": days_to_earnings,
+            "gap_risk_level": gap_risk_level,
+            "gap_risk_note": gap_risk_note,
+            "vpoc": vp_data["vpoc"],
+            "vah": vp_data["vah"],
+            "val": vp_data["val"],
+            "vp_bias": vp_data["vp_bias"],
+            "vp_overextension": vp_data["vp_overextension"],
+            "in_value_area": vp_data["in_value_area"],
+            "vp_distance_pct": vp_distance_pct,
             "levels": [
                 {"sl": L.sl, "tp": L.tp, "created_at": L.created_at.isoformat(), "source": L.source}
                 for L in levels_sorted
             ],
         })
     return _with_disclaimer({"items": items})
+
+
+@router.get("/active-trades/sparkline/{asset_id}")
+async def get_active_trade_sparkline(
+    asset_id: str,
+    category: str = "stocks",
+) -> dict[str, Any]:
+    """Hourly close prices for a mini sparkline chart (last ~40 candles). Uses cached yfinance data."""
+    from app.services.technicals import fetch_ohlcv
+    from app.services.recommendations.engine import get_yf_symbol
+
+    symbol = get_yf_symbol(category, asset_id)
+    if not symbol:
+        raise HTTPException(status_code=404, detail="Unknown asset")
+
+    df = await asyncio.to_thread(fetch_ohlcv, symbol, interval="1h")
+    if df is None or df.empty:
+        df = await asyncio.to_thread(fetch_ohlcv, symbol)
+    if df is None or df.empty:
+        raise HTTPException(status_code=404, detail="No price data")
+
+    closes = [round(float(c), 4) for c in df["Close"].tail(40).tolist()]
+    return {"asset_id": asset_id, "prices": closes}
+
+
+@router.get("/active-trades/prices")
+async def get_active_trade_prices(
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Current market price for each open active trade, keyed by asset_id. Lightweight — safe to poll every 60s."""
+    from sqlalchemy.orm import selectinload
+    from app.services.recommendations.engine import get_yf_symbol, snapshot_prices_for_recommendations
+
+    q = (
+        select(ActiveTrade)
+        .options(selectinload(ActiveTrade.recommendation))
+        .where(ActiveTrade.outcome.is_(None))
+    )
+    result = await db.execute(q)
+    trades = result.scalars().all()
+
+    # Build minimal objects snapshot_prices_for_recommendations expects
+    class _AssetRef:
+        def __init__(self, asset_id: str, asset_category: str):
+            self.asset_id = asset_id
+            self.asset_category = asset_category
+
+    refs = []
+    seen: set[str] = set()
+    for t in trades:
+        rec = t.recommendation
+        if not rec:
+            continue
+        key = f"{rec.asset_category}:{rec.asset_id}"
+        if key not in seen:
+            seen.add(key)
+            refs.append(_AssetRef(rec.asset_id, rec.asset_category))
+
+    prices = await asyncio.to_thread(snapshot_prices_for_recommendations, refs)
+    return {"prices": prices}
+
+
+@router.get("/active-trades/{trade_id}/gap-advice")
+async def get_gap_advice(
+    trade_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """
+    Generate a short LLM recommendation for an active trade with gap risk.
+    Assembles: snap (ATR, gap metrics), sentiment, market regime, near_earnings.
+    Returns {"advice": "<one sentence>"} or {"advice": null} if LLM unavailable.
+    """
+    from sqlalchemy.orm import selectinload
+    from app.services.recommendations.engine import get_yf_symbol
+    from app.services.technicals import build_snapshot
+    from app.services.earnings_calendar import is_near_earnings as _is_near_earnings
+    from app.services.research.llm import generate_gap_advice
+    from app.core.preferences import get_gap_risk_config, get_earnings_calendar_config
+    from app.jobs.scheduler import _gap_risk_by_symbol
+    from datetime import date
+    import calendar
+
+    q = (
+        select(ActiveTrade)
+        .options(selectinload(ActiveTrade.recommendation))
+        .where(ActiveTrade.id == trade_id)
+    )
+    result = await db.execute(q)
+    trade = result.scalars().first()
+    if not trade or not trade.recommendation:
+        raise HTTPException(status_code=404, detail="Trade not found")
+
+    rec = trade.recommendation
+    symbol = get_yf_symbol(rec.asset_category, rec.asset_id)
+
+    # Fetch snap in thread (blocking yfinance call)
+    snap = await asyncio.to_thread(build_snapshot, symbol) if symbol else None
+
+    # Gap risk factors from scheduler cache or inline
+    _gap_data = _gap_risk_by_symbol.get(symbol, {}) if symbol else {}
+    gap_level = _gap_data.get("level", "medium")
+    gap_factors = _gap_data.get("note", "")
+
+    # Earnings
+    near_earnings, days_to_earnings = False, None
+    _earn_cfg = get_earnings_calendar_config()
+    if rec.asset_category == "stocks" and symbol:
+        try:
+            near_earnings, days_to_earnings = _is_near_earnings(symbol, _earn_cfg["earnings_window_days"])
+        except Exception:
+            pass
+
+    # Market regime from context (non-critical)
+    market_regime = "unknown"
+    try:
+        from app.services.market_context import detect_market_regime
+        mr = await asyncio.to_thread(detect_market_regime)
+        if mr:
+            market_regime = getattr(mr, "regime", None) or "unknown"
+    except Exception:
+        pass
+
+    today = date.today()
+    expiry_days = (trade.expiry - today).days if trade.expiry else 7
+
+    context = {
+        "asset_id": rec.asset_id,
+        "direction": getattr(rec, "direction", "long"),
+        "category": rec.asset_category,
+        "gap_level": gap_level,
+        "gap_factors": gap_factors,
+        "hold_days": max(0, expiry_days),
+        "weekday_name": calendar.day_name[today.weekday()],
+        "atr_pct": getattr(snap, "atr_pct", None) if snap else None,
+        "overnight_gap_avg": getattr(snap, "overnight_gap_pct_avg", None) if snap else None,
+        "overnight_gap_p95": getattr(snap, "overnight_gap_pct_p95", None) if snap else None,
+        "sentiment_score": None,  # no per-trade sentiment field; leave for LLM inference
+        "market_regime": market_regime,
+        "near_earnings": near_earnings,
+        "days_to_earnings": days_to_earnings,
+        "confidence_score": rec.confidence_score,
+    }
+
+    advice = await generate_gap_advice(context)
+    return {"advice": advice}
 
 
 @router.post("/active-trades/{trade_id}/close-manually")
@@ -938,7 +1236,10 @@ async def fit_calibration(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
     if len(confidences) < 10:
         return _with_disclaimer({"ok": False, "message": f"Not enough data (n={len(confidences)}). Need at least 10 closed trades."})
 
-    a, b = fit_platt_calibration(confidences, outcomes)
+    result = fit_platt_calibration(confidences, outcomes)
+    if result is None:
+        return _with_disclaimer({"ok": False, "message": "Platt calibration failed (sklearn unavailable or fitting error). Existing params preserved."})
+    a, b = result
     set_platt_params(a, b)
     return _with_disclaimer({"ok": True, "message": f"Platt calibration fitted on {len(confidences)} trades.", "a": a, "b": b})
 
@@ -1254,6 +1555,7 @@ class PreferencesUpdate(BaseModel):
     research_llm_provider: str | None = None
     research_llm_model: str | None = None
     ollama_base_url: str | None = None
+    research_llm_thinking_budget: int | None = None  # 0 = disabled; max depends on provider (Anthropic: up to 32000)
     risk_budget_1r: float | None = None
     sentiment_half_life_hours: float | None = None
     confidence_threshold_risk_on: int | None = None
@@ -1282,11 +1584,17 @@ async def update_preferences(body: PreferencesUpdate) -> dict[str, Any]:
     try:
         if body.preferred_risk is not None:
             set_preferred_risk(body.preferred_risk)
-        if body.research_llm_provider is not None or body.research_llm_model is not None or body.ollama_base_url is not None:
+        if (
+            body.research_llm_provider is not None
+            or body.research_llm_model is not None
+            or body.ollama_base_url is not None
+            or body.research_llm_thinking_budget is not None
+        ):
             set_research_llm_config(
                 provider=body.research_llm_provider,
                 model=body.research_llm_model,
                 ollama_base_url=body.ollama_base_url,
+                thinking_budget=body.research_llm_thinking_budget,
             )
         if body.risk_budget_1r is not None:
             set_risk_budget_1r(body.risk_budget_1r)
@@ -1510,6 +1818,47 @@ async def action_update_active_trades() -> dict[str, Any]:
     from app.jobs.scheduler import job_update_active_trades
     await job_update_active_trades()
     return _with_disclaimer({"ok": True, "message": "Active trades updated with latest prices and levels."})
+
+
+@router.get("/circuit-breaker")
+async def get_circuit_breaker_status(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    """
+    Current circuit breaker state: mode (normal/defensive/paused), daily loss R,
+    consecutive losses, cumulative drawdown R, and what triggered any active mode.
+    """
+    from app.services.circuit_breaker import compute_state as _cb_compute
+    from app.core.preferences import get_circuit_breaker_config
+
+    cfg = get_circuit_breaker_config()
+    result = await db.execute(select(ActiveTrade).where(ActiveTrade.outcome.isnot(None)))
+    closed_trades = result.scalars().all()
+
+    if not cfg["circuit_breaker_enabled"]:
+        return _with_disclaimer({
+            "enabled": False,
+            "mode": "normal",
+            "config": cfg,
+            "stats": {"rolling_loss_r": 0, "consecutive_losses": 0, "drawdown_r": 0},
+            "triggered_by": [],
+        })
+
+    state = _cb_compute(
+        list(closed_trades),
+        max_consecutive_losses=cfg["max_consecutive_losses"],
+        max_daily_loss_r=cfg["max_daily_loss_r"],
+        drawdown_gate_r=cfg["drawdown_gate_r"],
+    )
+    return _with_disclaimer({
+        "enabled": True,
+        "mode": state.mode,
+        "config": cfg,
+        "stats": {
+            "rolling_loss_r": state.rolling_loss_r,
+            "consecutive_losses": state.consecutive_losses,
+            "drawdown_r": state.drawdown_r,
+        },
+        "triggered_by": state.triggered_by,
+    })
 
 
 @router.post("/actions/purge-all")
