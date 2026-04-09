@@ -136,6 +136,7 @@ async def get_latest_analysis():
             by_category[cat].append({
                 "id": r.id,
                 "ticker": r.ticker,
+                "asset_category": r.asset_category,
                 "direction": r.direction,
                 "entry_price": r.entry_price,
                 "stop_loss": r.stop_loss,

@@ -353,8 +353,13 @@ async def _call_lm_studio(
     model: str, system: str, user: str, base_url: str, *, max_tokens: int = 200
 ) -> str | None:
     """Call a local LM Studio server using its OpenAI-compatible API."""
+    import httpx
     from openai import AsyncOpenAI
-    client = AsyncOpenAI(api_key="lm-studio", base_url=base_url)
+    client = AsyncOpenAI(
+        api_key="lm-studio",
+        base_url=base_url,
+        http_client=httpx.AsyncClient(timeout=600.0),
+    )
     response = await client.chat.completions.create(
         model=model,
         messages=[
@@ -364,7 +369,7 @@ async def _call_lm_studio(
         max_tokens=max_tokens,
     )
     if response.choices and response.choices[0].message.content:
-        return response.choices[0].message.content.strip()
+        return _strip_thinking(response.choices[0].message.content) or None
     return None
 
 
@@ -903,9 +908,8 @@ async def generate_strategy_explanation(user_message: str) -> str | None:
     if not model:
         return None
 
-    ollama_base_url = (cfg.get("ollama_base_url") or "").strip() or (
-        settings.ollama_base_url or "http://localhost:11434"
-    )
+    ollama_base_url = (cfg.get("ollama_base_url") or "").strip() or (settings.ollama_base_url or "http://localhost:11434")
+    lm_studio_base_url = (cfg.get("lm_studio_base_url") or "").strip() or (settings.lm_studio_base_url or "http://localhost:1234/v1")
     max_tok = 480
 
     try:
@@ -983,11 +987,18 @@ _BACKTEST_INSIGHT_SYSTEM = (
 )
 
 
+def _strip_thinking(raw: str) -> str:
+    """Strip <think>...</think> blocks returned by thinking-mode models (e.g. qwen3)."""
+    import re
+    return re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+
+
 def _parse_backtest_insight_json(raw: str | None) -> dict | None:
     """Extract and parse JSON from LLM response, tolerating markdown fences."""
     import json, re
     if not raw:
         return None
+    raw = _strip_thinking(raw)
     # Strip markdown code fences if present
     cleaned = re.sub(r"```(?:json)?", "", raw).strip()
     # Find first { ... } block
@@ -1039,6 +1050,7 @@ async def generate_backtest_insight(
     ollama_base_url = (cfg.get("ollama_base_url") or "").strip() or (
         settings.ollama_base_url or "http://localhost:11434"
     )
+    lm_studio_base_url = (cfg.get("lm_studio_base_url") or "").strip() or (settings.lm_studio_base_url or "http://localhost:1234/v1")
 
     dir_s = direction_stats.get(direction, {})
     other_dir = "short" if direction == "long" else "long"
@@ -1107,7 +1119,7 @@ async def generate_backtest_insight(
         elif provider_id == "openrouter":
             raw = await _call_openrouter(model, _system, user_content, api_key or "", max_tokens=1200)
         elif provider_id == "lm_studio":
-            raw = await _call_lm_studio(model, _system, user_content, lm_studio_base_url, max_tokens=1200)
+            raw = await _call_lm_studio(model, _system, user_content, lm_studio_base_url, max_tokens=2000)
         else:
             return None
     except Exception as exc:

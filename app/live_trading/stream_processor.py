@@ -122,6 +122,7 @@ async def _call_llm(system: str, user: str, provider: str, model: str, api_key: 
             return data["choices"][0]["message"]["content"], u.get("prompt_tokens", 0), u.get("completion_tokens", 0)
 
         elif provider == "lm_studio":
+            import re as _re
             import requests
             from app.core.config import settings as _s
             from app.core.preferences import get_research_llm_config as _gcfg
@@ -139,7 +140,8 @@ async def _call_llm(system: str, user: str, provider: str, model: str, api_key: 
             resp.raise_for_status()
             data = resp.json()
             u = data.get("usage", {})
-            return data["choices"][0]["message"]["content"], u.get("prompt_tokens", 0), u.get("completion_tokens", 0)
+            content = _re.sub(r"<think>.*?</think>", "", data["choices"][0]["message"]["content"], flags=_re.DOTALL).strip()
+            return content, u.get("prompt_tokens", 0), u.get("completion_tokens", 0)
 
         return "", 0, 0
 
@@ -641,8 +643,16 @@ class StreamProcessor:
 
     # ── Parse helpers ─────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _strip_thinking(raw: str) -> str:
+        """Strip <think>...</think> blocks returned by thinking-mode models (e.g. qwen3)."""
+        import re
+        return re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+
     def _parse_analysis_response(self, raw: str) -> dict[str, dict]:
         """Parse LLM analysis response. Returns {ticker: analysis_dict}."""
+        raw = self._strip_thinking(raw)
+
         def _try_parse(text: str) -> dict[str, dict]:
             data = json.loads(text)
             analyses = data.get("analyses") or []
@@ -676,6 +686,7 @@ class StreamProcessor:
         return merged
 
     def _parse_ticker_watch_response(self, raw: str) -> dict | None:
+        raw = self._strip_thinking(raw)
         try:
             start = raw.index("{")
             end = raw.rindex("}") + 1

@@ -31,6 +31,10 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+# In-memory cache for background LLM insight results
+# key: f"{asset_id}:{direction}:{risk_tier}" → {"status": "pending"|"done"|"error", "result": dict|None}
+_insight_cache: dict[str, dict] = {}
+
 DISCLAIMER = (
     "Backtesting results are for educational purposes only. Past performance does not "
     "guarantee future results. Backtests do not account for slippage, commissions, or "
@@ -349,22 +353,29 @@ async def quick_backtest(
             f"Average outcome: {avg_pnl:+.2f}R per trade."
         )
 
-    # LLM 14-day forward prediction
-    llm_analysis: Optional[dict] = None
-    try:
-        from app.services.research.llm import generate_backtest_insight
-        llm_analysis = await generate_backtest_insight(
-            asset_id=asset_id,
-            direction=direction,
-            risk_tier=risk_tier,
-            metrics=metrics,
-            direction_stats=direction_stats_out,
-            by_confidence_bucket=by_confidence_bucket,
-            current_signal=current_signal,
-            horizon_days=14,
-        )
-    except Exception as e:
-        logger.warning("[BACKTEST/quick] LLM insight failed: %s", e)
+    # Fire LLM insight in background — don't block the response
+    cache_key = f"{asset_id}:{direction}:{risk_tier}"
+    _insight_cache[cache_key] = {"status": "pending", "result": None}
+
+    async def _run_insight():
+        try:
+            from app.services.research.llm import generate_backtest_insight
+            result = await generate_backtest_insight(
+                asset_id=asset_id,
+                direction=direction,
+                risk_tier=risk_tier,
+                metrics=metrics,
+                direction_stats=direction_stats_out,
+                by_confidence_bucket=by_confidence_bucket,
+                current_signal=current_signal,
+                horizon_days=14,
+            )
+            _insight_cache[cache_key] = {"status": "done", "result": result}
+        except Exception as e:
+            logger.warning("[BACKTEST/quick] LLM insight failed: %s", e)
+            _insight_cache[cache_key] = {"status": "error", "result": None}
+
+    asyncio.create_task(_run_insight())
 
     return {
         "symbol": yahoo_symbol,
@@ -388,9 +399,23 @@ async def quick_backtest(
         },
         "by_confidence_bucket": by_confidence_bucket,
         "verdict": verdict,
-        "llm_analysis": llm_analysis,
+        "llm_analysis": None,
+        "llm_insight_key": cache_key,
         "disclaimer": DISCLAIMER,
     }
+
+
+@router.get("/backtest/insight")
+async def get_backtest_insight(asset_id: str, direction: str = "long", risk_tier: str = "moderate") -> dict[str, Any]:
+    """
+    Poll for the background LLM insight result from /backtest/quick.
+    Returns {"status": "pending"|"done"|"error", "llm_analysis": dict|None}
+    """
+    cache_key = f"{asset_id}:{direction}:{risk_tier}"
+    entry = _insight_cache.get(cache_key)
+    if entry is None:
+        return {"status": "not_found", "llm_analysis": None}
+    return {"status": entry["status"], "llm_analysis": entry.get("result")}
 
 
 def _compute_current_signal(symbol: str, risk_tier: str, by_asset_sentiment: dict) -> Optional[dict]:

@@ -726,9 +726,22 @@
     });
   }
 
+  const COMMODITY_NAMES = {
+    'CL=F': 'Crude Oil', 'BZ=F': 'Brent', 'NG=F': 'Nat Gas',
+    'GC=F': 'Gold', 'SI=F': 'Silver', 'HG=F': 'Copper',
+    'PL=F': 'Platinum', 'PA=F': 'Palladium',
+    'ZW=F': 'Wheat', 'ZC=F': 'Corn', 'ZS=F': 'Soy',
+    'KC=F': 'Coffee', 'CC=F': 'Cocoa', 'SB=F': 'Sugar', 'CT=F': 'Cotton',
+    'LE=F': 'Live Cattle', 'GF=F': 'Feeder Cattle', 'HE=F': 'Lean Hogs',
+    'RB=F': 'Gasoline', 'HO=F': 'Heating Oil',
+  };
+
   function recCardHTML(r) {
     const dir = r.direction || 'long';
     const isWatched = state.watchedTickers.has(r.ticker);
+    const _cat = r.asset_category || r.category || '';
+    const commodityName = _cat === 'commodities' && COMMODITY_NAMES[r.ticker]
+      ? `<span style="font-size:11px;font-weight:400;color:var(--muted-foreground);margin-left:4px;">(${COMMODITY_NAMES[r.ticker]})</span>` : '';
     const sessionBadge = r.market_session && r.market_session !== 'regular' && r.market_session !== 'open_24h'
       ? `<span class="badge badge--yellow" style="font-size:10px;">${r.market_session.replace(/_/g,' ')}</span>` : '';
     const liveP = state.prices[r.ticker];
@@ -777,7 +790,7 @@
     return `<div class="rec-card rec-card--${dir}${isWatched ? ' rec-card--watched' : ''}" data-ticker="${r.ticker}">
       ${isWatched ? '<span class="rec-pin-badge" style="position:absolute;top:8px;right:8px;">📌 Watching</span>' : ''}
       <div class="rec-card-header">
-        <span class="rec-card-ticker">${r.ticker}</span>
+        <span class="rec-card-ticker">${r.ticker}</span>${commodityName}
         <span class="rec-card-dir rec-card-dir--${dir}">${dir.toUpperCase()}</span>
         ${sessionBadge}
       </div>
@@ -924,6 +937,8 @@
   // ── Backtest quick modal (same implementation as active-trades) ───────────
   function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
+  let _btInsightPoller = null;
+
   function openBtModal(assetId, category, direction, riskTier) {
     const overlay = document.getElementById('bt-overlay');
     const title   = document.getElementById('bt-title');
@@ -936,11 +951,53 @@
         <div class="bt-loading-text">Analyzing last 90 days with 14-day outcome window…<br>This takes ~15 seconds.</div>
       </div>`;
     overlay.style.display = 'flex';
+    if (_btInsightPoller) { clearInterval(_btInsightPoller); _btInsightPoller = null; }
     const params = new URLSearchParams({ asset_id: assetId, category, direction, risk_tier: riskTier });
     fetch(`/api/backtest/quick?${params}`)
       .then(r => r.ok ? r.json() : Promise.reject(r.statusText))
-      .then(data => renderBtModal(data, direction))
+      .then(data => {
+        renderBtModal(data, direction);
+        // Start polling for LLM insight if a key was provided
+        if (data.llm_insight_key) {
+          _btInsightPoller = setInterval(() => {
+            const ip = new URLSearchParams({ asset_id: assetId, direction, risk_tier: riskTier });
+            fetch(`/api/backtest/insight?${ip}`)
+              .then(r => r.ok ? r.json() : null)
+              .then(insight => {
+                if (!insight || insight.status === 'pending') return;
+                clearInterval(_btInsightPoller); _btInsightPoller = null;
+                if (insight.status === 'done' && insight.llm_analysis) {
+                  injectBtInsight(insight.llm_analysis);
+                } else {
+                  const ph = document.getElementById('bt-llm-placeholder');
+                  if (ph) ph.remove();
+                }
+              })
+              .catch(() => {});
+          }, 5000);
+        }
+      })
       .catch(err => { body.innerHTML = `<div class="bt-error">Failed to run backtest: ${esc(String(err))}</div>`; });
+  }
+
+  function injectBtInsight(ai) {
+    const ph = document.getElementById('bt-llm-placeholder');
+    if (!ph) return;
+    function gradeCls(g) { return ({A:'grade--a',B:'grade--b',C:'grade--c',D:'grade--d',F:'grade--f'})[g]||'grade--f'; }
+    let html = '';
+    if (ai.grade) {
+      html += `<div class="bt-grade-banner"><div class="bt-grade-badge ${gradeCls(ai.grade)}">${esc(ai.grade)}</div>
+        <div><div class="bt-grade-label">Strategy Grade — last 90 days</div><div class="bt-grade-reason">${esc(ai.grade_reason||'')}</div></div></div>`;
+    }
+    if (ai.key_insights && ai.key_insights.length) {
+      html += `<div class="bt-section-title">Key insights</div><div class="bt-insights">`;
+      ai.key_insights.forEach(ins => { html += `<div class="bt-insight-row">${icon('chevron-right',12)}<span>${esc(ins)}</span></div>`; });
+      html += `</div>`;
+    }
+    if (ai.recommendation) {
+      html += `<div class="bt-recommendation"><div class="bt-rec-label">${icon('zap',12)} Recommendation</div><div class="bt-rec-text">${esc(ai.recommendation)}</div></div>`;
+    }
+    ph.outerHTML = html;
   }
 
   function renderBtModal(data, activeDir) {
@@ -951,7 +1008,7 @@
     const otherDir = activeDir === 'long' ? 'short' : 'long';
     const otherStats = dirStats[otherDir] || {};
     const buckets = data.by_confidence_bucket || {};
-    const ai = data.llm_analysis || null;
+    const ai = null; // LLM insight loads async — injected by injectBtInsight()
     const cs = data.current_signal || null;
 
     function pct(v) { return v != null ? (v * 100).toFixed(1) + '%' : '—'; }
@@ -989,11 +1046,9 @@
         <div class="bt-cs-footer">R/R: <strong>${cs.risk_reward != null ? cs.risk_reward.toFixed(2)+'x' : '—'}</strong> &nbsp;·&nbsp; Trend: <strong>${cs.trend_bias||'—'}</strong> &nbsp;·&nbsp; Sentiment: <strong>${sentTxt}</strong></div>
       </div>`;
     }
-    if (ai && ai.grade) {
-      html += `<div class="bt-grade-banner"><div class="bt-grade-badge ${gradeCls(ai.grade)}">${esc(ai.grade)}</div>
-        <div><div class="bt-grade-label">Strategy Grade — last 90 days</div><div class="bt-grade-reason">${esc(ai.grade_reason||'')}</div></div></div>`;
-    }
     html += `<div class="bt-verdict">${esc(data.verdict||'—')}</div>`;
+    // Placeholder replaced by injectBtInsight() when LLM analysis arrives
+    html += `<div id="bt-llm-placeholder" style="padding:10px 0;color:var(--muted-foreground);font-size:12px;display:flex;align-items:center;gap:8px;"><div class="bt-spinner" style="width:14px;height:14px;border-width:2px;"></div> AI analysis loading…</div>`;
     html += `<div class="bt-metrics-grid">
       <div class="bt-metric"><div class="bt-metric-value ${wrCls(myWR)}">${pct(myWR)}</div><div class="bt-metric-label">Win Rate</div><div class="bt-metric-hint">${activeDir.toUpperCase()} signals</div></div>
       <div class="bt-metric"><div class="bt-metric-value ${pnlCls(ov.avg_pnl_r)}">${fmtN(ov.avg_pnl_r)}R</div><div class="bt-metric-label">Avg P/L</div><div class="bt-metric-hint">per trade</div></div>
@@ -1013,11 +1068,6 @@
         <span class="bt-wle-dot bt-wle-l"></span><span>${ov.losses||0} losses</span>
         <span class="bt-wle-dot bt-wle-e"></span><span>${ov.expired||0} expired</span>
       </div></div>`;
-    if (ai && ai.key_insights && ai.key_insights.length) {
-      html += `<div class="bt-section-title">Key insights</div><div class="bt-insights">`;
-      ai.key_insights.forEach(ins => { html += `<div class="bt-insight-row">${icon('chevron-right',12)}<span>${esc(ins)}</span></div>`; });
-      html += `</div>`;
-    }
     html += `<div class="bt-section-title">Long vs Short performance</div>
       <div class="bt-dir-row">
         <div class="bt-dir-card ${activeDir==='long'?'active':''}"><div class="bt-dir-name long">LONG ${activeDir==='long'?'← your trade':''}</div><div class="bt-dir-stat">Win rate: <strong>${pct(longStats.win_rate)}</strong></div><div class="bt-dir-stat">${longStats.total||0} signals</div></div>
@@ -1032,16 +1082,15 @@
         html += `<div class="bt-bucket-row"><span class="bt-bucket-label">${b}</span><div class="bt-bucket-bar-wrap"><div class="bt-bucket-bar-fill ${bc}" style="width:${Math.round(wr*100)}%"></div></div><span class="bt-bucket-wr">${pct(wr)}</span><span class="bt-bucket-n">${bd.total} trades</span></div>`;
       });
     }
-    if (ai && ai.recommendation) {
-      html += `<div class="bt-recommendation"><div class="bt-rec-label">${icon('zap',12)} Recommendation</div><div class="bt-rec-text">${esc(ai.recommendation)}</div></div>`;
-    }
     html += `<div class="bt-disclaimer">${esc(data.disclaimer||'')}</div>`;
     body.innerHTML = html;
   }
 
   function closeBtModal(e) {
-    if (e.target === document.getElementById('bt-overlay'))
+    if (e.target === document.getElementById('bt-overlay')) {
       document.getElementById('bt-overlay').style.display = 'none';
+      if (_btInsightPoller) { clearInterval(_btInsightPoller); _btInsightPoller = null; }
+    }
   }
 
   // ── Chart engine ───────────────────────────────────────────────────────────
