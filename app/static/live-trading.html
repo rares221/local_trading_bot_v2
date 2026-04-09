@@ -504,7 +504,7 @@
 
       case 'market_state':
         state.marketState = msg.state;
-        state.analysisAllowed = ['regular','pre_market_warmup','after_hours','open_24h'].includes(msg.state);
+        state.analysisAllowed = ['regular','pre_market_warmup','after_hours','open_24h','partial_24h'].includes(msg.state);
         if (msg.universe_size) {
           document.getElementById('universeCount').textContent = msg.universe_size;
         }
@@ -546,6 +546,10 @@
         setAnalyzeBtn(false);
         document.getElementById('recsGrid').classList.remove('llm-analyzing');
         showToast('Analysis failed: ' + (msg.error || 'Unknown error'), 'error');
+        break;
+
+      case 'analysis_skipped':
+        showToast(msg.reason || 'Auto-analysis skipped (daily cost cap reached)', 'info');
         break;
 
       case 'analysis_update':
@@ -666,10 +670,11 @@
       pre_market_early: '◌ Pre-Market Early',
       closed: '◌ Market Closed',
       open_24h: '● 24h Market',
+      partial_24h: '● Crypto / FX / CME Active',
     };
     label.textContent = labels[s] || s;
     if (s === 'regular' || s === 'open_24h') dot.classList.add('market-dot--open');
-    else if (s === 'pre_market_warmup') dot.classList.add('market-dot--warmup');
+    else if (s === 'pre_market_warmup' || s === 'partial_24h') dot.classList.add('market-dot--warmup');
     else dot.classList.add('market-dot--closed');
     paused.style.display = (s === 'closed' || s === 'pre_market_early') ? 'flex' : 'none';
   }

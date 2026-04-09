@@ -88,7 +88,7 @@ class LiveRecommendation(Base):
     # scalp | intraday | swing  (determined by LLM based on ATR%, volatility, session)
     timeframe: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     catalysts: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON list
-    # regular | pre_market_warmup | after_hours | closed | open_24h
+    # regular | pre_market_warmup | after_hours | closed | open_24h | partial_24h
     market_session: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
 
     run: Mapped["LiveAnalysisRun"] = relationship("LiveAnalysisRun", back_populates="recommendations")

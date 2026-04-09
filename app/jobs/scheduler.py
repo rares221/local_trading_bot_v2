@@ -709,6 +709,7 @@ async def job_refresh_backtest_stats() -> None:
     up-to-date so live confidence scores are statistically grounded.
     """
     import json as _json
+    from sqlalchemy import update
     from app.live_trading.live_analyzer import _BASE_UNIVERSE
     from app.api.backtest_routes import _run_backtest_background, BacktestRequest
     from app.models.backtest import BacktestRun
@@ -718,19 +719,40 @@ async def job_refresh_backtest_stats() -> None:
     start = end - timedelta(days=3 * 365)
 
     try:
-        run_id = str(uuid4())
-        run = BacktestRun(
-            id=run_id,
-            created_at=datetime.now(timezone.utc),
-            start_date=start,
-            end_date=end,
-            symbols_json=_json.dumps(base_symbols),
-            risk_tier="moderate",
-            min_confidence=30,
-            status="running",
-        )
         async with async_session_factory() as session:
-            session.add(run)
+            now = datetime.now(timezone.utc)
+            stale_cutoff = now - timedelta(hours=6)
+
+            # Check 1: mark orphaned "running" rows as failed (container crashed mid-run)
+            await session.execute(
+                update(BacktestRun)
+                .where(BacktestRun.status == "running", BacktestRun.created_at < stale_cutoff)
+                .values(status="failed", error_message="Marked failed on restart — container was restarted mid-run")
+            )
+            await session.commit()
+
+            # Check 2: skip if a backtest is actively running (started within last 6h)
+            active = await session.execute(
+                select(BacktestRun.id).where(
+                    BacktestRun.status == "running",
+                    BacktestRun.created_at >= stale_cutoff,
+                ).limit(1)
+            )
+            if active.scalar_one_or_none():
+                print("[BACKTEST_STATS] Backtest already in progress — skipping")
+                return
+
+            run_id = str(uuid4())
+            session.add(BacktestRun(
+                id=run_id,
+                created_at=now,
+                start_date=start,
+                end_date=end,
+                symbols_json=_json.dumps(base_symbols),
+                risk_tier="moderate",
+                min_confidence=30,
+                status="running",
+            ))
             await session.commit()
 
         body = BacktestRequest(

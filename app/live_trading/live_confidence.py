@@ -100,9 +100,11 @@ def compute_live_confidence(
     n = int(backtest_stats["n"]) if backtest_stats else 0
     win_rate = float(backtest_stats["win_rate"]) if backtest_stats else 0.0
 
-    # ── No meaningful history: honest coin-flip cap ──────────────────────────
+    # ── No meaningful history: allow signal through with a reasonable cap ────
+    # indicator_score peaks at ~61 with no sentiment data; 0.50 cap produces max
+    # ~30, which never clears the 40% gate in stream_processor. 0.70 → ~42, clears it.
     if n < 10:
-        return min(50, int(indicator_score * 0.50))
+        return min(65, int(indicator_score * 0.70))
 
     # ── Backtest component: win rate drives up to 50 pts ────────────────────
     # win_rate=0.60 → 30 pts, win_rate=0.70 → 35 pts, win_rate=0.50 → 25 pts

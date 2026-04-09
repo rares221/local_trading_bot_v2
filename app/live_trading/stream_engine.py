@@ -92,6 +92,19 @@ class BoundedNewsCache:
             self._store[id_] = now
 
 
+# ── Symbol classification helpers ─────────────────────────────────────────────
+
+def _sym_is_crypto_fx(sym: str) -> bool:
+    return sym.endswith("-USD") or sym.endswith("-USDT") or sym.endswith("=X")
+
+def _sym_is_cme(sym: str) -> bool:
+    """CME/CBOT futures trade nearly 24h on weekdays (=F suffix)."""
+    return sym.endswith("=F")
+
+def _sym_is_equity_like(sym: str) -> bool:
+    return not _sym_is_crypto_fx(sym) and not _sym_is_cme(sym)
+
+
 # ── Market session helpers ────────────────────────────────────────────────────
 
 def get_market_state(tickers: list[str]) -> str:
@@ -99,64 +112,52 @@ def get_market_state(tickers: list[str]) -> str:
     Returns current market state string based on ET time and watchlist composition.
 
     States:
-      open_24h           — crypto/FX only watchlist, always open
+      open_24h           — pure crypto/FX watchlist (no equity, no CME), always open
       regular            — NYSE/NASDAQ regular session 09:30-16:00 ET Mon-Fri
       pre_market_warmup  — 08:30-09:30 ET Mon-Fri (analysis window opens 1h before open)
       pre_market_early   — 04:00-08:30 ET Mon-Fri
       after_hours        — 16:00-20:00 ET Mon-Fri
+      partial_24h        — equity closed (overnight/weekend) but crypto/FX or CME in watchlist
       closed             — all other times
     """
-    has_crypto_fx = any(
-        sym.endswith("-USD") or sym.endswith("-USDT") or sym.endswith("=X")
-        for sym in tickers
-    )
-    has_equity = any(
-        not (sym.endswith("-USD") or sym.endswith("-USDT") or sym.endswith("=X"))
-        for sym in tickers
-    )
+    has_crypto_fx = any(_sym_is_crypto_fx(s) for s in tickers)
+    has_cme       = any(_sym_is_cme(s) for s in tickers)
+    has_equity    = any(_sym_is_equity_like(s) for s in tickers)
 
-    if has_crypto_fx and not has_equity:
+    # Pure 24/7 crypto+FX watchlist — no equity, no CME
+    if has_crypto_fx and not has_equity and not has_cme:
         return "open_24h"
 
     now = datetime.now(_ET)
     weekday = now.weekday()
     t = now.time()
 
-    if weekday >= 5:
-        return "closed"
-    if dtime(9, 30) <= t <= dtime(16, 0):
-        return "regular"
-    if dtime(8, 30) <= t < dtime(9, 30):
-        return "pre_market_warmup"
-    if dtime(4, 0) <= t < dtime(8, 30):
-        return "pre_market_early"
-    if dtime(16, 0) < t <= dtime(20, 0):
-        return "after_hours"
+    if weekday < 5:  # Mon-Fri
+        if dtime(9, 30) <= t <= dtime(16, 0):
+            return "regular"
+        if dtime(8, 30) <= t < dtime(9, 30):
+            return "pre_market_warmup"
+        if dtime(4, 0) <= t < dtime(8, 30):
+            return "pre_market_early"
+        if dtime(16, 0) < t <= dtime(20, 0):
+            return "after_hours"
+
+    # Equity/CME exchange hours are closed — but crypto/FX or CME futures may still be active
+    if has_crypto_fx or has_cme:
+        return "partial_24h"
     return "closed"
+
+
+_ANALYSIS_ALLOWED_STATES = {"regular", "pre_market_warmup", "after_hours", "open_24h", "partial_24h"}
 
 
 def analysis_allowed(tickers: list[str] | None = None) -> bool:
     """
     Returns True if automated LLM analysis is allowed to run.
-    Window: Mon-Fri 08:30-20:00 ET. Crypto/FX-only watchlists: always True.
+    Delegates entirely to get_market_state — no duplicate logic.
     Manual button always bypasses this gate.
     """
-    tickers = tickers or []
-    has_crypto_fx = any(
-        sym.endswith("-USD") or sym.endswith("-USDT") or sym.endswith("=X")
-        for sym in tickers
-    )
-    has_equity = any(
-        not (sym.endswith("-USD") or sym.endswith("-USDT") or sym.endswith("=X"))
-        for sym in tickers
-    )
-    if has_crypto_fx and not has_equity:
-        return True
-
-    now = datetime.now(_ET)
-    if now.weekday() >= 5:
-        return False
-    return dtime(8, 30) <= now.time() <= dtime(20, 0)
+    return get_market_state(tickers or []) in _ANALYSIS_ALLOWED_STATES
 
 
 _POLL_INTERVAL: dict[str, int] = {
@@ -165,6 +166,7 @@ _POLL_INTERVAL: dict[str, int] = {
     "pre_market_warmup": 15,
     "after_hours": 30,
     "pre_market_early": 120,
+    "partial_24h": 30,
     "closed": 300,
 }
 
@@ -370,9 +372,9 @@ class DataStreamEngine:
             state = get_market_state(self.watchlist)
             interval = _POLL_INTERVAL.get(state, 120)
 
-            # Detect closed → pre_market_warmup transition → fire warmup analysis
-            if self._last_market_state == "closed" and state == "pre_market_warmup":
-                logger.info("[LIVE_ENGINE] Market window opened (08:30 ET) — pre-market warmup")
+            # Detect closed → pre_market_warmup or partial_24h transition → fire warmup analysis
+            if self._last_market_state == "closed" and state in ("pre_market_warmup", "partial_24h"):
+                logger.info("[LIVE_ENGINE] Market window opened (%s) — firing warmup analysis", state)
                 if self._on_warmup_trigger:
                     try:
                         asyncio.create_task(self._on_warmup_trigger())

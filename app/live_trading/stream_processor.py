@@ -40,6 +40,16 @@ _COST_PER_1M: dict[str, float] = {
 
 _snap_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="live_llm")
 
+# Cost controls
+_DAILY_COST_CAP_USD: float = 1.0   # auto-triggered runs stop beyond this; manual always runs
+_MAX_LLM_TICKERS: int = 15         # max tickers sent to LLM per full-analysis run
+
+# Direction-aware confidence gates
+# Shorts require higher conviction: bear-market counter-trend rallies cause 71.7% SL rate
+# vs 60.9% for longs. Raising the short bar filters out weak signals before they run.
+_MIN_CONFIDENCE_LONG: int = 40
+_MIN_CONFIDENCE_SHORT: int = 55
+
 
 # ── LLM config helpers ────────────────────────────────────────────────────────
 
@@ -253,21 +263,20 @@ class StreamProcessor:
                             headline=headline,
                         ))
 
-        # ── News-triggered analysis (targeted or full) ────────────────────────
+        # ── News-triggered analysis (targeted only) ───────────────────────────
         last_refresh = self._last_news_refresh
         if not last_refresh or (datetime.now(timezone.utc) - last_refresh) > self._news_refresh_debounce:
             if analysis_allowed(watchlist) and not self._lock.locked():
-                self._last_news_refresh = datetime.now(timezone.utc)
                 matched = self._match_tags_to_recs(asset_tags)
                 if matched:
-                    # News targets specific tickers we're tracking — run targeted analysis only
+                    # Only act when news directly targets tickers we're already tracking
+                    self._last_news_refresh = datetime.now(timezone.utc)
                     logger.info("[PROCESSOR] News tagged %s — running targeted analysis", matched)
                     asyncio.create_task(self.run_targeted_analysis(matched, headline))
-                else:
-                    # General market news — full analysis
-                    asyncio.create_task(self.run_full_analysis(trigger="news_refresh"))
+                # General market news: do NOT trigger a full analysis — too expensive per article
 
     async def _on_warmup_trigger(self) -> None:
+        # run_full_analysis checks the daily cost cap internally for non-manual triggers
         if not self._lock.locked():
             asyncio.create_task(self.run_full_analysis(trigger="pre_market_warmup"))
 
@@ -280,6 +289,18 @@ class StreamProcessor:
         if self._lock.locked():
             logger.info("[PROCESSOR] Already running, skipping trigger=%s", trigger)
             return self._active_run_id
+
+        # Daily cost cap — manual button always bypasses; auto-triggers respect it
+        if trigger != "manual_button":
+            daily = await self.get_daily_cost()
+            if daily >= _DAILY_COST_CAP_USD:
+                logger.warning("[PROCESSOR] Daily cost cap $%.2f reached (spent $%.4f) — skipping auto-trigger=%s",
+                               _DAILY_COST_CAP_USD, daily, trigger)
+                await ws_manager.broadcast({
+                    "type": "analysis_skipped",
+                    "reason": f"Daily cost cap ${_DAILY_COST_CAP_USD:.2f} reached (${daily:.4f} spent today). Use the manual button to override.",
+                })
+                return None
 
         async with self._lock:
             run_id = str(uuid.uuid4())
@@ -309,24 +330,36 @@ class StreamProcessor:
 
                 # ── Step 3: Per-ticker LLM analysis ──────────────────────────
                 # Priority: watched tickers first, then confidence >= 40%, sorted desc
+                # Hard cap at _MAX_LLM_TICKERS to bound per-run cost
                 watchlist = set(self._engine.watchlist if self._engine else [])
-                eligible = [s for s in signals if (s.get("confidence") or 0) >= 40]
+                eligible = [
+                    s for s in signals
+                    if (s.get("confidence") or 0) >= (
+                        _MIN_CONFIDENCE_SHORT if s.get("direction") == "short" else _MIN_CONFIDENCE_LONG
+                    )
+                ]
                 llm_signals = sorted(
                     eligible,
                     key=lambda x: (
                         0 if x["ticker"] in watchlist else 1,  # watched first
                         -(x.get("confidence") or 0),
                     )
-                )
+                )[:_MAX_LLM_TICKERS]
 
                 provider, model, api_key = _get_llm_config()
                 llm_by_ticker: dict[str, dict] = {}
                 total_prompt_tokens = 0
                 total_completion_tokens = 0
 
+                session_note = (
+                    "NOTE: Equity markets (stocks, ETFs, cash indices) are CLOSED. "
+                    "Only crypto (-USD), FX (=X), and CME futures (=F) are actively trading. "
+                    "Deprioritize or skip equity signals; focus analysis on the open markets.\n\n"
+                ) if state == "partial_24h" else ""
                 context_prefix = (
                     f"Market session: {state}\n"
                     f"Regime: {regime_summary}\n\n"
+                    f"{session_note}"
                     f"Recent news:\n{news_text}\n\n"
                 )
 
@@ -545,9 +578,15 @@ class StreamProcessor:
                 for s in signals
             ], indent=2)
 
+            session_note = (
+                "NOTE: Equity markets (stocks, ETFs, cash indices) are CLOSED. "
+                "Only crypto (-USD), FX (=X), and CME futures (=F) are actively trading. "
+                "Deprioritize or skip equity signals; focus analysis on the open markets.\n\n"
+            ) if state == "partial_24h" else ""
             user_msg = (
                 f"Market session: {state}\n"
                 f"Regime: {regime_summary}\n\n"
+                f"{session_note}"
                 f"BREAKING NEWS (triggered this analysis):\n{headline}\n\n"
                 f"Recent news context:\n{news_text}\n\n"
                 f"Math-generated signals for affected tickers only:\n{signals_text}\n\n"

@@ -71,7 +71,7 @@ def simulate_outcome(
                 # Both hit same bar — conservative: check if open gapped below SL
                 if bar_open <= stop_loss:
                     closing = min(bar_open, stop_loss)
-                    pnl = _pnl_r(-1.0, entry_price, closing, stop_loss, risk)
+                    pnl = _pnl_r(-1.0, entry_price, closing, stop_loss, risk, direction)
                     return SimulatedOutcome("hit_sl", closing, bar_date, bars_held, pnl)
                 # Assume SL hit first (intraday wick down before rally)
                 return SimulatedOutcome("hit_sl", stop_loss, bar_date, bars_held, -1.0)
@@ -81,7 +81,7 @@ def simulate_outcome(
                     closing = bar_open
                 else:
                     closing = stop_loss  # normal intraday stop trigger
-                pnl = _pnl_r(-1.0, entry_price, closing, stop_loss, risk)
+                pnl = _pnl_r(-1.0, entry_price, closing, stop_loss, risk, direction)
                 return SimulatedOutcome("hit_sl", closing, bar_date, bars_held, pnl)
             elif tp_hit:
                 return SimulatedOutcome("hit_tp", take_profit, bar_date, bars_held, rr)
@@ -93,7 +93,7 @@ def simulate_outcome(
             if sl_hit and tp_hit:
                 if bar_open >= stop_loss:
                     closing = max(bar_open, stop_loss)
-                    pnl = _pnl_r(-1.0, entry_price, closing, stop_loss, risk)
+                    pnl = _pnl_r(-1.0, entry_price, closing, stop_loss, risk, direction)
                     return SimulatedOutcome("hit_sl", closing, bar_date, bars_held, pnl)
                 return SimulatedOutcome("hit_sl", stop_loss, bar_date, bars_held, -1.0)
             elif sl_hit:
@@ -102,7 +102,7 @@ def simulate_outcome(
                     closing = bar_open
                 else:
                     closing = stop_loss  # normal intraday stop trigger
-                pnl = _pnl_r(-1.0, entry_price, closing, stop_loss, risk)
+                pnl = _pnl_r(-1.0, entry_price, closing, stop_loss, risk, direction)
                 return SimulatedOutcome("hit_sl", closing, bar_date, bars_held, pnl)
             elif tp_hit:
                 return SimulatedOutcome("hit_tp", take_profit, bar_date, bars_held, rr)
@@ -127,12 +127,19 @@ def _pnl_r(
     actual_close: float,
     sl: float,
     risk: float,
+    direction: str = "long",
 ) -> float:
     """
     More precise P&L in R-multiples when actual closing price differs from exact SL level
     (e.g. gap past SL). Negative for losses.
+
+    Direction matters: for shorts the SL is above entry, so the sign must be flipped.
+    Without this, short SL hits are recorded as gains instead of losses.
     """
     if risk <= 0:
         return nominal_r
-    actual_r = (actual_close - entry) / risk
+    if direction == "long":
+        actual_r = (actual_close - entry) / risk
+    else:
+        actual_r = (entry - actual_close) / risk
     return round(actual_r, 4)

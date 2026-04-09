@@ -54,6 +54,18 @@ _DEFAULT_BLOCKLIST = frozenset({
     "WORLD", "SPACE", "SPAC", "SPDR", "RISK", "SWING", "TRACE", "WILL", "WONT", "WOULD",
     "PLACE", "ZONES", "WPSR", "TBPN", "VAT", "RFK", "RTHK", "RWA", "SUV", "TMGH",
     "POC", "POI", "PRZ", "SEN", "SFO", "XIV",
+    # Technical analysis indicator names (very common in financial news text)
+    "OBV", "RSI", "MACD", "ATR", "EMA", "SMA", "ADX", "CCI", "ROC", "MFI", "ADL",
+    "DMI", "PPO", "DPO", "CMO", "AROON", "STOCH", "TRIX", "KAMA", "DEMA", "TEMA",
+    "PSAR", "VWMA", "CHOP", "ULTI", "BBB", "WMA",
+    # Trade management abbreviations (TP/SL already common in news, SL was blocked but TP wasn't)
+    "TP", "RR", "RRR", "PNL", "PRL", "ENTRY", "EXIT", "STOP", "LIMIT", "TRAIL",
+    # Currency codes missing from original list (caused $AUD/$FX spam)
+    "AUD", "NZD", "CHF", "CNY", "CNH", "HKD", "SGD", "INR", "BRL", "RUB", "MXN",
+    "ZAR", "KRW", "TRY", "SEK", "NOK", "DKK", "PLN", "HUF", "CZK", "ILS", "THB",
+    "PHP", "IDR", "TWD", "SAR", "AED", "QAR", "KWD",
+    # Region / exchange abbreviations that yfinance can't resolve
+    "HK", "SS", "AT", "FX", "EM", "DM", "AP", "APAC", "EMEA", "LATAM",
 })
 
 
@@ -161,8 +173,9 @@ COMPANY_TO_TICKER: dict[str, str] = {
 # Regex patterns
 # ---------------------------------------------------------------------------
 
-# 2–5 letter all-caps word (standalone)
-TICKER_PATTERN = re.compile(r"\b([A-Z]{2,5})\b")
+# 3–5 letter all-caps word (standalone). Minimum 3 avoids 2-letter noise (HK, FX, AT, SS…).
+# Real 2-letter tickers (GE, BA, GM…) are caught by the company-name map in layer 1.
+TICKER_PATTERN = re.compile(r"\b([A-Z]{3,5})\b")
 
 # Multi-word proper nouns: sequences of 2–5 capitalized words.
 # Matches "Royal Bank of Canada", "Goldman Sachs", "Novo Nordisk" etc.

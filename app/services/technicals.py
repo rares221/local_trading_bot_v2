@@ -856,16 +856,22 @@ def build_snapshot(symbol: str) -> Optional[TechnicalSnapshot]:
 # ATR + S/R aware SL/TP
 # ---------------------------------------------------------------------------
 
+# (sl_mult, tp_mult) for long trades
 ATR_MULTIPLIERS = {
-    "conservative": (1.5, 2.5),
-    "moderate":     (2.0, 3.5),
-    "aggressive":   (3.0, 5.0),
+    "conservative": (1.5, 2.0),
+    "moderate":     (2.0, 2.5),
+    "aggressive":   (3.0, 4.0),
 }
 
+# Short SL gets extra room to survive counter-trend rallies (bear-market whipsaw).
+# Data: short SL hit rate 71.7% vs 60.9% for longs — widening SL reduces premature stops.
+# Short TP is kept tighter than old long TP for the same reason: closer target, more hits.
+SHORT_SL_EXTRA_MULT = 1.25   # short SL = long SL × 1.25  (moderate: 2.0 → 2.5× ATR)
+
 FALLBACK_SL_TP = {
-    "conservative": (0.015, 0.03),
-    "moderate":     (0.02, 0.04),
-    "aggressive":   (0.03, 0.06),
+    "conservative": (0.015, 0.025),
+    "moderate":     (0.02,  0.03),
+    "aggressive":   (0.03,  0.05),
 }
 
 
@@ -890,7 +896,7 @@ def compute_atr_levels(
         )
         atr = atr * vol_mult
         if direction == "short":
-            sl_base = price + atr * sl_mult
+            sl_base = price + atr * sl_mult * SHORT_SL_EXTRA_MULT
             tp_base = price - atr * tp_mult
         else:
             sl_base = price - atr * sl_mult
@@ -898,7 +904,7 @@ def compute_atr_levels(
     else:
         sl_pct, tp_pct = FALLBACK_SL_TP.get(risk_tier, FALLBACK_SL_TP["moderate"])
         if direction == "short":
-            sl_base = price * (1 + sl_pct)
+            sl_base = price * (1 + sl_pct * SHORT_SL_EXTRA_MULT)
             tp_base = price * (1 - tp_pct)
         else:
             sl_base = price * (1 - sl_pct)
@@ -928,14 +934,12 @@ def compute_atr_levels(
                 tp = snapshot.vah * 0.998
 
         else:  # short
-            # SL: prefer nearest HVN above or VAH
+            # SL: only snap to HVN/VAH that is ABOVE sl_base (widens stop to natural resistance).
+            # Do NOT snap to closer HVNs — tightening a short stop increases whipsaw risk.
             for vp_anchor in [snapshot.nearest_hvn_above(), snapshot.vah]:
-                if vp_anchor and vp_anchor > price:
-                    vp_sl = vp_anchor * 1.002
-                    max_sl_dist = price * 1.005
-                    if sl_base > vp_sl > max_sl_dist:
-                        sl = vp_sl
-                        break
+                if vp_anchor and vp_anchor > sl_base:
+                    sl = vp_anchor * 1.002
+                    break
 
             # TP: avoid placing TP inside an HVN below
             hvn_below = snapshot.nearest_hvn_below()
