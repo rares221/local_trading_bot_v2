@@ -33,6 +33,9 @@ def _setup_app_logging() -> None:
         "app.services.recommendations.engine",
         "app.jobs.scheduler",
         "app.services.technicals",
+        "app.live_trading.live_analyzer",
+        "app.live_trading.live_confidence",
+        "app.live_trading.stream_processor",
         "scripts.migrate_sqlite_to_pg",
     ):
         log = logging.getLogger(name)

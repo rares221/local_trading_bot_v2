@@ -96,7 +96,8 @@
     .bt-subtitle { font-size:12px;color:rgba(248,250,252,.4); }
     .bt-close { width:30px;height:30px;border-radius:6px;background:rgba(255,255,255,.07);border:none;color:rgba(248,250,252,.5);font-size:18px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:background .15s; }
     .bt-close:hover { background:rgba(255,255,255,.14);color:#f8fafc; }
-    .bt-body { padding:20px 24px 24px;overflow-y:auto;flex:1; }
+    .bt-body { padding:20px 24px 24px;overflow-y:auto;flex:1;scrollbar-width:none; }
+    .bt-body::-webkit-scrollbar { display:none; }
     .bt-loading { display:flex;flex-direction:column;align-items:center;gap:14px;padding:32px 0; }
     .bt-spinner { width:32px;height:32px;border-radius:50%;border:3px solid rgba(99,102,241,.2);border-top-color:#6366f1;animation:bt-spin .8s linear infinite; }
     @keyframes bt-spin { to { transform:rotate(360deg); } }
@@ -174,7 +175,9 @@
     .cat-tabs {
       display: flex; gap: 3px; padding: var(--space-2) var(--space-3) 0;
       border-bottom: 1px solid var(--border); overflow-x: auto;
+      scrollbar-width: none;
     }
+    .cat-tabs::-webkit-scrollbar { display: none; }
     .cat-tab {
       padding: 8px 16px; font-size: 13px; font-weight: 500; border: none;
       background: transparent; color: var(--muted-foreground); cursor: pointer;
@@ -237,7 +240,9 @@
     .news-panel {
       border-top: 1px solid var(--border);
       max-height: 200px; overflow-y: auto;
+      scrollbar-width: none;
     }
+    .news-panel::-webkit-scrollbar { display: none; }
     .news-panel-header {
       display: flex; align-items: center; gap: var(--space-1);
       padding: 8px var(--space-3); border-bottom: 1px solid var(--border);
@@ -406,7 +411,7 @@
 
   <!-- Universe info modal -->
   <div id="universeModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:300;align-items:center;justify-content:center;">
-    <div class="card" style="width:520px;max-width:calc(100vw - 32px);max-height:80vh;overflow-y:auto;">
+    <div class="card" style="width:520px;max-width:calc(100vw - 32px);max-height:80vh;overflow-y:auto;scrollbar-width:none;">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:var(--space-2);">
         <h3 class="section-title" style="margin:0;">Asset Universe</h3>
         <button class="btn btn--secondary btn-sm" id="btnUniverseClose"><span data-icon="x"></span></button>
@@ -421,7 +426,7 @@
 
   <!-- Trade history modal placeholder -->
   <div id="historyModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:300;align-items:center;justify-content:center;">
-    <div class="card" style="width:600px;max-width:calc(100vw - 32px);max-height:80vh;overflow-y:auto;">
+    <div class="card" style="width:600px;max-width:calc(100vw - 32px);max-height:80vh;overflow-y:auto;scrollbar-width:none;">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:var(--space-2);">
         <h3 class="section-title" style="margin:0;" id="historyTitle">Trade History</h3>
         <button class="btn btn--secondary btn-sm" id="btnHistoryClose" onclick="document.getElementById('historyModal').style.display='none'"><span data-icon="x"></span></button>

@@ -597,8 +597,9 @@ def compute_volume_profile(
     if len(tail) < 10:
         return None
 
-    # Drop zero-volume bars (halts, data gaps)
+    # Drop zero-volume bars and rows with NaN price data (halts, data gaps)
     tail = tail[tail["Volume"] > 0]
+    tail = tail.dropna(subset=["High", "Low", "Close", "Volume"])
     if tail.empty:
         return None
 
@@ -720,7 +721,7 @@ def build_snapshot(symbol: str) -> Optional[TechnicalSnapshot]:
         return None
 
     price = float(df["Close"].iloc[-1])
-    if price <= 0:
+    if not price or not (price > 0):
         return None
 
     atr = calc_atr(df)

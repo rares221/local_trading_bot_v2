@@ -192,6 +192,7 @@ def _compute_signal_sync(
     sentiment_avg: float,
     sentiment_count: int,
     regime: str,
+    backtest_stats: dict | None = None,
 ) -> dict | None:
     """
     Blocking computation of a full math signal for one asset.
@@ -245,12 +246,17 @@ def _compute_signal_sync(
         math_tp = round(snap.price * (1 + 0.03 * mult), 4)
 
     try:
-        confidence = compute_confidence(
+        from app.live_trading.live_confidence import compute_live_confidence
+        indicator_score = compute_confidence(
             sentiment_avg=sentiment_avg if sentiment_count > 0 else None,
             sentiment_count=sentiment_count,
             snapshot=snap,
             direction=direction,
             regime=regime,
+        )
+        confidence = compute_live_confidence(
+            backtest_stats=backtest_stats,
+            indicator_score=indicator_score,
         )
     except Exception:
         confidence = 50
@@ -318,18 +324,32 @@ async def build_all_signals(min_confidence: int = 10) -> list[dict]:
 
     logger.info("[LIVE_ANALYZER] Universe: %d assets, regime=%s", len(universe), regime)
 
+    # Pre-fetch backtest win rates for all symbols (async, before threads)
+    from app.live_trading.live_confidence import fetch_backtest_stats
+    all_symbols = [yf_symbol for _, yf_symbol, _, _ in universe]
+    backtest_stats_map = await fetch_backtest_stats(all_symbols)
+    logger.info(
+        "[LIVE_ANALYZER] Backtest stats available for %d/%d symbols",
+        len(backtest_stats_map), len(all_symbols),
+    )
+
     # Build signals in parallel
+    import functools
     tasks = []
     for asset_id, yf_symbol, risk_tier, category in universe:
         tag_info = sentiment_data.get(asset_id) or sentiment_data.get(yf_symbol) or {}
         sentiment_avg   = float(tag_info.get("avg", 0.0))
         sentiment_count = int(tag_info.get("count", 0))
+        stats = backtest_stats_map.get(yf_symbol)
 
         tasks.append(loop.run_in_executor(
             _snap_executor,
-            _compute_signal_sync,
-            asset_id, yf_symbol, risk_tier, category,
-            sentiment_avg, sentiment_count, regime,
+            functools.partial(
+                _compute_signal_sync,
+                asset_id, yf_symbol, risk_tier, category,
+                sentiment_avg, sentiment_count, regime,
+                stats,
+            ),
         ))
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
