@@ -702,6 +702,52 @@ async def job_cleanup_feed_items() -> None:
         await session.commit()
 
 
+async def job_refresh_backtest_stats() -> None:
+    """
+    Run a full backtest for all base universe symbols (last 3 years).
+    Runs on startup and weekly (Sunday 05:00) to keep backtest_trades
+    up-to-date so live confidence scores are statistically grounded.
+    """
+    import json as _json
+    from app.live_trading.live_analyzer import _BASE_UNIVERSE
+    from app.api.backtest_routes import _run_backtest_background, BacktestRequest
+    from app.models.backtest import BacktestRun
+
+    base_symbols = [yf for _, yf, _, _ in _BASE_UNIVERSE]
+    end = date.today()
+    start = end - timedelta(days=3 * 365)
+
+    try:
+        run_id = str(uuid4())
+        run = BacktestRun(
+            id=run_id,
+            created_at=datetime.now(timezone.utc),
+            start_date=start,
+            end_date=end,
+            symbols_json=_json.dumps(base_symbols),
+            risk_tier="moderate",
+            min_confidence=30,
+            status="running",
+        )
+        async with async_session_factory() as session:
+            session.add(run)
+            await session.commit()
+
+        body = BacktestRequest(
+            start_date=start.isoformat(),
+            end_date=end.isoformat(),
+            symbols=base_symbols,
+            risk_tier="moderate",
+            min_confidence=30,
+            period="3y",
+        )
+        asyncio.create_task(_run_backtest_background(run_id, body))
+        print(f"[BACKTEST_STATS] Auto-backtest started run_id={run_id} for {len(base_symbols)} symbols")
+
+    except Exception as exc:
+        print(f"[BACKTEST_STATS] Failed (non-fatal): {exc}")
+
+
 def start_scheduler() -> AsyncIOScheduler:
     """Schedule jobs."""
     scheduler = AsyncIOScheduler()
@@ -752,6 +798,21 @@ def start_scheduler() -> AsyncIOScheduler:
         hour=6,
         minute=0,
         id="build_hallucination_profile",
+    )
+    # Backtest stats: run 60s after startup, then every Sunday at 05:00
+    scheduler.add_job(
+        job_refresh_backtest_stats,
+        "date",
+        run_date=datetime.now(timezone.utc) + timedelta(seconds=60),
+        id="backtest_stats_startup",
+    )
+    scheduler.add_job(
+        job_refresh_backtest_stats,
+        "cron",
+        day_of_week="sun",
+        hour=5,
+        minute=0,
+        id="backtest_stats_weekly",
     )
     scheduler.start()
     return scheduler

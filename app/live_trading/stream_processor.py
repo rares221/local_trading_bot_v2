@@ -133,8 +133,8 @@ async def _call_llm(system: str, user: str, provider: str, model: str, api_key: 
                 headers={"Authorization": "Bearer lm-studio"},
                 json={"model": model, "messages": [
                     {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ], "max_tokens": 2048},
+                    {"role": "user", "content": "/no_think\n" + user},
+                ], "max_tokens": 4096},
                 timeout=600,
             )
             resp.raise_for_status()
@@ -180,9 +180,9 @@ def _compress_news(news_items: list[dict]) -> str:
 # ── LLM prompts ───────────────────────────────────────────────────────────────
 
 _ANALYSIS_SYSTEM = """\
-You are a senior quantitative trader. You receive math-generated trading signals
+You are a senior quantitative trader. You receive a single math-generated trading signal
 (direction, entry, ATR-based SL/TP, confidence score). Your job is to analyze
-each signal in the context of current news and market regime, and return:
+it in the context of current news and market regime, and return:
 
   trade_type : "scalp" (<4h), "intraday" (same day), or "swing" (2-5 days)
   rationale  : 1-2 sentences — WHY this trade makes sense given news + regime
@@ -192,16 +192,12 @@ each signal in the context of current news and market regime, and return:
 
 Return ONLY valid JSON (no markdown, no extra text):
 {
-  "analyses": [
-    {
-      "ticker": "GC=F",
-      "trade_type": "swing",
-      "rationale": "Gold bid as safe haven...",
-      "llm_sl": 4760.0,
-      "llm_tp": 4920.0,
-      "catalysts": ["safe_haven_demand", "risk_off_regime"]
-    }
-  ]
+  "ticker": "GC=F",
+  "trade_type": "swing",
+  "rationale": "Gold bid as safe haven...",
+  "llm_sl": 4760.0,
+  "llm_tp": 4920.0,
+  "catalysts": ["safe_haven_demand", "risk_off_regime"]
 }"""
 
 _TICKER_WATCH_SYSTEM = """\
@@ -303,53 +299,65 @@ class StreamProcessor:
                     await ws_manager.broadcast({"type": "analysis_error", "run_id": run_id, "error": "No signals above confidence threshold"})
                     return None
 
-                # ── Step 2: Fetch news context ────────────────────────────────
+                # ── Step 2: Fetch news + regime context ───────────────────────
                 news_items = await self._fetch_recent_news(limit=50)
                 news_text = _compress_news(news_items)
-
                 regime_summary = await asyncio.to_thread(self._get_regime_summary)
-                prices = self._engine.latest_prices if self._engine else {}
 
-                # ── Step 3: LLM analysis prompt ───────────────────────────────
-                # Only analyze signals that will be displayed (confidence >= 40%)
+                # ── Step 3: Per-ticker LLM analysis ──────────────────────────
+                # Priority: watched tickers first, then confidence >= 40%, sorted desc
+                watchlist = set(self._engine.watchlist if self._engine else [])
+                eligible = [s for s in signals if (s.get("confidence") or 0) >= 40]
                 llm_signals = sorted(
-                    [s for s in signals if (s.get("confidence") or 0) >= 40],
-                    key=lambda x: -(x.get("confidence") or 0)
-                )[:35]
-                signals_text = json.dumps([
-                    {
-                        "ticker":      s["ticker"],
-                        "category":    s["category"],
-                        "direction":   s["direction"],
-                        "entry_price": s["entry_price"],
-                        "math_sl":     s["math_sl"],
-                        "math_tp":     s["math_tp"],
-                        "confidence":  s["confidence"],
-                        "risk_reward": s["risk_reward"],
-                        "regime":      s["regime"],
-                    }
-                    for s in llm_signals
-                ], indent=2)
-
-                user_msg = (
-                    f"Market session: {state}\n"
-                    f"Regime: {regime_summary}\n\n"
-                    f"Recent news:\n{news_text}\n\n"
-                    f"Math-generated signals ({len(signals)} total):\n{signals_text}\n\n"
-                    "Analyze each signal above. For each ticker return: trade_type, rationale, llm_sl, llm_tp, catalysts."
+                    eligible,
+                    key=lambda x: (
+                        0 if x["ticker"] in watchlist else 1,  # watched first
+                        -(x.get("confidence") or 0),
+                    )
                 )
 
                 provider, model, api_key = _get_llm_config()
-                raw, prompt_tokens, completion_tokens = await _call_llm(
-                    _ANALYSIS_SYSTEM, user_msg, provider, model, api_key
+                llm_by_ticker: dict[str, dict] = {}
+                total_prompt_tokens = 0
+                total_completion_tokens = 0
+
+                context_prefix = (
+                    f"Market session: {state}\n"
+                    f"Regime: {regime_summary}\n\n"
+                    f"Recent news:\n{news_text}\n\n"
                 )
 
-                # ── Step 4: Parse LLM analyses ────────────────────────────────
-                llm_by_ticker = self._parse_analysis_response(raw)
-                cost = _estimate_cost(model, prompt_tokens, completion_tokens)
+                for sig in llm_signals:
+                    signal_text = json.dumps({
+                        "ticker":      sig["ticker"],
+                        "category":    sig["category"],
+                        "direction":   sig["direction"],
+                        "entry_price": sig["entry_price"],
+                        "math_sl":     sig["math_sl"],
+                        "math_tp":     sig["math_tp"],
+                        "confidence":  sig["confidence"],
+                        "risk_reward": sig["risk_reward"],
+                        "regime":      sig["regime"],
+                    })
+                    user_msg = context_prefix + f"Signal:\n{signal_text}"
 
-                # ── Step 5: Merge math + LLM (only signals >= 40% confidence) ──
-                eligible = [s for s in signals if (s.get("confidence") or 0) >= 40]
+                    try:
+                        raw, pt, ct = await _call_llm(_ANALYSIS_SYSTEM, user_msg, provider, model, api_key)
+                        total_prompt_tokens += pt
+                        total_completion_tokens += ct
+                        parsed = self._parse_single_analysis(raw)
+                        if parsed:
+                            llm_by_ticker[sig["ticker"]] = parsed
+                            logger.debug("[PROCESSOR] LLM ok: %s", sig["ticker"])
+                        else:
+                            logger.warning("[PROCESSOR] Parse failed for %s. Raw: %r", sig["ticker"], (raw or "")[:200])
+                    except Exception as exc:
+                        logger.warning("[PROCESSOR] LLM call failed for %s: %s", sig["ticker"], exc)
+
+                cost = _estimate_cost(model, total_prompt_tokens, total_completion_tokens)
+                raw = None  # no single raw for per-ticker mode
+
+                # ── Step 4: Merge math + LLM ──────────────────────────────────
                 merged = self._merge_signals_with_llm(eligible, llm_by_ticker)
 
                 # Group by category
@@ -376,8 +384,8 @@ class StreamProcessor:
                     market_session=state,
                     provider=provider,
                     model=model,
-                    prompt_tokens=prompt_tokens,
-                    completion_tokens=completion_tokens,
+                    prompt_tokens=total_prompt_tokens,
+                    completion_tokens=total_completion_tokens,
                     cost=cost,
                     raw=raw,
                     context=context_snapshot,
@@ -402,6 +410,21 @@ class StreamProcessor:
                 return None
             finally:
                 self._active_run_id = None
+
+    def _parse_single_analysis(self, raw: str | None) -> dict | None:
+        """Parse a single-ticker LLM response (flat JSON object, not wrapped in analyses array)."""
+        if not raw:
+            return None
+        raw = self._strip_thinking(raw)
+        try:
+            start = raw.index("{")
+            end = raw.rindex("}") + 1
+            data = json.loads(raw[start:end])
+            if isinstance(data, dict) and any(k in data for k in ("rationale", "llm_sl", "trade_type")):
+                return data
+        except Exception:
+            pass
+        return None
 
     # ── Targeted analysis (news → specific tickers) ───────────────────────────
 
@@ -666,7 +689,7 @@ class StreamProcessor:
                 end = raw.rindex("}") + 1
                 return _try_parse(raw[start:end])
             except Exception:
-                logger.warning("[PROCESSOR] Failed to parse LLM analysis response")
+                logger.warning("[PROCESSOR] Failed to parse LLM analysis response. Raw (first 500): %r", raw[:500])
                 return {}
 
     def _merge_signals_with_llm(self, signals: list[dict], llm_by_ticker: dict[str, dict]) -> list[dict]:

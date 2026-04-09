@@ -958,7 +958,12 @@ def compute_atr_levels(
             resistance = snapshot.nearest_resistance_above()
             if resistance is not None and resistance > price:
                 if resistance < tp_base:
-                    tp = resistance * 0.998
+                    snapped_tp = resistance * 0.998
+                    # Only snap if resulting R:R >= 1.0 — otherwise resistance is too close
+                    sl_dist = abs(price - sl)
+                    tp_dist = abs(snapped_tp - price)
+                    if sl_dist > 0 and tp_dist / sl_dist >= 1.0:
+                        tp = snapped_tp
         else:  # short
             resistance = snapshot.nearest_resistance_above()
             if resistance is not None and resistance > price:
@@ -972,7 +977,11 @@ def compute_atr_levels(
             support = snapshot.nearest_support_below()
             if support is not None and support < price:
                 if support > tp_base:
-                    tp = support * 1.002
+                    snapped_tp = support * 1.002
+                    sl_dist = abs(price - sl)
+                    tp_dist = abs(snapped_tp - price)
+                    if sl_dist > 0 and tp_dist / sl_dist >= 1.0:
+                        tp = snapped_tp
 
     return round(sl, 2), round(tp, 2)
 
