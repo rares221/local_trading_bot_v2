@@ -21,6 +21,9 @@ _DEFAULT_BLOCKLIST = frozenset({
     "NA", "NY", "LA", "DC", "HQ", "FY", "Q1", "Q2", "Q3", "Q4", "YTD", "R&D",
     "CNBC", "BBC", "NPR", "CNN", "FT", "WSJ", "USD", "EUR", "GBP", "JPY", "CAD",
     "LNG", "WTI", "Brent",
+    # Commodity terms — often news tags but clash with real tickers (e.g. GOLD→Barrick, OIL→various)
+    "GOLD", "SILVER", "CRUDE", "BRENT", "NATGAS", "COPPER", "WHEAT", "CORN", "IRON", "COAL",
+    "OPEX", "NGAS",
     "FTSE", "NYSE", "VIX", "SPX", "NDX", "DAX", "DJI", "DXY", "CPI", "XAU", "FOMC",
     "FVG", "ICT", "VWAP", "PIPS", "IFVG", "VASP",
     "USDT", "HBAR", "DOT",
