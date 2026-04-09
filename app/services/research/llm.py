@@ -328,7 +328,7 @@ def _get_api_key_for_provider(provider_id: str) -> str | None:
         return settings.anthropic_api_key
     if provider_id == "openrouter":
         return settings.openrouter_api_key
-    return None
+    return None  # ollama and lm_studio need no API key
 
 
 async def _call_openai(
@@ -336,6 +336,25 @@ async def _call_openai(
 ) -> str | None:
     from openai import AsyncOpenAI
     client = AsyncOpenAI(api_key=api_key)
+    response = await client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        max_tokens=max_tokens,
+    )
+    if response.choices and response.choices[0].message.content:
+        return response.choices[0].message.content.strip()
+    return None
+
+
+async def _call_lm_studio(
+    model: str, system: str, user: str, base_url: str, *, max_tokens: int = 200
+) -> str | None:
+    """Call a local LM Studio server using its OpenAI-compatible API."""
+    from openai import AsyncOpenAI
+    client = AsyncOpenAI(api_key="lm-studio", base_url=base_url)
     response = await client.chat.completions.create(
         model=model,
         messages=[
@@ -493,11 +512,10 @@ async def generate_correlation_analysis(diverging_signals: list[dict[str, Any]])
         return None
 
     cfg = get_research_llm_config()
-    provider_id = (cfg.get("research_llm_provider") or "openai").strip().lower()
+    provider_id = (cfg.get("research_llm_provider") or "").strip().lower()
     provider = get_provider_by_id(provider_id)
     if not provider:
-        provider_id = "openai"
-        provider = get_provider_by_id("openai")
+        return None
 
     api_key = _get_api_key_for_provider(provider_id)
     if not is_available(provider_id, api_key):
@@ -519,6 +537,7 @@ async def generate_correlation_analysis(diverging_signals: list[dict[str, Any]])
     user = "Unusual cross-asset correlations today:\n" + "\n".join(lines)
 
     ollama_base_url = (cfg.get("ollama_base_url") or "").strip() or (settings.ollama_base_url or "http://localhost:11434")
+    lm_studio_base_url = (cfg.get("lm_studio_base_url") or "").strip() or (settings.lm_studio_base_url or "http://localhost:1234/v1")
 
     try:
         if provider_id == "openai":
@@ -529,6 +548,8 @@ async def generate_correlation_analysis(diverging_signals: list[dict[str, Any]])
             return await _call_ollama(model, _CORRELATION_SYSTEM_PROMPT, user, ollama_base_url)
         if provider_id == "openrouter":
             return await _call_openrouter(model, _CORRELATION_SYSTEM_PROMPT, user, api_key or "")
+        if provider_id == "lm_studio":
+            return await _call_lm_studio(model, _CORRELATION_SYSTEM_PROMPT, user, lm_studio_base_url)
     except Exception as exc:
         import logging
         logging.getLogger(__name__).warning("Correlation LLM call failed (%s/%s): %s", provider_id, model, exc)
@@ -718,11 +739,10 @@ async def generate_rationale(context: dict[str, Any]) -> str | None:
     from app.services.research.validator import validate_rationale, MAX_RETRIES
 
     cfg = get_research_llm_config()
-    provider_id = (cfg.get("research_llm_provider") or "openai").strip().lower()
+    provider_id = (cfg.get("research_llm_provider") or "").strip().lower()
     provider = get_provider_by_id(provider_id)
     if not provider:
-        provider_id = "openai"
-        provider = get_provider_by_id("openai")
+        return None
 
     api_key = _get_api_key_for_provider(provider_id)
     if not is_available(provider_id, api_key):
@@ -733,6 +753,7 @@ async def generate_rationale(context: dict[str, Any]) -> str | None:
         return None
 
     ollama_base_url = (cfg.get("ollama_base_url") or "").strip() or (settings.ollama_base_url or "http://localhost:11434")
+    lm_studio_base_url = (cfg.get("lm_studio_base_url") or "").strip() or (settings.lm_studio_base_url or "http://localhost:1234/v1")
     thinking_budget = int(cfg.get("thinking_budget") or 0)
 
     # Select prompt template and version based on trade horizon
@@ -812,6 +833,8 @@ async def generate_rationale(context: dict[str, Any]) -> str | None:
                 )
             elif provider_id == "openrouter":
                 text = await _call_openrouter(model, system, user, api_key or "", max_tokens=400)
+            elif provider_id == "lm_studio":
+                text = await _call_lm_studio(model, system, user, lm_studio_base_url, max_tokens=400)
             else:
                 return None
         except Exception as exc:
@@ -867,11 +890,10 @@ async def generate_strategy_explanation(user_message: str) -> str | None:
     from app.core.preferences import get_research_llm_config
 
     cfg = get_research_llm_config()
-    provider_id = (cfg.get("research_llm_provider") or "openai").strip().lower()
+    provider_id = (cfg.get("research_llm_provider") or "").strip().lower()
     provider = get_provider_by_id(provider_id)
     if not provider:
-        provider_id = "openai"
-        provider = get_provider_by_id("openai")
+        return None
 
     api_key = _get_api_key_for_provider(provider_id)
     if not is_available(provider_id, api_key):
@@ -913,6 +935,10 @@ async def generate_strategy_explanation(user_message: str) -> str | None:
         if provider_id == "openrouter":
             return await _call_openrouter(
                 model, STRATEGY_EXPLAIN_SYSTEM, user_message, api_key or "", max_tokens=max_tok
+            )
+        if provider_id == "lm_studio":
+            return await _call_lm_studio(
+                model, STRATEGY_EXPLAIN_SYSTEM, user_message, lm_studio_base_url, max_tokens=max_tok
             )
     except Exception as exc:
         import logging
@@ -997,11 +1023,10 @@ async def generate_backtest_insight(
     from app.core.preferences import get_research_llm_config
 
     cfg = get_research_llm_config()
-    provider_id = (cfg.get("research_llm_provider") or "openai").strip().lower()
+    provider_id = (cfg.get("research_llm_provider") or "").strip().lower()
     provider = get_provider_by_id(provider_id)
     if not provider:
-        provider_id = "openai"
-        provider = get_provider_by_id("openai")
+        return None
 
     api_key = _get_api_key_for_provider(provider_id)
     if not is_available(provider_id, api_key):
@@ -1081,6 +1106,8 @@ async def generate_backtest_insight(
             raw = await _call_ollama(model, "", combined, ollama_base_url, num_predict=600, timeout=120.0)
         elif provider_id == "openrouter":
             raw = await _call_openrouter(model, _system, user_content, api_key or "", max_tokens=1200)
+        elif provider_id == "lm_studio":
+            raw = await _call_lm_studio(model, _system, user_content, lm_studio_base_url, max_tokens=1200)
         else:
             return None
     except Exception as exc:
@@ -1145,11 +1172,10 @@ async def generate_brief_narrative(
     from app.core.preferences import get_research_llm_config
 
     cfg = get_research_llm_config()
-    provider_id = (cfg.get("research_llm_provider") or "openai").strip().lower()
+    provider_id = (cfg.get("research_llm_provider") or "").strip().lower()
     provider = get_provider_by_id(provider_id)
     if not provider:
-        provider_id = "openai"
-        provider = get_provider_by_id("openai")
+        return None
 
     api_key = _get_api_key_for_provider(provider_id)
     if not is_available(provider_id, api_key):
@@ -1160,6 +1186,7 @@ async def generate_brief_narrative(
         return None
 
     ollama_base_url = (cfg.get("ollama_base_url") or "").strip() or (settings.ollama_base_url or "http://localhost:11434")
+    lm_studio_base_url = (cfg.get("lm_studio_base_url") or "").strip() or (settings.lm_studio_base_url or "http://localhost:1234/v1")
 
     # Build user message from checklist data
     from datetime import date
@@ -1202,6 +1229,8 @@ async def generate_brief_narrative(
             return await _call_ollama(model, "", combined, ollama_base_url, num_predict=200, timeout=90.0)
         if provider_id == "openrouter":
             return await _call_openrouter(model, _BRIEF_NARRATIVE_SYSTEM, user, api_key or "", max_tokens=250)
+        if provider_id == "lm_studio":
+            return await _call_lm_studio(model, _BRIEF_NARRATIVE_SYSTEM, user, lm_studio_base_url, max_tokens=250)
     except Exception as exc:
         _logger.warning("Brief narrative LLM call failed (%s/%s): %s", provider_id, model, exc)
     return None
@@ -1233,11 +1262,10 @@ async def generate_gap_advice(context: dict[str, Any]) -> str | None:
     from app.core.preferences import get_research_llm_config
 
     cfg = get_research_llm_config()
-    provider_id = (cfg.get("research_llm_provider") or "openai").strip().lower()
+    provider_id = (cfg.get("research_llm_provider") or "").strip().lower()
     provider = get_provider_by_id(provider_id)
     if not provider:
-        provider_id = "openai"
-        provider = get_provider_by_id("openai")
+        return None
 
     api_key = _get_api_key_for_provider(provider_id)
     if not is_available(provider_id, api_key):
@@ -1291,6 +1319,7 @@ async def generate_gap_advice(context: dict[str, Any]) -> str | None:
     user_content = " ".join(parts) + "\n\nWhat should the trader do about gap risk on this position?"
 
     ollama_base_url = (cfg.get("ollama_base_url") or "").strip() or (settings.ollama_base_url or "http://localhost:11434")
+    lm_studio_base_url = (cfg.get("lm_studio_base_url") or "").strip() or (settings.lm_studio_base_url or "http://localhost:1234/v1")
 
     # Read thinking budget from config — same source as all other prompts.
     # Output for gap advice is short (~25 words), so 150 tokens is a generous buffer.
@@ -1318,6 +1347,8 @@ async def generate_gap_advice(context: dict[str, Any]) -> str | None:
                 text = await _call_ollama(model, "", combined, ollama_base_url, num_predict=60, timeout=60.0)
             elif provider_id == "openrouter":
                 text = await _call_openrouter(model, _GAP_ADVICE_SYSTEM, user_msg, api_key or "", max_tokens=100)
+            elif provider_id == "lm_studio":
+                text = await _call_lm_studio(model, _GAP_ADVICE_SYSTEM, user_msg, lm_studio_base_url, max_tokens=100)
             else:
                 text = None
         except Exception as exc:

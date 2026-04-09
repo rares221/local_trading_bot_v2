@@ -94,12 +94,12 @@ async def list_research_providers() -> dict[str, Any]:
         for p in PROVIDERS
     ]
     model = (settings.research_llm_model or "").strip()
-    p = get_provider_by_id(settings.research_llm_provider or "openai")
+    p = get_provider_by_id(settings.research_llm_provider or "")
     if p and not model:
         model = p.default_model
     return _with_disclaimer({
         "providers": providers,
-        "current": {"provider": settings.research_llm_provider or "openai", "model": model or ""},
+        "current": {"provider": settings.research_llm_provider or "", "model": model or ""},
     })
 
 
@@ -1555,6 +1555,7 @@ class PreferencesUpdate(BaseModel):
     research_llm_provider: str | None = None
     research_llm_model: str | None = None
     ollama_base_url: str | None = None
+    lm_studio_base_url: str | None = None
     research_llm_thinking_budget: int | None = None  # 0 = disabled; max depends on provider (Anthropic: up to 32000)
     risk_budget_1r: float | None = None
     sentiment_half_life_hours: float | None = None
@@ -1588,12 +1589,14 @@ async def update_preferences(body: PreferencesUpdate) -> dict[str, Any]:
             body.research_llm_provider is not None
             or body.research_llm_model is not None
             or body.ollama_base_url is not None
+            or body.lm_studio_base_url is not None
             or body.research_llm_thinking_budget is not None
         ):
             set_research_llm_config(
                 provider=body.research_llm_provider,
                 model=body.research_llm_model,
                 ollama_base_url=body.ollama_base_url,
+                lm_studio_base_url=body.lm_studio_base_url,
                 thinking_budget=body.research_llm_thinking_budget,
             )
         if body.risk_budget_1r is not None:

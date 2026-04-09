@@ -50,6 +50,13 @@ PROVIDERS: list[ProviderDef] = [
         default_model="openai/gpt-4o-mini",
         max_thinking_budget=0,  # depends on routed model; not enforced here
     ),
+    ProviderDef(
+        id="lm_studio",
+        display_name="LM Studio (Local)",
+        api_key_env_var=None,   # no API key needed
+        default_model="",       # user specifies the loaded model
+        max_thinking_budget=0,
+    ),
 ]
 
 

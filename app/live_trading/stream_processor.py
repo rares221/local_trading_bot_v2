@@ -47,8 +47,8 @@ def _get_llm_config() -> tuple[str, str, str | None]:
     from app.core.preferences import get_research_llm_config
     from app.core.config import settings
     cfg = get_research_llm_config()
-    provider = cfg.get("provider") or settings.research_llm_provider or "anthropic"
-    model = cfg.get("model") or ""
+    provider = cfg.get("research_llm_provider") or settings.research_llm_provider or ""
+    model = cfg.get("research_llm_model") or ""
     if not model:
         from app.services.research.providers import get_provider_by_id
         p = get_provider_by_id(provider)
@@ -115,6 +115,26 @@ async def _call_llm(system: str, user: str, provider: str, model: str, api_key: 
                     {"role": "user", "content": user},
                 ], "max_tokens": 8192},
                 timeout=180,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            u = data.get("usage", {})
+            return data["choices"][0]["message"]["content"], u.get("prompt_tokens", 0), u.get("completion_tokens", 0)
+
+        elif provider == "lm_studio":
+            import requests
+            from app.core.config import settings as _s
+            from app.core.preferences import get_research_llm_config as _gcfg
+            _cfg = _gcfg()
+            base = (_cfg.get("lm_studio_base_url") or "").strip() or (getattr(_s, "lm_studio_base_url", None) or "http://localhost:1234/v1")
+            resp = requests.post(
+                f"{base}/chat/completions",
+                headers={"Authorization": "Bearer lm-studio"},
+                json={"model": model, "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ], "max_tokens": 2048},
+                timeout=600,
             )
             resp.raise_for_status()
             data = resp.json()

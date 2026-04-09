@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     preferred_risk: str = "moderate"
 
     # Research / rationale (Option B): multi-provider LLM (Dexter-style).
-    research_llm_provider: str = "openai"   # openai | anthropic | ollama | openrouter
+    research_llm_provider: str = ""   # openai | anthropic | ollama | openrouter | lm_studio — must be set in .env
     research_llm_model: str = ""           # empty = use provider default (e.g. gpt-4o-mini, llama3.1)
     # Extended thinking for Anthropic models (0 = disabled). budget_tokens controls depth; max ~16000.
     research_llm_thinking_budget: int = 0
@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = None
     openrouter_api_key: str | None = None
     ollama_base_url: str = "http://localhost:11434"
+    lm_studio_base_url: str = "http://localhost:1234/v1"  # LM_STUDIO_BASE_URL env var
 
     # Ticker resolution: exchange preference and cache TTL.
     # Comma-separated Yahoo Finance exchange codes, ordered by preference.

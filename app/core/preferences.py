@@ -8,7 +8,7 @@ from typing import Any
 from app.core.config import settings
 
 VALID_RISK = frozenset({"conservative", "moderate", "aggressive"})
-VALID_LLM_PROVIDERS = frozenset({"openai", "anthropic", "ollama", "openrouter"})
+VALID_LLM_PROVIDERS = frozenset({"openai", "anthropic", "ollama", "openrouter", "lm_studio"})
 
 
 def _prefs_path() -> Path:
@@ -55,11 +55,10 @@ def get_research_llm_config() -> dict[str, Any]:
     data = _load_prefs()
     provider = (data.get("research_llm_provider") or "").strip().lower()
     if provider not in VALID_LLM_PROVIDERS:
-        provider = (settings.research_llm_provider or "openai").strip().lower()
-        if provider not in VALID_LLM_PROVIDERS:
-            provider = "openai"
+        provider = (settings.research_llm_provider or "").strip().lower()
     model = (data.get("research_llm_model") or "").strip() or (settings.research_llm_model or "").strip()
     ollama_base_url = (data.get("ollama_base_url") or "").strip() or (settings.ollama_base_url or "http://localhost:11434").strip()
+    lm_studio_base_url = (data.get("lm_studio_base_url") or "").strip() or (settings.lm_studio_base_url or "http://localhost:1234/v1").strip()
     try:
         thinking_budget = int(data.get("research_llm_thinking_budget", settings.research_llm_thinking_budget or 0))
     except (TypeError, ValueError):
@@ -79,6 +78,7 @@ def get_research_llm_config() -> dict[str, Any]:
         "research_llm_provider": provider,
         "research_llm_model": model,
         "ollama_base_url": ollama_base_url,
+        "lm_studio_base_url": lm_studio_base_url,
         "thinking_budget": thinking_budget,
         "thinking_budget_max": max_budget,  # provider ceiling — use for UI slider / validation
     }
@@ -88,6 +88,7 @@ def set_research_llm_config(
     provider: str | None = None,
     model: str | None = None,
     ollama_base_url: str | None = None,
+    lm_studio_base_url: str | None = None,
     thinking_budget: int | None = None,
 ) -> dict[str, Any]:
     """Save research LLM preferences. Omit a key to leave unchanged. Returns current full config."""
@@ -96,14 +97,16 @@ def set_research_llm_config(
         p = provider.strip().lower()
         if p and p not in VALID_LLM_PROVIDERS:
             raise ValueError(f"research_llm_provider must be one of: {sorted(VALID_LLM_PROVIDERS)}")
-        data["research_llm_provider"] = p or data.get("research_llm_provider", settings.research_llm_provider or "openai")
+        data["research_llm_provider"] = p or data.get("research_llm_provider", settings.research_llm_provider or "")
     if model is not None:
         data["research_llm_model"] = model.strip()
     if ollama_base_url is not None:
         data["ollama_base_url"] = ollama_base_url.strip() or "http://localhost:11434"
+    if lm_studio_base_url is not None:
+        data["lm_studio_base_url"] = lm_studio_base_url.strip() or "http://localhost:1234/v1"
     if thinking_budget is not None:
         # Clamp to provider max before persisting.
-        resolved_provider = data.get("research_llm_provider") or settings.research_llm_provider or "openai"
+        resolved_provider = data.get("research_llm_provider") or settings.research_llm_provider or ""
         try:
             from app.services.research.providers import clamp_thinking_budget
             thinking_budget = clamp_thinking_budget(resolved_provider, thinking_budget)

@@ -642,6 +642,7 @@
         <p class="meta mb-2">The LLM generates research rationales for each recommendation. Choose a provider and model below.</p>
         <div class="flex gap-2 mb-2" style="flex-wrap:wrap;" id="llm-provider-btns">
           <button type="button" class="btn btn--secondary llm-provider-btn" data-provider="ollama"><span data-icon="server"></span> Ollama (local)</button>
+          <button type="button" class="btn btn--secondary llm-provider-btn" data-provider="lm_studio"><span data-icon="server"></span> LM Studio (local)</button>
           <button type="button" class="btn btn--secondary llm-provider-btn" data-provider="openai"><span data-icon="bot"></span> OpenAI</button>
           <button type="button" class="btn btn--secondary llm-provider-btn" data-provider="anthropic"><span data-icon="bot"></span> Anthropic</button>
           <button type="button" class="btn btn--secondary llm-provider-btn" data-provider="openrouter"><span data-icon="bot"></span> OpenRouter</button>
@@ -652,6 +653,12 @@
             <input type="text" id="ollama-url" class="input" placeholder="http://localhost:11434">
             <label for="ollama-model" class="mt-1">Model</label>
             <input type="text" id="ollama-model" class="input" placeholder="e.g. llama3.1, gemma3:1b">
+          </div>
+          <div class="form-group" id="llm-lmstudio-fields">
+            <label for="lmstudio-url">LM Studio URL</label>
+            <input type="text" id="lmstudio-url" class="input" placeholder="http://10.100.10.30:1234/v1">
+            <label for="lmstudio-model" class="mt-1">Model</label>
+            <input type="text" id="lmstudio-model" class="input" placeholder="e.g. qwen/qwen3-8b:2">
           </div>
           <div class="form-group" id="llm-model-group">
             <label for="llm-model">Model</label>
@@ -1437,6 +1444,7 @@
     const ollamaFields = document.getElementById('llm-ollama-fields');
     const modelGroup = document.getElementById('llm-model-group');
     let curProvider = 'openai';
+    const lmStudioFields = document.getElementById('llm-lmstudio-fields');
     function setProvider(p) {
       curProvider = p;
       provBtns.forEach(b => {
@@ -1445,14 +1453,17 @@
         b.classList.toggle('btn--secondary', !match);
       });
       ollamaFields.style.display = p === 'ollama' ? 'block' : 'none';
-      modelGroup.style.display = p === 'ollama' ? 'none' : 'block';
+      lmStudioFields.style.display = p === 'lm_studio' ? 'block' : 'none';
+      modelGroup.style.display = (p === 'ollama' || p === 'lm_studio') ? 'none' : 'block';
     }
     fetch('/api/preferences').then(r=>r.json()).then(d => {
       const p = (d.research_llm_provider||'openai').toLowerCase();
       setProvider(p);
       document.getElementById('ollama-url').value = d.ollama_base_url || 'http://localhost:11434';
       document.getElementById('ollama-model').value = p==='ollama' ? (d.research_llm_model||'') : '';
-      document.getElementById('llm-model').value = p!=='ollama' ? (d.research_llm_model||'') : '';
+      document.getElementById('lmstudio-url').value = d.lm_studio_base_url || 'http://localhost:1234/v1';
+      document.getElementById('lmstudio-model').value = p==='lm_studio' ? (d.research_llm_model||'') : '';
+      document.getElementById('llm-model').value = (p!=='ollama'&&p!=='lm_studio') ? (d.research_llm_model||'') : '';
     }).catch(()=>{});
     provBtns.forEach(b => b.addEventListener('click', () => setProvider(b.dataset.provider)));
 
@@ -1462,6 +1473,9 @@
       if (curProvider === 'ollama') {
         body.ollama_base_url = document.getElementById('ollama-url').value.trim() || 'http://localhost:11434';
         body.research_llm_model = document.getElementById('ollama-model').value.trim();
+      } else if (curProvider === 'lm_studio') {
+        body.lm_studio_base_url = document.getElementById('lmstudio-url').value.trim() || 'http://localhost:1234/v1';
+        body.research_llm_model = document.getElementById('lmstudio-model').value.trim();
       } else {
         body.research_llm_model = document.getElementById('llm-model').value.trim();
       }
