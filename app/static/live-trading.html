@@ -196,7 +196,7 @@
 
     /* Recommendations grid */
     .recs-container { padding: var(--space-2) var(--space-3); }
-    .recs-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: var(--space-2); }
+    .recs-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: var(--space-2); }
     .rec-card {
       background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
       padding: var(--space-2); position: relative; transition: border-color .15s, box-shadow .15s;
@@ -219,7 +219,8 @@
     .rec-level-value--tp { color: var(--success-text); }
     /* Dual SL/TP (Math vs LLM) */
     .rec-levels-dual { margin: 8px 0; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
-    .rec-levels-row { display: grid; grid-template-columns: 80px 1fr 1fr; align-items: center; padding: 5px 8px; gap: 6px; }
+    .rec-levels-row { display: grid; grid-template-columns: 80px 1fr 1fr 52px; align-items: center; padding: 5px 8px; gap: 6px; }
+    .rec-level-value--days { color: #a78bfa; }
     .rec-levels-row:not(:last-child) { border-bottom: 1px solid var(--border); }
     .rec-levels-row:first-child { background: rgba(255,255,255,.02); }
     .rec-source-label { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; }
@@ -703,12 +704,13 @@
     // Filter out low-confidence tickers (below 40%) — watched tickers are always shown
     const filtered = items.filter(r => (r.confidence || 0) >= 40 || state.watchedTickers.has(r.ticker));
 
-    // Merge in any watched tickers not in current results (persisted from last analysis)
-    const watchedNotInResults = [...state.watchedTickers].filter(
-      t => !filtered.find(r => r.ticker === t)
-    );
+    // Merge in watched tickers not in the current category — look them up across all categories
+    const allRecs = Object.values(state.recommendations).flat();
+    const watchedExtras = [...state.watchedTickers]
+      .filter(t => !filtered.find(r => r.ticker === t))
+      .map(t => allRecs.find(r => r.ticker === t) || { ticker: t, asset_category: 'unknown', direction: 'long', confidence: null, _stub: true });
 
-    if (!filtered.length && !watchedNotInResults.length) {
+    if (!filtered.length && !watchedExtras.length) {
       grid.style.display = 'none';
       empty.style.display = 'flex';
       return;
@@ -717,7 +719,7 @@
     grid.style.display = 'grid';
 
     // Sort: watched first, then by confidence desc
-    const sorted = [...filtered].sort((a, b) => {
+    const sorted = [...filtered, ...watchedExtras].sort((a, b) => {
       const aW = state.watchedTickers.has(a.ticker) ? 1 : 0;
       const bW = state.watchedTickers.has(b.ticker) ? 1 : 0;
       if (bW !== aW) return bW - aW;
@@ -742,6 +744,27 @@
   };
 
   function recCardHTML(r) {
+    // Stub card: watched ticker with no current analysis data
+    if (r._stub) {
+      const liveP = state.prices[r.ticker];
+      const livePriceHtml = liveP
+        ? `<span style="color:${liveP.change_pct >= 0 ? 'var(--success-text)' : 'var(--error-text)'};">$${fmt(liveP.price)} (${liveP.change_pct >= 0 ? '+' : ''}${fmt(liveP.change_pct)}%)</span>`
+        : `<span style="color:var(--muted-foreground);">~ Delayed</span>`;
+      return `<div class="rec-card rec-card--watched" data-ticker="${r.ticker}">
+        <div class="rec-card-header">
+          <span class="rec-pin-badge">Watching</span>
+          <span style="font-size:1rem;font-weight:700;">${r.ticker}</span>
+          ${livePriceHtml}
+        </div>
+        <div class="rec-card-body" style="padding:12px;color:var(--muted-foreground);font-size:12px;">
+          No analysis data for this ticker in the latest run.
+        </div>
+        <div class="rec-card-actions" style="padding:0 10px 10px;">
+          <button class="btn btn-watch" data-ticker="${r.ticker}" data-category="${r.asset_category}" data-direction="long">Unwatch</button>
+        </div>
+      </div>`;
+    }
+
     const dir = r.direction || 'long';
     const isWatched = state.watchedTickers.has(r.ticker);
     const _cat = r.asset_category || r.category || '';
@@ -757,6 +780,8 @@
     // Dual SL/TP rows: Math (ATR-based) + LLM estimate
     const hasMath = r.stop_loss || r.take_profit;
     const hasLLM  = r.llm_stop_loss || r.llm_take_profit;
+    const mathDays = estDays(r.entry_price, r.take_profit, _cat);
+    const llmDays  = estDays(r.entry_price, r.llm_take_profit, _cat);
     const levelsHtml = `
       <div class="rec-levels-dual">
         <div class="rec-levels-row">
@@ -769,6 +794,10 @@
             <span class="rec-level-label">Take Profit</span>
             <span class="rec-level-value rec-level-value--tp">${r.take_profit ? '$' + fmt(r.take_profit) : '—'}</span>
           </div>
+          <div class="rec-level" data-tooltip="Estimated trading days to reach the take-profit target (based on typical daily volatility for this asset class)">
+            <span class="rec-level-label">ETA</span>
+            <span class="rec-level-value rec-level-value--days">${mathDays != null ? '~' + mathDays + 'd' : '—'}</span>
+          </div>
         </div>
         <div class="rec-levels-row">
           <span class="rec-source-label rec-source-label--llm" data-tooltip="LLM-adjusted levels based on news, regime and key price levels">✦ LLM</span>
@@ -779,6 +808,10 @@
           <div class="rec-level">
             <span class="rec-level-label">Take Profit</span>
             <span class="rec-level-value rec-level-value--tp">${r.llm_take_profit ? '$' + fmt(r.llm_take_profit) : '—'}</span>
+          </div>
+          <div class="rec-level" data-tooltip="Estimated trading days to reach the LLM take-profit target">
+            <span class="rec-level-label">ETA</span>
+            <span class="rec-level-value rec-level-value--days">${llmDays != null ? '~' + llmDays + 'd' : '—'}</span>
           </div>
         </div>
       </div>`;
@@ -809,7 +842,7 @@
           <span class="badge badge--blue" style="font-size:11px;" data-tooltip="Math-computed confidence from RSI/MACD/ADX/Stochastic/OBV/VP alignment">
             Conf ${r.confidence != null ? r.confidence + '%' : '—'}
           </span>
-          ${r.risk_reward ? `<span class="badge badge--gray" style="font-size:11px;">R:R ${fmt(r.risk_reward)}x</span>` : ''}
+          ${r.risk_reward ? (() => { const rr = parseFloat(r.risk_reward); const c = rr < 1 ? 'var(--error-text)' : rr <= 2 ? '#f59e0b' : '#4ade80'; return `<span class="badge badge--gray" style="font-size:11px;color:${c};border-color:${c}22;">R:R ${fmt(rr)}x</span>`; })() : ''}
           ${r.timeframe ? `<span class="badge badge--gray" style="font-size:11px;" data-tooltip="Trade type determined by LLM based on ATR%, volatility and session">${r.timeframe}</span>` : ''}
         </div>
         ${r.rationale
@@ -1377,6 +1410,16 @@
       const el = e.target.closest('[data-tooltip]');
       if (el) el.classList.remove('tooltip-visible');
     });
+  }
+
+  // Estimate trading days to reach take_profit from entry price
+  // Uses asset-class typical daily move; capped at 14 (prediction horizon)
+  function estDays(entry, tp, category) {
+    if (!entry || !tp) return null;
+    const pctMove = Math.abs(tp - entry) / entry * 100;
+    const dailyMoves = { crypto: 3, fx: 0.3, commodities: 1, stocks: 0.8, etfs: 0.5, indices: 0.5 };
+    const daily = dailyMoves[category] || 0.8;
+    return Math.min(Math.ceil(pctMove / daily), 14);
   }
 
   function fmt(n) {
