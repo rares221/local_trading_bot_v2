@@ -300,9 +300,12 @@ class StreamProcessor:
                     return None
 
                 # ── Step 2: Fetch news + regime context ───────────────────────
+                logger.info("[PROCESSOR] Fetching news…")
                 news_items = await self._fetch_recent_news(limit=50)
                 news_text = _compress_news(news_items)
+                logger.info("[PROCESSOR] Getting regime summary…")
                 regime_summary = await asyncio.to_thread(self._get_regime_summary)
+                logger.info("[PROCESSOR] Regime: %s", regime_summary)
 
                 # ── Step 3: Per-ticker LLM analysis ──────────────────────────
                 # Priority: watched tickers first, then confidence >= 40%, sorted desc
@@ -327,7 +330,9 @@ class StreamProcessor:
                     f"Recent news:\n{news_text}\n\n"
                 )
 
+                logger.info("[PROCESSOR] Starting per-ticker LLM loop: %d signals, provider=%s", len(llm_signals), provider)
                 for sig in llm_signals:
+                    logger.info("[PROCESSOR] Calling LLM for %s…", sig["ticker"])
                     signal_text = json.dumps({
                         "ticker":      sig["ticker"],
                         "category":    sig["category"],

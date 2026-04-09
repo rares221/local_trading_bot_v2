@@ -311,38 +311,36 @@ class DataStreamEngine:
         try:
             from app.core.database import AsyncSessionLocal
             from app.live_trading.models import LiveNewsItem
-            from sqlalchemy import select
-            from app.services.sentiment.ticker_detection import detect_tickers as tag_assets
+            from sqlalchemy.dialects.postgresql import insert as pg_insert
 
             now = datetime.now(timezone.utc)
-            async with AsyncSessionLocal() as session:
-                ids = [it["id"] for it in items]
-                result = await session.execute(
-                    select(LiveNewsItem.id).where(LiveNewsItem.id.in_(ids))
-                )
-                existing = {row[0] for row in result.fetchall()}
+            rows = []
+            for it in items:
+                text = (it.get("title") or "") + " " + (it.get("description") or "")
+                sentiment = float(_vader.polarity_scores(text).get("compound", 0.0))
+                try:
+                    from app.services.sentiment.ticker_detection import detect_tickers
+                    tags = await asyncio.to_thread(detect_tickers, text)
+                except Exception:
+                    tags = []
+                rows.append({
+                    "id": it["id"],
+                    "title": (it.get("title") or "")[:500],
+                    "link": (it.get("link") or "")[:2048],
+                    "published": it.get("published"),
+                    "fetched_at": now,
+                    "source": (it.get("source") or "")[:256],
+                    "category": (it.get("category") or "")[:64],
+                    "asset_tags": json.dumps(tags),
+                    "sentiment_score": sentiment,
+                })
 
-                for it in items:
-                    if it["id"] in existing:
-                        continue
-                    text = (it.get("title") or "") + " " + (it.get("description") or "")
-                    sentiment = float(_vader.polarity_scores(text).get("compound", 0.0))
-                    try:
-                        from app.services.sentiment.ticker_detection import detect_tickers
-                        tags = await asyncio.to_thread(detect_tickers, text)
-                    except Exception:
-                        tags = []
-                    session.add(LiveNewsItem(
-                        id=it["id"],
-                        title=(it.get("title") or "")[:500],
-                        link=(it.get("link") or "")[:2048],
-                        published=it.get("published"),
-                        fetched_at=now,
-                        source=(it.get("source") or "")[:256],
-                        category=(it.get("category") or "")[:64],
-                        asset_tags=json.dumps(tags),
-                        sentiment_score=sentiment,
-                    ))
+            if not rows:
+                return
+
+            async with AsyncSessionLocal() as session:
+                stmt = pg_insert(LiveNewsItem).values(rows).on_conflict_do_nothing(index_elements=["id"])
+                await session.execute(stmt)
                 await session.commit()
         except Exception as exc:
             logger.warning("[LIVE_ENGINE] Failed to save live news: %s", exc)
