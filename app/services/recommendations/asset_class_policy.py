@@ -66,7 +66,7 @@ _POLICY_STOCKS = AssetClassPolicy(
     news_boost_min_mentions=4,
     news_boost_min_abs_sentiment=0.12,
     news_boost_points=10,
-    sentiment_signal_scale=1.12,
+    sentiment_signal_scale=1.0,  # reduced from 1.12: sentiment was inflating scores into 60-69 bucket (25% win rate)
 )
 
 _POLICY_INDICES = AssetClassPolicy(
@@ -119,7 +119,7 @@ _POLICY_COMMODITIES = AssetClassPolicy(
 
 _POLICY_FX = AssetClassPolicy(
     key="other_fx",
-    min_confidence_offset=-2,
+    min_confidence_offset=20,  # raised from -2: FX/crypto consistently negative pnl_r in backtest
     equity_regime_adjustment_scale=0.35,
     cross_asset_divergence_scale=0.55,
     correlation_divergence_penalty_scale=0.65,
@@ -140,6 +140,7 @@ _POLICY_FX = AssetClassPolicy(
 
 _POLICY_CRYPTO = AssetClassPolicy(
     key="other_crypto",
+    min_confidence_offset=35,  # raised from 20: crypto at confidence 73 still 100% SL rate (3/3 trades)
     equity_regime_adjustment_scale=0.55,
     cross_asset_divergence_scale=0.75,
     correlation_divergence_penalty_scale=0.80,

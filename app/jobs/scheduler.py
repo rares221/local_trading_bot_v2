@@ -821,13 +821,13 @@ def start_scheduler() -> AsyncIOScheduler:
         minute=0,
         id="build_hallucination_profile",
     )
-    # Backtest stats: run 60s after startup, then every Sunday at 05:00
-    scheduler.add_job(
-        job_refresh_backtest_stats,
-        "date",
-        run_date=datetime.now(timezone.utc) + timedelta(seconds=60),
-        id="backtest_stats_startup",
-    )
+    # Backtest stats: startup auto-run DISABLED (manual backtest work in progress)
+    # scheduler.add_job(
+    #     job_refresh_backtest_stats,
+    #     "date",
+    #     run_date=datetime.now(timezone.utc) + timedelta(seconds=60),
+    #     id="backtest_stats_startup",
+    # )
     scheduler.add_job(
         job_refresh_backtest_stats,
         "cron",

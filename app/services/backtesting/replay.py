@@ -221,12 +221,23 @@ def _build_signal(
     from app.services.technicals import determine_direction as _determine_direction
     direction = _determine_direction(None, snap)
 
+    # EMA200 hard gate for shorts: mirror live engine behaviour.
+    # Do not short an asset that is above its 200-day EMA — structural upward bias
+    # in equities means these shorts overwhelmingly hit SL (confirmed by backtest data).
+    if direction == "short" and snap.ema200 is not None and snap.price > snap.ema200:
+        return None
+
     confidence = compute_confidence(
         sentiment_avg=hist_sentiment,
         sentiment_count=hist_count,
         snapshot=snap,
         direction=direction,
     )
+
+    # Short confidence premium: require stronger signal for shorts (mirrors engine gate).
+    # Backtest shows shorts win ~20-25% vs ~40% for longs — needs higher conviction bar.
+    if direction == "short":
+        confidence = max(0, confidence - 8)
 
     # Volume Profile walk-forward adjustments (same logic as live engine)
     # snap.vpoc is computed from OHLCV sliced to sim_date — fully walk-forward.
@@ -262,7 +273,35 @@ def _build_signal(
         except Exception:
             pass
 
-    if confidence < min_confidence:
+    # Per-category confidence gate: mirror the asset_class_policy offsets from the live engine.
+    # FX and crypto ("other") need a higher bar — confirmed negative pnl_r in backtests.
+    # Raised from +20 to +35: crypto at confidence 73 still hit 100% SL rate (3/3 trades).
+    effective_min_confidence = min_confidence
+    if category == "other":
+        effective_min_confidence += 35
+
+    # Stocks 60-69 confidence penalty: this band has 25% avg win rate — but the breakdown
+    # reveals it is entirely a volatility-regime problem:
+    #   contracting vol: 12.9% win rate, -0.685 pnl_r  ← catastrophic
+    #   expanding vol:   27.3% win rate, -0.674 pnl_r  ← very bad
+    #   stable vol:      50.0% win rate, +1.290 pnl_r  ← excellent, keep untouched
+    # Root cause: in contracting/expanding ATR environments, multiple indicators align
+    # mid-move (late momentum or false breakout) inflating confidence without a real edge.
+    if category == "stocks" and 60 <= confidence < 70:
+        if snap.volatility_regime in ("contracting", "expanding"):
+            confidence -= 15  # push most out of the 60-69 danger zone
+
+    # 50-59 stable vol penalty: both stocks and indices show negative/near-zero pnl_r
+    # in stable vol at low confidence — quiet drift market, weak signal = noise trade.
+    #   stocks 50-54 stable:  26.7% win rate, -0.246 pnl_r
+    #   stocks 55-59 stable:  22.2% win rate, -0.519 pnl_r
+    #   indices 50-54 stable: 37.2% win rate, +0.009 pnl_r (near-zero, remove noise)
+    #   indices 55-59 stable: 33.3% win rate, -0.251 pnl_r
+    if category in ("stocks", "indices") and 50 <= confidence < 60:
+        if snap.volatility_regime == "stable":
+            confidence -= 15
+
+    if confidence < effective_min_confidence:
         return None
 
     # SL/TP (VP-aware via compute_atr_levels — uses snap.hvn_levels/val/vah)

@@ -91,7 +91,7 @@ CONFLICT_SKIP_THRESHOLD = 25  # raised from 20 to allow more candidates through
 CORRELATION_THRESHOLD = 0.75
 
 # Minimum Risk:Reward ratio to include a recommendation (skip trades where reward doesn't justify risk).
-MIN_RISK_REWARD = 1.5
+MIN_RISK_REWARD = 1.2  # reduced 1.5→1.2: paired with SL widening 2.0→2.5×ATR to keep TP at ~3.0×ATR
 
 # Macro-day confidence penalty: see `MACRO_DAY_CONFIDENCE_PENALTY` in `app.services.macro_calendar`.
 
@@ -1041,6 +1041,12 @@ def _build_candidate(
         ):
             direction = "short"
 
+    # EMA200 hard gate for short trades: do not short an asset that is above its 200-day EMA.
+    # Structural market upward bias means shorting above EMA200 fights the macro trend —
+    # backtest confirmed 20% win rate for shorts overall; EMA200 is the strongest available filter.
+    if direction == "short" and snap and snap.ema200 is not None and snap.price > snap.ema200:
+        return None
+
     # ATR-based stop loss / take profit
     sl, tp = compute_atr_levels(price, risk_tier, snapshot=snap, direction=direction)
     eff_min_rr = max(1.0, min_rr_floor * 0.85) if ad_hoc else min_rr_floor
@@ -1156,6 +1162,26 @@ def _build_candidate(
             dxy_note = market_ctx.dxy_note_for_asset(category, asset_id, direction)
             if dxy_note:
                 regime_note = f"{regime_note}; {dxy_note}" if regime_note else dxy_note
+
+    # Stocks 60-69 vol-regime penalty: backtest confirms contracting/expanding vol in this
+    # confidence band produces catastrophic results (12.9% and 27.3% win rates, ~-0.68 pnl_r).
+    # Stable vol 60-69 stocks are excellent (+1.29 pnl_r) and must not be penalised.
+    if category == "stocks" and 60 <= confidence < 70 and snap is not None:
+        if snap.volatility_regime in ("contracting", "expanding"):
+            confidence = max(0, confidence - 15)
+            logger.debug(
+                "[ENGINE] %s: stocks 60-69 vol-regime penalty (regime=%s) → conf=%d",
+                asset_id, snap.volatility_regime, confidence,
+            )
+
+    # 50-59 stable vol penalty: stocks and indices both negative/near-zero pnl_r in quiet drift markets.
+    if category in ("stocks", "indices") and 50 <= confidence < 60 and snap is not None:
+        if snap.volatility_regime == "stable":
+            confidence = max(0, confidence - 15)
+            logger.debug(
+                "[ENGINE] %s: 50-59 stable-vol penalty (category=%s) → conf=%d",
+                asset_id, category, confidence,
+            )
 
     # Sentiment–price divergence: reduce confidence when sentiment and price move in opposite directions
     if _has_sentiment_divergence(category, asset_id, by_asset_sentiment):
@@ -1539,9 +1565,15 @@ def build_daily_candidates_for_category(
     )
 
     # Confidence gate: drop low-conviction candidates (threshold varies by asset class)
+    # Short trades require an additional +8 pts above the normal gate — backtest shows
+    # shorts win only 25% of the time vs 43% for longs; structural market upward bias
+    # means we need much stronger conviction before shorting.
+    _SHORT_CONFIDENCE_PREMIUM = 8
     _gated_ideas: list[Candidate] = []
     for c in idea_candidates:
         eff_min = _effective_min_confidence(category, c.asset_id, market_ctx)
+        if c.direction == "short":
+            eff_min += _SHORT_CONFIDENCE_PREMIUM
         if c.confidence_score >= eff_min:
             _gated_ideas.append(c)
         else:

@@ -422,6 +422,8 @@ class TechnicalSnapshot:
     lvn_levels: list[float] = field(default_factory=list)  # Low Volume Nodes (price moves fast here)
     vp_bias: str = "at_vpoc"             # "above_vpoc" | "below_vpoc" | "at_vpoc"
     vp_overextension: Optional[float] = None  # (price - vpoc) / (vah - val); >1.5 = overextended
+    # 200-day EMA: macro trend direction filter (price above = long bias, below = short bias)
+    ema200: Optional[float] = None
 
     @property
     def price_above_vwap(self) -> bool:
@@ -738,6 +740,14 @@ def build_snapshot(symbol: str) -> Optional[TechnicalSnapshot]:
     vwap = calc_vwap(df, period=20)
     vol_regime = calc_atr_regime(df, lookback=10)
 
+    # EMA200: needs at least 200 bars; gracefully None for shorter histories (e.g. recent IPOs)
+    ema200: Optional[float] = None
+    if len(df) >= 200:
+        try:
+            ema200 = float(df["Close"].ewm(span=200, adjust=False).mean().iloc[-1])
+        except Exception:
+            pass
+
     # Volume Profile (daily-bar approximation, 60-day lookback)
     vp = compute_volume_profile(df)
     vpoc = vp["vpoc"] if vp else None
@@ -849,6 +859,7 @@ def build_snapshot(symbol: str) -> Optional[TechnicalSnapshot]:
         lvn_levels=[round(l, 4) for l in lvn_levels],
         vp_bias=vp_bias,
         vp_overextension=_r(vp_overextension, 4) if vp_overextension is not None else None,
+        ema200=_r(ema200, 4) if ema200 is not None else None,
     )
 
 
@@ -859,14 +870,14 @@ def build_snapshot(symbol: str) -> Optional[TechnicalSnapshot]:
 # (sl_mult, tp_mult) for long trades
 ATR_MULTIPLIERS = {
     "conservative": (1.5, 2.0),
-    "moderate":     (2.0, 2.5),
-    "aggressive":   (3.0, 4.0),
+    "moderate":     (2.5, 2.5),  # SL widened 2.0→2.5: 52% of trades hit SL in 1-5 bars (noise stops)
+    "aggressive":   (3.0, 4.0),  # TP kept at 2.5; R:R floor reduced to 1.2 keeps TP at same ~3×ATR
 }
 
-# Short SL gets extra room to survive counter-trend rallies (bear-market whipsaw).
-# Data: short SL hit rate 71.7% vs 60.9% for longs — widening SL reduces premature stops.
-# Short TP is kept tighter than old long TP for the same reason: closer target, more hits.
-SHORT_SL_EXTRA_MULT = 1.25   # short SL = long SL × 1.25  (moderate: 2.0 → 2.5× ATR)
+# Short SL: previously 1.25× (wide) but that pushed TP to 3.75×ATR after R:R floor enforcement,
+# vs 3.0×ATR for longs. In an upward-biased market shorts couldn't reach TP → 71.7% SL hit rate.
+# Equalised to 1.0× so shorts and longs both need ~3×ATR to hit TP after the 1.5 R:R floor.
+SHORT_SL_EXTRA_MULT = 1.0    # short SL = long SL × 1.0  (moderate: 2.0× ATR, same as longs)
 
 FALLBACK_SL_TP = {
     "conservative": (0.015, 0.025),
@@ -891,16 +902,26 @@ def compute_atr_levels(
     if snapshot and snapshot.atr and snapshot.atr > 0:
         sl_mult, tp_mult = ATR_MULTIPLIERS.get(risk_tier, ATR_MULTIPLIERS["moderate"])
         atr = snapshot.atr
-        vol_mult = 1.1 if getattr(snapshot, "volatility_regime", "stable") == "contracting" else (
-            0.95 if getattr(snapshot, "volatility_regime", "stable") == "expanding" else 1.0
-        )
-        atr = atr * vol_mult
-        if direction == "short":
-            sl_base = price + atr * sl_mult * SHORT_SL_EXTRA_MULT
-            tp_base = price - atr * tp_mult
+        vol_regime = getattr(snapshot, "volatility_regime", "stable")
+        if vol_regime == "contracting":
+            # Contracting ATR means the market is consolidating — daily moves are SMALLER.
+            # Widen SL (protect against false breakouts) but keep TP at base ATR so it
+            # remains achievable. Applying ×1.1 to TP in a consolidating market places the
+            # target further than the stock typically moves → confirmed negative pnl_r.
+            atr_sl = atr * 1.1
+            atr_tp = atr  # base ATR for TP
+        elif vol_regime == "expanding":
+            atr_sl = atr * 0.95
+            atr_tp = atr * 0.95
         else:
-            sl_base = price - atr * sl_mult
-            tp_base = price + atr * tp_mult
+            atr_sl = atr
+            atr_tp = atr
+        if direction == "short":
+            sl_base = price + atr_sl * sl_mult * SHORT_SL_EXTRA_MULT
+            tp_base = price - atr_tp * tp_mult
+        else:
+            sl_base = price - atr_sl * sl_mult
+            tp_base = price + atr_tp * tp_mult
     else:
         sl_pct, tp_pct = FALLBACK_SL_TP.get(risk_tier, FALLBACK_SL_TP["moderate"])
         if direction == "short":
@@ -972,10 +993,10 @@ def compute_atr_levels(
             resistance = snapshot.nearest_resistance_above()
             if resistance is not None and resistance > price:
                 sr_sl = resistance * 1.002
-                max_sl = price * 1.005
-                if sr_sl < sl_base and sr_sl > max_sl:
-                    pass
-                elif sr_sl < sl_base:
+                # For shorts: only WIDEN the SL (snap to resistance above sl_base).
+                # Snapping to resistance BELOW sl_base tightens the stop, producing
+                # inflated R:R (TP unchanged but SL shrinks) → trades almost never hit TP.
+                if sr_sl > sl_base:
                     sl = sr_sl
 
             support = snapshot.nearest_support_below()
@@ -986,6 +1007,14 @@ def compute_atr_levels(
                     tp_dist = abs(snapped_tp - price)
                     if sl_dist > 0 and tp_dist / sl_dist >= 1.0:
                         tp = snapped_tp
+
+    # ── Short SL cap: VP/S&R snapping must not widen SL beyond 1.5× ATR base ────
+    # Without this cap, snapping SL to a distant HVN/VAH forces the R:R floor
+    # to stretch TP to 4-6×ATR — rarely reachable, causing the 20-25% short win rate.
+    if direction == "short" and snapshot and snapshot.atr and snapshot.atr > 0:
+        sl_mult_used, _ = ATR_MULTIPLIERS.get(risk_tier, ATR_MULTIPLIERS["moderate"])
+        short_sl_cap = price + atr_sl * sl_mult_used * SHORT_SL_EXTRA_MULT * 1.5
+        sl = min(sl, short_sl_cap)
 
     return round(sl, 2), round(tp, 2)
 
@@ -1105,6 +1134,18 @@ def determine_direction(
 
     if snapshot:
         trend_mult, mean_rev_mult = _regime_tech_weights(regime)
+
+        # ADX-adaptive weighting: in strong trends, trust trend indicators more;
+        # in ranging markets (ADX < 20), lean on mean-reversion signals instead.
+        if snapshot.adx is not None:
+            _adx_val = snapshot.adx[0]
+            if _adx_val > 25:
+                trend_mult = min(1.5, trend_mult + 0.15)
+                mean_rev_mult = max(0.70, mean_rev_mult - 0.15)
+            elif _adx_val < 20:
+                trend_mult = max(0.70, trend_mult - 0.15)
+                mean_rev_mult = min(1.30, mean_rev_mult + 0.15)
+
         trend_sum = 0.0
         trend_count = 0
         mean_rev_sum = 0.0
@@ -1209,13 +1250,16 @@ def get_indicator_conflict_penalty(
         elif not is_long and hist > 0:
             penalty += 7
 
-    # ADX DI: -DI > +DI suggests bearish trend; +DI > -DI suggests bullish
+    # ADX DI: -DI > +DI suggests bearish trend; +DI > -DI suggests bullish.
+    # Gate on ADX > 20: industry consensus is that below 20 there is no meaningful trend
+    # and DI crossovers are pure whipsaw noise that corrupt the conflict score.
     if snapshot.adx is not None:
-        _, plus_di, minus_di = snapshot.adx
-        if is_long and minus_di > plus_di:
-            penalty += 5
-        elif not is_long and plus_di > minus_di:
-            penalty += 5
+        adx_val, plus_di, minus_di = snapshot.adx
+        if adx_val > 20:
+            if is_long and minus_di > plus_di:
+                penalty += 5
+            elif not is_long and plus_di > minus_di:
+                penalty += 5
 
     # Stochastic vs direction: overbought + long, or oversold + short
     if snapshot.stochastic is not None:
@@ -1233,7 +1277,7 @@ def get_indicator_conflict_penalty(
             penalty += 5
 
     scaled = int(round(penalty * max(0.0, min(1.5, penalty_scale))))
-    return min(25, scaled)
+    return min(30, scaled)  # raised from 25: full conflict set can now score up to 30
 
 
 # ---------------------------------------------------------------------------
@@ -1308,14 +1352,17 @@ def compute_confidence(
             elif snapshot.rsi > rsi_bull:
                 points += 8
 
-    # MACD alignment (15 pts)
+    # MACD alignment (15 pts; discounted to 7 when ADX < 20 — ranging markets generate
+    # frequent false MACD crossovers, so the signal carries less weight there)
     max_points += 15
     if snapshot.macd is not None:
         _, _, hist = snapshot.macd
+        adx_now = snapshot.adx[0] if snapshot.adx is not None else 25
+        macd_max = 15 if adx_now >= 20 else 7
         if (is_long and hist > 0) or (not is_long and hist < 0):
-            points += 15
+            points += macd_max
         elif abs(hist) / max(snapshot.price, 1) < 0.001:
-            points += 5  # near crossover
+            points += min(5, macd_max // 2)  # near crossover — proportionally scaled
 
     # Stochastic alignment (10 pts) — regime-specific thresholds
     max_points += 10
@@ -1358,6 +1405,38 @@ def compute_confidence(
     if snapshot.vwap is not None and snapshot.price != snapshot.vwap:
         if (is_long and snapshot.price_above_vwap) or (not is_long and not snapshot.price_above_vwap):
             points += 5
+
+    # EMA200 macro trend filter (10 pts when aligned; -8 when trading against macro trend).
+    # Most widely validated long/short gate in the literature: price above EMA200 = long bias,
+    # price below EMA200 = short bias. Absent for assets with < 200 days of history.
+    if snapshot.ema200 is not None:
+        max_points += 10
+        price_above_ema200 = snapshot.price > snapshot.ema200
+        if (is_long and price_above_ema200) or (not is_long and not price_above_ema200):
+            points += 10
+        else:
+            # Counter-trend trade: penalise in addition to not earning the 10 pts
+            points = max(0.0, points - 8)
+
+    # Indicator consensus check: count how many of 5 key indicators agree with direction.
+    # Low consensus means the direction call is a coin-flip — penalise before conflict penalty.
+    if snapshot:
+        agree = 0
+        if snapshot.macd is not None:
+            agree += 1 if (is_long and snapshot.macd[2] > 0) or (not is_long and snapshot.macd[2] < 0) else 0
+        if snapshot.adx is not None:
+            _, plus_di, minus_di = snapshot.adx
+            agree += 1 if (is_long and plus_di > minus_di) or (not is_long and minus_di > plus_di) else 0
+        if snapshot.obv is not None:
+            agree += 1 if (is_long and snapshot.obv[1] > 0) or (not is_long and snapshot.obv[1] < 0) else 0
+        if snapshot.rsi is not None:
+            agree += 1 if (is_long and snapshot.rsi >= 50) or (not is_long and snapshot.rsi < 50) else 0
+        if snapshot.stochastic is not None:
+            k, _ = snapshot.stochastic
+            agree += 1 if (is_long and k >= 50) or (not is_long and k < 50) else 0
+        # < 3/5 indicators agree → direction is a coin-flip, penalise heavily
+        if agree < 3:
+            points = max(0.0, points - 12)
 
     # Indicator conflict penalty: reduce score when key indicators disagree with direction
     conflict_penalty = get_indicator_conflict_penalty(
