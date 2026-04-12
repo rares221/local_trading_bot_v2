@@ -57,6 +57,7 @@ def run_backtest(
     progress_callback: Optional[Any] = None,
     sentiment_history: Optional[list[tuple]] = None,
     max_outcome_bars: int = OUTCOME_MAX_BARS,
+    window_days: int = 0,
 ) -> dict[str, Any]:
     """
     Run full historical backtest.
@@ -168,8 +169,10 @@ def run_backtest(
     for sig in signals:
         _simulate_signal_outcome(sig, ohlcv_data, max_outcome_bars)
 
-    # Step 6: Compute aggregate metrics
-    metrics = compute_metrics(signals)
+    # Step 6: Compute aggregate metrics (pass total_trading_days for correct Sharpe)
+    # window_days overrides if provided (e.g. quick backtest passes calendar days → convert)
+    td = len(trading_days) if not window_days else max(len(trading_days), 1)
+    metrics = compute_metrics(signals, total_trading_days=td)
 
     logger.info(
         "[BACKTEST] Done: %d signals, win_rate=%.1f%%, sharpe=%s, max_dd=%sR",
@@ -452,8 +455,8 @@ def run_walkforward_backtest(
             risk_tier, min_confidence, max_outcome_bars,
         )
 
-        is_m = compute_metrics(is_signals)
-        oos_m = compute_metrics(oos_signals)
+        is_m = compute_metrics(is_signals, total_trading_days=in_sample_days)
+        oos_m = compute_metrics(oos_signals, total_trading_days=out_sample_days)
 
         all_is_signals.extend(is_signals)
         all_oos_signals.extend(oos_signals)
@@ -480,8 +483,10 @@ def run_walkforward_backtest(
         )
 
     # Aggregate IS vs OOS metrics
-    overall_is = compute_metrics(all_is_signals)
-    overall_oos = compute_metrics(all_oos_signals)
+    total_is_days = len(windows) * in_sample_days
+    total_oos_days = len(windows) * out_sample_days
+    overall_is = compute_metrics(all_is_signals, total_trading_days=total_is_days)
+    overall_oos = compute_metrics(all_oos_signals, total_trading_days=total_oos_days)
 
     # Degradation ratio: how much does OOS win_rate fall vs IS?
     is_wr = overall_is.get("win_rate") or 0

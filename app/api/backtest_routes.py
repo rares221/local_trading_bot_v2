@@ -312,6 +312,7 @@ async def quick_backtest(
                 period=prefetch_period,
                 sentiment_history=sentiment_history if sentiment_history else None,
                 max_outcome_bars=max_outcome_bars,
+                window_days=days,
             )
 
     loop = asyncio.get_event_loop()
