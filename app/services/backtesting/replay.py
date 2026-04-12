@@ -154,7 +154,7 @@ def run_backtest(
 
         for symbol in symbols:
             try:
-                sig = _build_signal(symbol, sim_date, risk_tier, min_confidence, day_sentiment)
+                sig = _build_signal(symbol, sim_date, risk_tier, min_confidence, day_sentiment, day_regime)
                 if sig:
                     sig["market_regime"] = day_regime
                     signals.append(sig)
@@ -196,6 +196,7 @@ def _build_signal(
     risk_tier: str,
     min_confidence: int,
     by_asset_sentiment: Optional[dict] = None,
+    day_regime: str = "neutral",
 ) -> Optional[dict]:
     """
     Build a single signal for one symbol on one day.
@@ -227,9 +228,12 @@ def _build_signal(
                 hist_count = entry.get("count", 0)
                 break
 
-    # Direction from technicals (sentiment nudges confidence, not direction)
+    # Direction from sentiment + technicals, mirroring the live engine.
+    # Pass hist_sentiment so macro-linked assets (oil, FX, gold) use the same
+    # 30-50% sentiment weight the engine uses, not pure technicals.
+    # Pass day_regime so RSI/Stochastic thresholds match the live engine's regime context.
     from app.services.technicals import determine_direction as _determine_direction
-    direction = _determine_direction(None, snap)
+    direction = _determine_direction(hist_sentiment, snap, regime=day_regime)
 
     # EMA200 hard gate for shorts: mirror live engine behaviour.
     # Do not short an asset that is above its 200-day EMA — structural upward bias
@@ -576,7 +580,7 @@ def _replay_window(
 
         for symbol in symbols:
             try:
-                sig = _build_signal(symbol, sim_date, risk_tier, min_confidence, None)
+                sig = _build_signal(symbol, sim_date, risk_tier, min_confidence, None, day_regime)
                 if sig:
                     sig["market_regime"] = day_regime
                     signals.append(sig)

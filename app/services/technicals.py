@@ -916,6 +916,16 @@ def compute_atr_levels(
         else:
             atr_sl = atr
             atr_tp = atr
+
+        # ADX regime-adaptive TP: strong trends sustain momentum past the base ATR target.
+        # ADX >= 40 (strong trend) → widen TP by 10% to capture extended move without
+        # pushing the target so far that it can't be reached in the 30-bar outcome window.
+        # ADX 25–39 (trending)    → no change, base multiplier is correct.
+        # ADX < 20 (ranging)      → direction weights already shift to mean-reversion upstream.
+        if snapshot.adx is not None:
+            adx_val = snapshot.adx[0]
+            if adx_val >= 40:
+                atr_tp *= 1.1
         if direction == "short":
             sl_base = price + atr_sl * sl_mult * SHORT_SL_EXTRA_MULT
             tp_base = price - atr_tp * tp_mult
