@@ -36,6 +36,7 @@ from app.services.backtesting.data_provider import (
 )
 from app.services.backtesting.simulator import simulate_outcome
 from app.services.backtesting.metrics import compute_metrics
+from app.services.backtesting.regime import build_regime_calendar
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +101,9 @@ def run_backtest(
 
     logger.info("[BACKTEST] %d trading days to replay", len(trading_days))
 
+    # Step 2b: Build regime calendar for all trading days (vectorized, efficient)
+    regime_calendar: dict = build_regime_calendar(trading_days, ohlcv_data)
+
     # Sort sentiment_history ascending by datetime for bisect lookups.
     # Normalize all timestamps to UTC-aware to avoid naive/aware comparison crashes.
     _sent_hist: list[tuple[pd.Timestamp, dict]] = []
@@ -145,10 +149,13 @@ def run_backtest(
             if idx >= 0:
                 day_sentiment = _sent_hist[idx][1]
 
+        day_regime = regime_calendar.get(sim_date, "neutral")
+
         for symbol in symbols:
             try:
                 sig = _build_signal(symbol, sim_date, risk_tier, min_confidence, day_sentiment)
                 if sig:
+                    sig["market_regime"] = day_regime
                     signals.append(sig)
             except Exception as e:
                 logger.debug("[BACKTEST] Error building signal %s @%s: %s", symbol, sim_date, e)
@@ -295,6 +302,8 @@ def _build_signal(
         "in_value_area": snap.in_value_area(),
         # Relative Strength walk-forward data
         "rs_20d": rs_20d,
+        # Market regime (populated by caller after build_regime_calendar)
+        "market_regime": None,
         # Outcome fields (populated later)
         "outcome": None,
         "closing_price": None,
@@ -351,3 +360,188 @@ _CATEGORY_MAP: dict[str, str] = {
 
 def _guess_category(symbol: str) -> str:
     return _CATEGORY_MAP.get(symbol, "stocks")
+
+
+def run_walkforward_backtest(
+    start_date: date,
+    end_date: date,
+    symbols: Optional[list[str]] = None,
+    risk_tier: str = "moderate",
+    min_confidence: int = 40,
+    period: str = "5y",
+    in_sample_days: int = 252,   # 1 year in-sample
+    out_sample_days: int = 63,   # 1 quarter out-of-sample
+    max_outcome_bars: int = OUTCOME_MAX_BARS,
+) -> dict[str, Any]:
+    """
+    Walk-forward analysis: split the date range into rolling IS/OOS windows
+    and compare in-sample vs out-of-sample performance.
+
+    This is the industry-standard method to detect overfitting — a strategy
+    that degrades significantly OOS is likely curve-fit to the IS period.
+
+    Args:
+        start_date: First date (in-sample window starts here).
+        end_date: Last date (last OOS window ends here).
+        in_sample_days: Number of trading days per in-sample window (default 252 = 1 year).
+        out_sample_days: Number of trading days per OOS window (default 63 = 1 quarter).
+
+    Returns:
+        Dict with 'windows' (list of IS/OOS pairs), 'is_metrics', 'oos_metrics',
+        'degradation' (OOS win_rate / IS win_rate ratio), and overall summary.
+    """
+    if symbols is None:
+        symbols = get_engine_symbols()
+
+    logger.info(
+        "[WF] Walk-forward: %s → %s | IS=%d OOS=%d days | %d symbols",
+        start_date, end_date, in_sample_days, out_sample_days, len(symbols),
+    )
+
+    # Pre-fetch once for the entire range
+    tech.clear_cache()
+    ohlcv_data = prefetch_symbols(symbols, period=period)
+    for _rs_sym in ["^GSPC", "^VIX", "XLK", "XLE", "XLF", "XLV", "XLY", "XLI", "XLB"]:
+        tech.fetch_ohlcv(_rs_sym, period=period)
+
+    if not ohlcv_data:
+        return {"error": "no_data_fetched", "windows": []}
+
+    all_trading_days = get_trading_days(ohlcv_data, start_date, end_date)
+    if not all_trading_days:
+        return {"error": "no_trading_days", "windows": []}
+
+    # Build rolling windows: each window = IS block + OOS block
+    windows = []
+    i = 0
+    while i + in_sample_days + out_sample_days <= len(all_trading_days):
+        is_days = all_trading_days[i : i + in_sample_days]
+        oos_days = all_trading_days[i + in_sample_days : i + in_sample_days + out_sample_days]
+        windows.append({
+            "is_start": is_days[0],
+            "is_end": is_days[-1],
+            "oos_start": oos_days[0],
+            "oos_end": oos_days[-1],
+        })
+        i += out_sample_days  # advance by OOS step (rolling, not anchored)
+
+    if not windows:
+        return {"error": "date_range_too_short_for_walkforward", "windows": [], "required_days": in_sample_days + out_sample_days}
+
+    logger.info("[WF] %d walk-forward windows", len(windows))
+
+    # Pre-compute regime calendar once for all days
+    regime_calendar = build_regime_calendar(all_trading_days, ohlcv_data)
+
+    all_is_signals: list[dict] = []
+    all_oos_signals: list[dict] = []
+    window_results = []
+
+    for w_idx, w in enumerate(windows):
+        is_start, is_end = w["is_start"], w["is_end"]
+        oos_start, oos_end = w["oos_start"], w["oos_end"]
+
+        # Run IS replay
+        is_signals = _replay_window(
+            ohlcv_data, regime_calendar, symbols, is_start, is_end,
+            risk_tier, min_confidence, max_outcome_bars,
+        )
+        # Run OOS replay
+        oos_signals = _replay_window(
+            ohlcv_data, regime_calendar, symbols, oos_start, oos_end,
+            risk_tier, min_confidence, max_outcome_bars,
+        )
+
+        is_m = compute_metrics(is_signals)
+        oos_m = compute_metrics(oos_signals)
+
+        all_is_signals.extend(is_signals)
+        all_oos_signals.extend(oos_signals)
+
+        window_results.append({
+            "window": w_idx + 1,
+            "is_start": is_start.isoformat(),
+            "is_end": is_end.isoformat(),
+            "oos_start": oos_start.isoformat(),
+            "oos_end": oos_end.isoformat(),
+            "is_trades": is_m.get("total_trades", 0),
+            "is_win_rate": is_m.get("win_rate"),
+            "is_sharpe": is_m.get("sharpe_ratio"),
+            "oos_trades": oos_m.get("total_trades", 0),
+            "oos_win_rate": oos_m.get("win_rate"),
+            "oos_sharpe": oos_m.get("sharpe_ratio"),
+        })
+
+        logger.info(
+            "[WF] Window %d: IS WR=%.1f%% (%d trades) | OOS WR=%.1f%% (%d trades)",
+            w_idx + 1,
+            (is_m.get("win_rate") or 0) * 100, is_m.get("total_trades", 0),
+            (oos_m.get("win_rate") or 0) * 100, oos_m.get("total_trades", 0),
+        )
+
+    # Aggregate IS vs OOS metrics
+    overall_is = compute_metrics(all_is_signals)
+    overall_oos = compute_metrics(all_oos_signals)
+
+    # Degradation ratio: how much does OOS win_rate fall vs IS?
+    is_wr = overall_is.get("win_rate") or 0
+    oos_wr = overall_oos.get("win_rate") or 0
+    degradation_ratio = round(oos_wr / is_wr, 4) if is_wr > 0 else None
+
+    # Interpret: >0.85 = good, 0.70-0.85 = acceptable, <0.70 = likely overfit
+    if degradation_ratio is None:
+        robustness = "insufficient_data"
+    elif degradation_ratio >= 0.85:
+        robustness = "robust"
+    elif degradation_ratio >= 0.70:
+        robustness = "acceptable"
+    else:
+        robustness = "likely_overfit"
+
+    return {
+        "windows": window_results,
+        "in_sample_days": in_sample_days,
+        "out_sample_days": out_sample_days,
+        "total_windows": len(window_results),
+        "is_metrics": overall_is,
+        "oos_metrics": overall_oos,
+        "degradation_ratio": degradation_ratio,
+        "robustness": robustness,
+        "symbols_tested": list(ohlcv_data.keys()),
+    }
+
+
+def _replay_window(
+    ohlcv_data: dict,
+    regime_calendar: dict,
+    symbols: list[str],
+    start: date,
+    end: date,
+    risk_tier: str,
+    min_confidence: int,
+    max_outcome_bars: int,
+) -> list[dict]:
+    """Run a single IS or OOS replay window and return signals with outcomes."""
+    trading_days = get_trading_days(ohlcv_data, start, end)
+    signals: list[dict] = []
+
+    for sim_date in trading_days:
+        cutoff_ts = pd.Timestamp(sim_date)
+        tech.set_backtest_mode(cutoff_ts)
+        day_regime = regime_calendar.get(sim_date, "neutral")
+
+        for symbol in symbols:
+            try:
+                sig = _build_signal(symbol, sim_date, risk_tier, min_confidence, None)
+                if sig:
+                    sig["market_regime"] = day_regime
+                    signals.append(sig)
+            except Exception as e:
+                logger.debug("[WF] Error building signal %s @%s: %s", symbol, sim_date, e)
+
+    tech.clear_backtest_mode()
+
+    for sig in signals:
+        _simulate_signal_outcome(sig, ohlcv_data, max_outcome_bars)
+
+    return signals

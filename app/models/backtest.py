@@ -89,6 +89,8 @@ class BacktestTrade(Base):
     volatility_regime: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     trend_bias: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     atr_pct: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # Market regime at entry date (bull | bear | high_vol | crisis | neutral)
+    market_regime: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
 
     run: Mapped["BacktestRun"] = relationship("BacktestRun", back_populates="trades")
 
