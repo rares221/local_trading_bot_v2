@@ -24,7 +24,7 @@ def _bucket(confidence: int) -> str:
         return "80+"
 
 
-def compute_metrics(trades: list[dict]) -> dict[str, Any]:
+def compute_metrics(trades: list[dict], total_trading_days: int = 0) -> dict[str, Any]:
     """
     Compute all backtesting metrics from a list of trade dicts.
 
@@ -33,6 +33,11 @@ def compute_metrics(trades: list[dict]) -> dict[str, Any]:
         pnl_r: float          # P&L in R-multiples
         confidence_score: int
         risk_reward: float | None
+
+    Args:
+        total_trading_days: Number of trading days in the backtest window. Used to
+            compute correct per-trade annualized Sharpe: (mean/std) * sqrt(N/T_years).
+            If 0, falls back to raw per-trade Sharpe (mean/std) without annualization.
 
     Returns a metrics dict suitable for JSON storage.
     """
@@ -57,8 +62,17 @@ def compute_metrics(trades: list[dict]) -> dict[str, Any]:
     avg_pnl_r = sum(pnl_rs) / len(pnl_rs) if pnl_rs else 0.0
     avg_rr_projected = _safe_avg([t.get("risk_reward") for t in closed])
 
-    # Sharpe ratio: use per-trade R returns, annualise assuming 252 trading days
-    sharpe = _sharpe(pnl_rs)
+    # Sharpe ratio: per-trade annualized Sharpe.
+    # Correct formula: (mean/std) * sqrt(trades_per_year)
+    # where trades_per_year = N / T_years, T_years = total_trading_days / 252.
+    # Falls back to raw (mean/std) if total_trading_days not provided.
+    n_trades = len(pnl_rs)
+    if total_trading_days > 0 and n_trades > 1:
+        t_years = total_trading_days / 252.0
+        trades_per_year = n_trades / t_years
+        sharpe = _sharpe(pnl_rs, periods_per_year=trades_per_year)
+    else:
+        sharpe = _sharpe(pnl_rs, periods_per_year=1)  # raw, no annualization
 
     # Max drawdown on cumulative R curve
     max_dd = _max_drawdown(pnl_rs)
@@ -147,6 +161,22 @@ def compute_metrics(trades: list[dict]) -> dict[str, Any]:
         "pct_weak": round(len(rs_weak) / total, 4) if total > 0 else 0.0,
     }
 
+    # Market regime breakdown — win rate per regime (bull/bear/crisis/high_vol/neutral)
+    regime_stats: dict[str, dict] = {}
+    for t in all_outcomes:
+        regime = t.get("market_regime") or "unknown"
+        if regime not in regime_stats:
+            regime_stats[regime] = {"total": 0, "wins": 0, "pnl_r_sum": 0.0}
+        regime_stats[regime]["total"] += 1
+        if t.get("outcome") == "hit_tp":
+            regime_stats[regime]["wins"] += 1
+        regime_stats[regime]["pnl_r_sum"] += t.get("pnl_r") or 0.0
+    for regime, rs in regime_stats.items():
+        n = rs["total"]
+        w = rs["wins"]
+        rs["win_rate"] = round(w / n, 4) if n > 0 else 0.0
+        rs["avg_pnl_r"] = round(rs["pnl_r_sum"] / n, 4) if n > 0 else 0.0
+
     return {
         "total_signals": len(trades),
         "total_trades": total,
@@ -164,6 +194,7 @@ def compute_metrics(trades: list[dict]) -> dict[str, Any]:
         "by_symbol": symbol_stats,
         "volume_profile": vp_metrics,
         "relative_strength": rs_metrics,
+        "by_regime": regime_stats,
     }
 
 
@@ -172,8 +203,13 @@ def _safe_avg(values: list) -> float | None:
     return sum(vals) / len(vals) if vals else None
 
 
-def _sharpe(returns: list[float], periods_per_year: int = 252) -> float | None:
-    """Annualised Sharpe assuming each trade is ~1 period. Simplified but standard."""
+def _sharpe(returns: list[float], periods_per_year: float = 252) -> float | None:
+    """
+    Annualized Sharpe ratio.
+    Pass periods_per_year = trades_per_year for per-trade backtest returns.
+    Pass periods_per_year = 252 only for daily returns.
+    Pass periods_per_year = 1 for raw (non-annualized) Sharpe.
+    """
     if len(returns) < 2:
         return None
     n = len(returns)

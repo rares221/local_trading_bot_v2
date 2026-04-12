@@ -963,12 +963,17 @@ def compute_atr_levels(
                     break
 
             # TP: avoid placing TP inside an HVN below
+            # Guard: snapped TP must remain BELOW entry (short target must be lower than price)
             hvn_below = snapshot.nearest_hvn_below()
             if hvn_below and tp_base < hvn_below < price:
-                tp = hvn_below * 1.003  # just above the HVN
+                candidate = hvn_below * 1.003  # just above the HVN
+                if candidate < price:           # only snap if still below entry
+                    tp = candidate
             # VAL as TP cap: strong support at value area boundary
             if snapshot.val and tp_base < snapshot.val < price:
-                tp = snapshot.val * 1.002
+                candidate = snapshot.val * 1.002
+                if candidate < price:           # only snap if still below entry
+                    tp = candidate
 
     # ── Swing S/R fallback (when VP levels don't apply) ──────────────────────
     if snapshot:
@@ -1003,10 +1008,31 @@ def compute_atr_levels(
             if support is not None and support < price:
                 if support > tp_base:
                     snapped_tp = support * 1.002
-                    sl_dist = abs(price - sl)
-                    tp_dist = abs(snapped_tp - price)
-                    if sl_dist > 0 and tp_dist / sl_dist >= 1.0:
-                        tp = snapped_tp
+                    # Guard: TP must remain BELOW entry for short; reject if snapping pushes it above
+                    if snapped_tp >= price:
+                        pass  # support too close to price — keep calculated tp_base
+                    else:
+                        sl_dist = abs(price - sl)
+                        tp_dist = abs(snapped_tp - price)
+                        if sl_dist > 0 and tp_dist / sl_dist >= 1.0:
+                            tp = snapped_tp
+
+    # Final sanity check: for SHORT, TP must be < price; for LONG, TP must be > price.
+    # If any snapping logic produced a wrong-side TP, fall back to base calculation.
+    if direction == "short" and tp >= price:
+        if snapshot and snapshot.atr and snapshot.atr > 0:
+            _, tp_mult = ATR_MULTIPLIERS.get(risk_tier, ATR_MULTIPLIERS["moderate"])
+            tp = price - snapshot.atr * tp_mult
+        else:
+            _, tp_pct = FALLBACK_SL_TP.get(risk_tier, FALLBACK_SL_TP["moderate"])
+            tp = price * (1 - tp_pct)
+    elif direction == "long" and tp <= price:
+        if snapshot and snapshot.atr and snapshot.atr > 0:
+            _, tp_mult = ATR_MULTIPLIERS.get(risk_tier, ATR_MULTIPLIERS["moderate"])
+            tp = price + snapshot.atr * tp_mult
+        else:
+            _, tp_pct = FALLBACK_SL_TP.get(risk_tier, FALLBACK_SL_TP["moderate"])
+            tp = price * (1 + tp_pct)
 
     # ── Short SL cap: VP/S&R snapping must not widen SL beyond 1.5× ATR base ────
     # Without this cap, snapping SL to a distant HVN/VAH forces the R:R floor

@@ -1724,16 +1724,21 @@
       const title   = document.getElementById('bt-title');
       const body    = document.getElementById('bt-body');
 
+      // Read selected period from selector (if present), default 365d
+      const periodSel = document.getElementById('bt-period-sel');
+      const days = periodSel ? parseInt(periodSel.value) : 365;
+      const daysLabel = days >= 730 ? '2 years' : days >= 365 ? '1 year' : days >= 180 ? '6 months' : '90 days';
+
       title.textContent = `14-Day Outlook — ${assetId} ${direction.toUpperCase()}`;
-      document.getElementById('bt-subtitle').textContent = `${riskTier} · last 90 days · 14-day outcomes`;
+      document.getElementById('bt-subtitle').textContent = `${riskTier} · last ${daysLabel} · 14-day outcomes`;
       body.innerHTML = `
         <div class="bt-loading">
           <div class="bt-spinner"></div>
-          <div class="bt-loading-text">Analyzing last 90 days with 14-day outcome window…<br>This takes ~15 seconds.</div>
+          <div class="bt-loading-text">Analyzing last ${daysLabel} with 14-day outcome window…<br>This takes ~15–30 seconds.</div>
         </div>`;
       overlay.style.display = 'flex';
 
-      const params = new URLSearchParams({ asset_id: assetId, category, direction, risk_tier: riskTier });
+      const params = new URLSearchParams({ asset_id: assetId, category, direction, risk_tier: riskTier, days });
       fetch(`/api/backtest/quick?${params}`)
         .then(r => r.ok ? r.json() : Promise.reject(r.statusText))
         .then(data => renderBtModal(data, direction))
@@ -1832,7 +1837,7 @@
         html += `<div class="bt-grade-banner">
           <div class="bt-grade-badge ${gradeCls(ai.grade)}">${esc(ai.grade)}</div>
           <div class="bt-grade-text">
-            <div class="bt-grade-label">Strategy Grade — last 90 days, 14-day outcomes</div>
+            <div class="bt-grade-label">Strategy Grade — last ${data.window_days ?? 365} days, 14-day outcomes</div>
             <div class="bt-grade-reason">${esc(ai.grade_reason || '')}</div>
           </div>
         </div>`;
@@ -1855,7 +1860,7 @@
         </div>
         <div class="bt-metric">
           <div class="bt-metric-value ${sharpeCls(ov.sharpe_ratio)}">${fmt(ov.sharpe_ratio)}</div>
-          <div class="bt-metric-label">Sharpe Ratio</div>
+          <div class="bt-metric-label">Sharpe (annualized)</div>
           <div class="bt-metric-hint">&gt;1 = good risk/reward</div>
         </div>
         <div class="bt-metric">
@@ -1959,6 +1964,15 @@
         <div class="bt-header-left">
           <span class="bt-title" id="bt-title">Backtest</span>
           <span class="bt-subtitle" id="bt-subtitle"></span>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;margin-right:12px;">
+          <label style="font-size:11px;color:rgba(248,250,252,.45);" title="" data-tooltip="Lookback window for the backtest. Longer = more signals, more regimes covered. 1 year is the recommended minimum.">Period</label>
+          <select id="bt-period-sel" style="background:#1a1d27;border:1px solid #2a2d3e;border-radius:5px;color:#e2e8f0;padding:4px 8px;font-size:12px;cursor:pointer;" title="">
+            <option value="90">90 days</option>
+            <option value="180">6 months</option>
+            <option value="365">1 year</option>
+            <option value="730" selected>2 years ✓ recommended</option>
+          </select>
         </div>
         <button class="bt-close" onclick="document.getElementById('bt-overlay').style.display='none'">×</button>
       </div>

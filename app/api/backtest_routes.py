@@ -51,6 +51,17 @@ class BacktestRequest(BaseModel):
     period: str = "3y"      # yfinance history period for pre-fetch
 
 
+class WalkForwardRequest(BaseModel):
+    start_date: str
+    end_date: str
+    symbols: Optional[list[str]] = None
+    risk_tier: str = "moderate"
+    min_confidence: int = 40
+    period: str = "5y"
+    in_sample_days: int = 252    # 1 year IS window
+    out_sample_days: int = 63    # 1 quarter OOS window
+
+
 @router.post("/backtest/run")
 async def start_backtest(
     body: BacktestRequest = Body(...),
@@ -70,9 +81,9 @@ async def start_backtest(
     if start >= end:
         raise HTTPException(status_code=422, detail="start_date must be before end_date")
 
-    # Limit to avoid very long-running requests (3 years max window)
-    if (end - start).days > 1200:
-        raise HTTPException(status_code=422, detail="Date range too wide (max ~3 years)")
+    # Limit to avoid very long-running requests (5 years max window)
+    if (end - start).days > 1825:
+        raise HTTPException(status_code=422, detail="Date range too wide (max ~5 years)")
 
     run_id = str(uuid4())
     run = BacktestRun(
@@ -209,6 +220,7 @@ async def get_backtest_trades(
                 "volatility_regime": t.volatility_regime,
                 "trend_bias": t.trend_bias,
                 "atr_pct": t.atr_pct,
+                "market_regime": t.market_regime,
             }
             for t in trades
         ],
@@ -236,10 +248,11 @@ async def quick_backtest(
     category: str = "stocks",
     direction: str = "long",
     risk_tier: str = "moderate",
+    days: int = 90,
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """
-    Quick 14-day-outcome backtest over the last 90 days for an active trade card.
+    Quick 14-day-outcome backtest over a configurable lookback window (default 90 days, max 365).
     Uses recent market conditions and historical sentiment.
     Includes the current engine signal for today and an LLM 14-day forward prediction.
     """
@@ -247,24 +260,27 @@ async def quick_backtest(
     from app.services.backtesting.replay import run_backtest
     from app.models.market_analysis import MarketAnalysis
 
+    # Clamp days to valid range (min 30, max 730 = 2 years)
+    days = max(30, min(730, days))
+
     yahoo_symbol = get_yf_symbol(category, asset_id)
     if not yahoo_symbol:
         yahoo_symbol = asset_id.upper()
 
-    # Signal window: last 90 days (recent conditions, relevant sample)
-    # Pre-fetch: 2y (indicators need 100+ bars; 90d window is just the replay range)
+    # Signal window: configurable lookback (90–365 days)
+    # Pre-fetch: always 2y so indicators have enough bars regardless of window size
     end = date.today()
-    start = end - timedelta(days=90)
+    start = end - timedelta(days=days)
     prefetch_period = "2y"
     max_outcome_bars = 14  # 14 trading days = ~3 calendar weeks
 
-    # Load historical sentiment snapshots for the last 90 days
+    # Load historical sentiment snapshots for the lookback window
     start_dt = datetime.combine(start, datetime.min.time()).replace(tzinfo=timezone.utc)
     ma_result = await db.execute(
         select(MarketAnalysis)
         .where(MarketAnalysis.as_of >= start_dt)
         .order_by(MarketAnalysis.as_of.asc())
-        .limit(200)
+        .limit(500)
     )
     ma_rows = ma_result.scalars().all()
 
@@ -281,8 +297,8 @@ async def quick_backtest(
         latest_by_asset = sentiment_history[-1][1]
 
     logger.info(
-        "[BACKTEST/quick] %s: 90-day window, 14-bar outcomes, %d sentiment snapshots",
-        asset_id, len(sentiment_history)
+        "[BACKTEST/quick] %s: %d-day window, 14-bar outcomes, %d sentiment snapshots",
+        asset_id, days, len(sentiment_history)
     )
 
     def _run() -> dict:
@@ -296,6 +312,7 @@ async def quick_backtest(
                 period=prefetch_period,
                 sentiment_history=sentiment_history if sentiment_history else None,
                 max_outcome_bars=max_outcome_bars,
+                window_days=days,
             )
 
     loop = asyncio.get_event_loop()
@@ -341,14 +358,14 @@ async def quick_backtest(
     # Plain-language verdict (90-day context, 14-day outcomes)
     if total_for_dir < 3:
         verdict = (
-            f"Too few {direction.upper()} signals in the last 90 days ({total_for_dir} found) "
+            f"Too few {direction.upper()} signals in the last {days} days ({total_for_dir} found) "
             f"to draw reliable conclusions for a 14-day trade horizon."
         )
     else:
         wr_pct = round((win_rate or 0) * 100, 1)
         avg_pnl = metrics.get("avg_pnl_r") or 0
         verdict = (
-            f"In the last 90 days, {direction.upper()} signals on {asset_id} hit target "
+            f"In the last {days} days, {direction.upper()} signals on {asset_id} hit target "
             f"{wr_pct}% of the time within 14 trading days. "
             f"Average outcome: {avg_pnl:+.2f}R per trade."
         )
@@ -382,7 +399,7 @@ async def quick_backtest(
         "asset_id": asset_id,
         "direction": direction,
         "risk_tier": risk_tier,
-        "window_days": 90,
+        "window_days": days,
         "outcome_bars": max_outcome_bars,
         "total_signals": metrics.get("total_signals", len(signals)),
         "sentiment_snapshots_used": len(sentiment_history),
@@ -398,6 +415,7 @@ async def quick_backtest(
             "expired": metrics.get("expired"),
         },
         "by_confidence_bucket": by_confidence_bucket,
+        "by_regime": metrics.get("by_regime", {}),
         "verdict": verdict,
         "llm_analysis": None,
         "llm_insight_key": cache_key,
@@ -416,6 +434,66 @@ async def get_backtest_insight(asset_id: str, direction: str = "long", risk_tier
     if entry is None:
         return {"status": "not_found", "llm_analysis": None}
     return {"status": entry["status"], "llm_analysis": entry.get("result")}
+
+
+@router.post("/backtest/walkforward")
+async def start_walkforward(
+    body: WalkForwardRequest = Body(...),
+) -> dict[str, Any]:
+    """
+    Walk-forward analysis: splits [start_date, end_date] into rolling IS/OOS windows
+    and compares in-sample vs out-of-sample performance.
+
+    Industry-standard method for detecting overfitting. A degradation_ratio >= 0.85 means
+    the strategy is robust; below 0.70 suggests the parameters are curve-fit to the IS data.
+
+    Runs synchronously (blocks until complete). Expect 5–15 minutes for 3+ year ranges.
+    """
+    from app.services.backtesting.replay import run_walkforward_backtest
+
+    try:
+        start = date.fromisoformat(body.start_date)
+        end = date.fromisoformat(body.end_date)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=f"Invalid date format: {e}")
+
+    if start >= end:
+        raise HTTPException(status_code=422, detail="start_date must be before end_date")
+
+    if (end - start).days > 1825:
+        raise HTTPException(status_code=422, detail="Date range too wide (max ~5 years)")
+
+    if body.in_sample_days < 63:
+        raise HTTPException(status_code=422, detail="in_sample_days must be >= 63")
+
+    if body.out_sample_days < 21:
+        raise HTTPException(status_code=422, detail="out_sample_days must be >= 21")
+
+    loop = asyncio.get_event_loop()
+    try:
+        result = await loop.run_in_executor(
+            None,
+            lambda: _run_walkforward_sync(body, start, end),
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Walk-forward failed: {e}")
+
+    return {**result, "disclaimer": DISCLAIMER}
+
+
+def _run_walkforward_sync(body: WalkForwardRequest, start: date, end: date) -> dict:
+    from app.services.backtesting.replay import run_walkforward_backtest
+    with _backtest_lock:
+        return run_walkforward_backtest(
+            start_date=start,
+            end_date=end,
+            symbols=body.symbols if body.symbols else None,
+            risk_tier=body.risk_tier,
+            min_confidence=body.min_confidence,
+            period=body.period,
+            in_sample_days=body.in_sample_days,
+            out_sample_days=body.out_sample_days,
+        )
 
 
 def _compute_current_signal(symbol: str, risk_tier: str, by_asset_sentiment: dict) -> Optional[dict]:
@@ -523,6 +601,7 @@ async def _run_backtest_background(run_id: str, body: BacktestRequest) -> None:
                     volatility_regime=sig.get("volatility_regime"),
                     trend_bias=sig.get("trend_bias"),
                     atr_pct=sig.get("atr_pct"),
+                    market_regime=sig.get("market_regime"),
                 )
                 db.add(trade)
 
