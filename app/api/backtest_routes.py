@@ -260,8 +260,8 @@ async def quick_backtest(
     from app.services.backtesting.replay import run_backtest
     from app.models.market_analysis import MarketAnalysis
 
-    # Clamp days to valid range (min 30, max 365)
-    days = max(30, min(365, days))
+    # Clamp days to valid range (min 30, max 730 = 2 years)
+    days = max(30, min(730, days))
 
     yahoo_symbol = get_yf_symbol(category, asset_id)
     if not yahoo_symbol:

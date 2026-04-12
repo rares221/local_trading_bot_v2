@@ -1727,7 +1727,7 @@
       // Read selected period from selector (if present), default 365d
       const periodSel = document.getElementById('bt-period-sel');
       const days = periodSel ? parseInt(periodSel.value) : 365;
-      const daysLabel = days >= 365 ? '1 year' : days >= 180 ? '6 months' : '90 days';
+      const daysLabel = days >= 730 ? '2 years' : days >= 365 ? '1 year' : days >= 180 ? '6 months' : '90 days';
 
       title.textContent = `14-Day Outlook — ${assetId} ${direction.toUpperCase()}`;
       document.getElementById('bt-subtitle').textContent = `${riskTier} · last ${daysLabel} · 14-day outcomes`;
@@ -1970,7 +1970,8 @@
           <select id="bt-period-sel" style="background:#1a1d27;border:1px solid #2a2d3e;border-radius:5px;color:#e2e8f0;padding:4px 8px;font-size:12px;cursor:pointer;" title="">
             <option value="90">90 days</option>
             <option value="180">6 months</option>
-            <option value="365" selected>1 year</option>
+            <option value="365">1 year</option>
+            <option value="730" selected>2 years ✓ recommended</option>
           </select>
         </div>
         <button class="bt-close" onclick="document.getElementById('bt-overlay').style.display='none'">×</button>
