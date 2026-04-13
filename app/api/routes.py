@@ -557,6 +557,7 @@ async def trade_builder_from_asset(
         await job_run_analysis()
 
     analysis = await fetch_latest_analysis(db)
+    analysis_id = analysis.id if analysis else None  # capture before any rollback expires the object
     payload = (analysis.payload or {}) if analysis else {}
     by_asset_sentiment = payload.get("by_asset_sentiment")
     active_events = payload.get("active_events")
@@ -617,7 +618,7 @@ async def trade_builder_from_asset(
         stop_loss=cand.stop_loss,
         take_profit=cand.take_profit,
         expiry_date=cand.expiry_date,
-        rationale_ref=analysis.id if analysis else None,
+        rationale_ref=analysis_id,
         rationale_text=rationale_text,
         risk_tier=cand.risk_tier,
         direction=cand.direction or "long",
