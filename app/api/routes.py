@@ -854,8 +854,8 @@ async def list_active_trades(
         short_name = None
         if rec:
             cached_sym = symbol or rec.asset_id.upper()
-            if cached_sym in _yf_short_name_cache:
-                short_name = _yf_short_name_cache[cached_sym]
+            if cached_sym in _short_name_cache:
+                short_name = _short_name_cache[cached_sym]
             else:
                 try:
                     short_name = await asyncio.to_thread(_get_short_name, symbol, rec.asset_id)
