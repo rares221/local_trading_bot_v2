@@ -130,7 +130,12 @@ async def job_daily_batch() -> None:
             if not analysis:
                 print("[BATCH] No analysis found — run the full pipeline first")
                 return
-            print(f"[BATCH] Analysis found (id={analysis.id})")
+            # Cache id before heavy async work — the asyncpg connection may go idle
+            # during asyncio.to_thread(_build) and LLM calls, causing SQLAlchemy to
+            # expire the ORM instance; accessing analysis.id after that triggers a
+            # pre-ping in a non-greenlet context → MissingGreenlet error.
+            analysis_id = analysis.id
+            print(f"[BATCH] Analysis found (id={analysis_id})")
             q_taken = select(Recommendation.asset_category, Recommendation.asset_id).where(
                 Recommendation.status == "taken"
             ).distinct()
@@ -186,14 +191,18 @@ async def job_daily_batch() -> None:
             llm_failures = []
             progress.update(60, "batch", f"Generating rationales for {total_candidates} candidates…")
             from app.services.research import build_research_context, generate_rationale
+            from datetime import date as _date
+            from app.services.technicals import classify_horizon as _classify_horizon
             for i, c in enumerate(candidates):
                 llm_pct = 60 + int((i / total_candidates) * 36)
                 progress.update(llm_pct, "batch", f"LLM rationale {i + 1}/{total_candidates} — {c.asset_id}")
                 rationale_text = None
                 try:
-                    from datetime import date as _date
-                    from app.services.technicals import classify_horizon as _classify_horizon
-                    ctx = await build_research_context(session, c.asset_id, c.asset_category)
+                    # Fresh session per candidate: the main batch session may have an idle
+                    # PostgreSQL connection after the long asyncio.to_thread(_build) call.
+                    # Reusing it triggers asyncpg pre-ping outside a greenlet → MissingGreenlet.
+                    async with async_session_factory() as research_session:
+                        ctx = await build_research_context(research_session, c.asset_id, c.asset_category)
                     ctx["buy_in_price"] = c.buy_in_price
                     ctx["direction"] = c.direction
                     if c.expiry_date and "expiry_days" not in ctx:
@@ -223,7 +232,7 @@ async def job_daily_batch() -> None:
                     stop_loss=c.stop_loss,
                     take_profit=c.take_profit,
                     expiry_date=c.expiry_date,
-                    rationale_ref=analysis.id,
+                    rationale_ref=analysis_id,
                     rationale_text=rationale_text,
                     risk_tier=c.risk_tier,
                     direction=c.direction,
