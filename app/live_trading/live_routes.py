@@ -386,7 +386,7 @@ async def get_recent_news(limit: int = 30):
                     "title": r.title,
                     "source": r.source,
                     "sentiment_score": r.sentiment_score,
-                    "asset_tags": json.loads(r.asset_tags or "[]"),
+                    "asset_tags": r.asset_tags or [],
                     "fetched_at": r.fetched_at.isoformat(),
                 }
                 for r in rows

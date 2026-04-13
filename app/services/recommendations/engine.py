@@ -310,8 +310,11 @@ def _trade_ideas_from_analysis(by_asset_sentiment: Optional[dict]) -> set[tuple[
         if not is_likely_ticker(tag):
             continue
         cnt = int((by_asset_sentiment.get(tag) or {}).get("count") or 0)
+        avg = float((by_asset_sentiment.get(tag) or {}).get("avg") or 0.0)
         if cnt < MIN_STOCK_TAG_MENTIONS_FOR_DISCOVERY:
             continue
+        if abs(avg) <= 0.05:
+            continue  # near-neutral mentions: noise, not signal
         discovery.append((tag, cnt))
     discovery.sort(key=lambda t: (-t[1], t[0]))
     for tag, _ in discovery[:MAX_DISCOVERY_STOCK_IDEAS_PER_BATCH]:
@@ -582,6 +585,40 @@ def get_sentiment_score_and_count(
                 best_avg = avg
             total_count += cnt
     return (best_avg, total_count) if best_avg is not None else None
+
+
+def get_sentiment_velocity_and_conviction(
+    category: str,
+    asset_id: str,
+    by_asset_sentiment: dict[str, dict],
+) -> tuple[Optional[float], Optional[float]]:
+    """Return (velocity, conviction) for this asset from the latest aggregated sentiment.
+    velocity  — rate of change: recent_avg - older_avg (positive = improving).
+    conviction — consensus score 0-1 (1 = strong agreement, 0 = contradictory noise).
+    Returns (None, None) when not enough data is available."""
+    if not by_asset_sentiment:
+        return None, None
+    best_velocity: Optional[float] = None
+    best_conviction: Optional[float] = None
+    for tag, targets in SENTIMENT_TAG_TO_ASSETS.items():
+        if (category, asset_id) in targets:
+            info = by_asset_sentiment.get(tag)
+            if info:
+                v = info.get("velocity")
+                c = info.get("conviction")
+                if v is not None and (best_velocity is None or abs(v) > abs(best_velocity)):
+                    best_velocity = v
+                if c is not None and (best_conviction is None or c > best_conviction):
+                    best_conviction = c
+    if category == "stocks" and asset_id in by_asset_sentiment:
+        info = by_asset_sentiment[asset_id]
+        v = info.get("velocity")
+        c = info.get("conviction")
+        if v is not None and (best_velocity is None or abs(v) > abs(best_velocity)):
+            best_velocity = v
+        if c is not None and (best_conviction is None or c > best_conviction):
+            best_conviction = c
+    return best_velocity, best_conviction
 
 
 # Event types that affect specific tags (tag -> event_type). When active_events contains event_type, reduce confidence for that tag.
@@ -1063,6 +1100,15 @@ def _build_candidate(
 
     # Ranking score
     score = compute_technical_score(sentiment_avg, sentiment_count, snap)
+
+    # Sentiment velocity contribution: accelerating sentiment in trade direction boosts score
+    vel, conv = get_sentiment_velocity_and_conviction(category, asset_id, by_asset_sentiment or {})
+    if vel is not None:
+        # Cap at ±0.3: velocity of 0.2 → +0.3 for longs, -0.3 for shorts
+        vel_contribution = max(-0.3, min(0.3, vel * 1.5))
+        score += vel_contribution if direction == "long" else -vel_contribution
+        logger.debug("[ENGINE] %s: velocity=%.3f → score_adj=%.3f", asset_id, vel, vel_contribution)
+
     # Trend alignment bonus/penalty (scaled by asset class)
     if trend_aligned:
         score += pol.mtf_aligned_score_bonus
@@ -1191,6 +1237,15 @@ def _build_candidate(
             regime_note = f"{regime_note}; sentiment–price divergence"
         else:
             regime_note = "Sentiment–price divergence"
+
+    # Sentiment conviction: reward consensus, penalize contradictory signals
+    if conv is not None:
+        if conv >= 0.7:
+            confidence = min(100, confidence + 5)
+            logger.debug("[ENGINE] %s: high conviction (%.2f) → conf=%d", asset_id, conv, confidence)
+        elif conv < 0.3:
+            confidence = max(0, confidence - 8)
+            logger.debug("[ENGINE] %s: low conviction (%.2f) → conf=%d", asset_id, conv, confidence)
 
     # Event-type penalty: reduce confidence when asset is in an active high-impact event (Fed, earnings, etc.)
     event_pen = _event_penalty(category, asset_id, active_events, by_asset_sentiment)

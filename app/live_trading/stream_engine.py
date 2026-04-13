@@ -333,7 +333,7 @@ class DataStreamEngine:
                     "fetched_at": now,
                     "source": (it.get("source") or "")[:256],
                     "category": (it.get("category") or "")[:64],
-                    "asset_tags": json.dumps(tags),
+                    "asset_tags": tags,
                     "sentiment_score": sentiment,
                 })
 

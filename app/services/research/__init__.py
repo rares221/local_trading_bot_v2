@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import cast, select, Text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from datetime import date, datetime, timedelta, timezone
@@ -194,7 +194,7 @@ async def build_research_context(
     try:
         _hq = (
             select(FeedItem)
-            .where(cast(FeedItem.asset_tags, Text).like(f'%"{asset_id}"%'))
+            .where(FeedItem.asset_tags.contains([asset_id]))
             .order_by(FeedItem.fetched_at.desc())
             .limit(_max_headlines * 3)
         )
@@ -292,6 +292,15 @@ async def build_research_context(
         st = asset_info.get("sentiment_trend")
         if st:
             ctx["sentiment_trend"] = st
+        vel = asset_info.get("velocity")
+        if vel is not None:
+            ctx["sentiment_velocity"] = vel  # positive = improving, negative = worsening
+        conv = asset_info.get("conviction")
+        if conv is not None:
+            ctx["sentiment_conviction"] = conv  # 1.0 = consensus, 0.0 = contradictory
+        active_events = (analysis.payload or {}).get("active_events") or []
+        if active_events:
+            ctx["active_events"] = active_events  # e.g. ["earnings", "fomc", "nfp"]
 
     # Market regime + DXY macro (global signals; sync calls reuse cached yfinance data)
     try:

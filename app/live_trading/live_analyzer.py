@@ -14,7 +14,6 @@ LLM role: receives math signals, returns trade_type + rationale + llm_sl + llm_t
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -96,9 +95,12 @@ _snap_executor = ThreadPoolExecutor(max_workers=10, thread_name_prefix="live_sna
 
 def _aggregate_live_sentiment_sync() -> dict[str, dict]:
     """
-    Query LiveNewsItem for last 24h, parse asset_tags, aggregate sentiment per tag.
+    Query LiveNewsItem for last 24h, parse asset_tags, aggregate decay-weighted sentiment per tag.
+    Uses the same 24h half-life exponential decay as the batch pipeline (aggregate.py)
+    so that breaking news dominates over stale articles from earlier in the day.
     Returns: {tag: {"avg": float, "count": int}}
     """
+    import math as _math
     try:
         from sqlalchemy import create_engine, text
         from app.core.config import settings
@@ -107,34 +109,91 @@ def _aggregate_live_sentiment_sync() -> dict[str, dict]:
         db_url = db_url.replace("+asyncpg", "").replace("+aiosqlite", "")
         engine = create_engine(db_url)
         cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+        now = datetime.now(timezone.utc)
         with engine.connect() as conn:
             rows = conn.execute(
-                text("SELECT asset_tags, sentiment_score FROM live_news_items WHERE fetched_at >= :cutoff"),
+                text(
+                    "SELECT asset_tags, sentiment_score, fetched_at "
+                    "FROM live_news_items WHERE fetched_at >= :cutoff"
+                ),
                 {"cutoff": cutoff},
             ).fetchall()
         engine.dispose()
 
-        agg: dict[str, list[float]] = {}
-        for asset_tags_json, sentiment in rows:
+        _HALF_LIFE = 24.0  # hours — matches batch pipeline default
+        agg: dict[str, list[tuple[float, float]]] = {}  # tag -> [(score, weight)]
+        for asset_tags_json, sentiment, fetched_at in rows:
             if not asset_tags_json:
                 continue
-            try:
-                tags = json.loads(asset_tags_json)
-            except Exception:
-                continue
+            tags = asset_tags_json if isinstance(asset_tags_json, list) else []
             score = float(sentiment or 0.0)
+            if fetched_at is not None:
+                fa = fetched_at if fetched_at.tzinfo else fetched_at.replace(tzinfo=timezone.utc)
+                age_hours = max(0.0, (now - fa).total_seconds() / 3600)
+            else:
+                age_hours = 0.0
+            weight = _math.exp(-0.693 * age_hours / _HALF_LIFE)
             for tag in tags:
                 if not tag:
                     continue
                 tag = str(tag).strip()
-                if tag not in agg:
-                    agg[tag] = []
-                agg[tag].append(score)
+                agg.setdefault(tag, []).append((score, weight))
 
-        return {
-            tag: {"avg": sum(scores) / len(scores), "count": len(scores)}
-            for tag, scores in agg.items()
-        }
+        # Split into recent (0-12h) and older (12-24h) for velocity
+        agg_recent: dict[str, list[tuple[float, float]]] = {}
+        agg_older: dict[str, list[tuple[float, float]]] = {}
+        for asset_tags_json, sentiment, fetched_at in rows:
+            if not asset_tags_json:
+                continue
+            tags = asset_tags_json if isinstance(asset_tags_json, list) else []
+            score = float(sentiment or 0.0)
+            if fetched_at is not None:
+                fa = fetched_at if fetched_at.tzinfo else fetched_at.replace(tzinfo=timezone.utc)
+                age_hours = max(0.0, (now - fa).total_seconds() / 3600)
+            else:
+                age_hours = 0.0
+            weight = _math.exp(-0.693 * age_hours / _HALF_LIFE)
+            for tag in tags:
+                if not tag:
+                    continue
+                tag = str(tag).strip()
+                if age_hours <= 12.0:
+                    agg_recent.setdefault(tag, []).append((score, weight))
+                else:
+                    agg_older.setdefault(tag, []).append((score, weight))
+
+        def _wavg(pairs: list[tuple[float, float]]) -> float | None:
+            if not pairs:
+                return None
+            tw = sum(w for _, w in pairs)
+            return sum(s * w for s, w in pairs) / tw if tw > 0 else None
+
+        def _conv(pairs: list[tuple[float, float]]) -> float:
+            if len(pairs) < 2:
+                return 1.0
+            scores = [s for s, _ in pairs]
+            mean = sum(scores) / len(scores)
+            variance = sum((s - mean) ** 2 for s in scores) / len(scores)
+            return round(max(0.0, 1.0 - min(1.0, (variance ** 0.5) / 0.5)), 4)
+
+        result: dict[str, dict] = {}
+        for tag, pairs in agg.items():
+            total_w = sum(w for _, w in pairs)
+            if total_w > 0:
+                weighted_avg = sum(s * w for s, w in pairs) / total_w
+            else:
+                weighted_avg = sum(s for s, _ in pairs) / len(pairs)
+            recent_avg = _wavg(agg_recent.get(tag, []))
+            older_avg = _wavg(agg_older.get(tag, []))
+            velocity = round(recent_avg - older_avg, 4) if (recent_avg is not None and older_avg is not None) else None
+            conviction = _conv(agg_recent.get(tag, pairs))  # prefer recent window; fall back to all
+            result[tag] = {
+                "avg": round(weighted_avg, 4),
+                "count": len(pairs),
+                "velocity": velocity,
+                "conviction": conviction,
+            }
+        return result
     except Exception as exc:
         logger.warning("[LIVE_ANALYZER] Could not aggregate sentiment: %s", exc)
         return {}
@@ -158,6 +217,8 @@ def _discover_tickers(sentiment_data: dict[str, dict]) -> list[tuple[str, str, s
             continue
         if info.get("count", 0) < _MIN_MENTIONS_FOR_DISCOVERY:
             continue
+        if abs(info.get("avg", 0.0)) <= 0.05:
+            continue  # near-neutral: noise, not a directional signal
         candidates.append((tag, info["count"]))
 
     candidates.sort(key=lambda x: -x[1])
@@ -193,6 +254,8 @@ def _compute_signal_sync(
     sentiment_count: int,
     regime: str,
     backtest_stats: dict | None = None,
+    sentiment_velocity: float | None = None,
+    sentiment_conviction: float | None = None,
 ) -> dict | None:
     """
     Blocking computation of a full math signal for one asset.
@@ -275,6 +338,18 @@ def _compute_signal_sync(
     except Exception:
         tech_score = 0.0
 
+    # Velocity contribution to ranking score (mirrors batch engine logic)
+    if sentiment_velocity is not None:
+        vel_contribution = max(-0.3, min(0.3, sentiment_velocity * 1.5))
+        tech_score += vel_contribution if direction == "long" else -vel_contribution
+
+    # Conviction contribution to confidence
+    if sentiment_conviction is not None:
+        if sentiment_conviction >= 0.7:
+            confidence = min(100, confidence + 5)
+        elif sentiment_conviction < 0.3:
+            confidence = max(0, confidence - 8)
+
     return {
         "asset_id":        asset_id,
         "ticker":          yf_symbol,
@@ -338,8 +413,10 @@ async def build_all_signals(min_confidence: int = 10) -> list[dict]:
     tasks = []
     for asset_id, yf_symbol, risk_tier, category in universe:
         tag_info = sentiment_data.get(asset_id) or sentiment_data.get(yf_symbol) or {}
-        sentiment_avg   = float(tag_info.get("avg", 0.0))
-        sentiment_count = int(tag_info.get("count", 0))
+        sentiment_avg       = float(tag_info.get("avg", 0.0))
+        sentiment_count     = int(tag_info.get("count", 0))
+        sentiment_velocity  = tag_info.get("velocity")
+        sentiment_conviction = tag_info.get("conviction")
         stats = backtest_stats_map.get(yf_symbol)
 
         tasks.append(loop.run_in_executor(
@@ -349,6 +426,7 @@ async def build_all_signals(min_confidence: int = 10) -> list[dict]:
                 asset_id, yf_symbol, risk_tier, category,
                 sentiment_avg, sentiment_count, regime,
                 stats,
+                sentiment_velocity, sentiment_conviction,
             ),
         ))
 
