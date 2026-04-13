@@ -4,6 +4,46 @@ All notable changes to this project will be documented here.
 
 ---
 
+## [Unreleased] — 2026-04-13
+
+### Branch: `realtime_stream_analize`
+
+---
+
+### Added — Finnhub market data routing layer
+
+#### `app/services/market_data.py` — modul nou de routing
+
+- Layer de routing care direcționează cererile de date de piață către **Finnhub** (dacă `FINNHUB_KEY` e setat în `.env`) sau **Yahoo Finance** (fallback implicit).
+- Regula de eligibilitate: simbolurile fără caractere speciale (`=`, `^`, `-`, `:`) sunt eligibile pentru Finnhub — acoperă acțiuni/ETF-uri. Futures (`CL=F`), indici (`^GSPC`), FX (`EURUSD=X`), crypto (`BTC-USD`) și DXY rămân pe Yahoo.
+- Funcții expuse: `fetch_ohlcv()`, `fetch_quote()`, `fetch_last_price()`, `fetch_company_profile()`, `fetch_metrics()` (P/E, 52w), `fetch_next_earnings()`, `search_symbol()`.
+- Client Finnhub inițializat lazy (singleton) la primul apel.
+
+#### `app/core/config.py`
+
+- `finnhub_user: str` — identificare cont (opțional, logging)
+- `finnhub_key: str` — API key Finnhub; dacă e gol, tot traficul merge pe Yahoo
+
+#### `requirements.txt`
+
+- `finnhub-python>=2.4.19` adăugat (**necesită rebuild Docker**: `make build start`)
+
+### Changed — toate sursele de date refactorizate prin `market_data`
+
+| Fișier | Ce s-a schimbat |
+|---|---|
+| `app/services/technicals.py` | `fetch_ohlcv()` → `market_data.fetch_ohlcv()` (eliminat `import yfinance`, `concurrent.futures` din module level) |
+| `app/services/earnings_calendar.py` | `_fetch_next_earnings()` → `market_data.fetch_next_earnings()` |
+| `app/live_trading/stream_engine.py` | `_fetch_prices_sync()` → `market_data.fetch_quote()` per ticker |
+| `app/api/routes.py` | `_get_short_name()` → `market_data.fetch_company_profile()` |
+| `app/live_trading/live_routes.py` | chart `_fetch()` → `market_data.fetch_ohlcv()` |
+| `app/services/research/__init__.py` | fundamentals (sector, industry, market cap, P/E, 52w) → `market_data.fetch_company_profile()` + `fetch_metrics()`; live price fallback → `market_data.fetch_last_price()` |
+| `app/services/ticker_resolver.py` | `_search_yfinance()` redenumit `_search_live()` → `market_data.search_symbol()` |
+| `app/services/backtesting/data_provider.py` | prefetch per simbol → `market_data.fetch_ohlcv()` (eliminat `import yfinance`) |
+| `app/services/briefing.py` | `_fetch_price()` / `_fetch_change_pct()` → `market_data.fetch_ohlcv()` (eliminat `import yfinance` la nivel de modul) |
+
+---
+
 ## [Unreleased] — 2026-04-07
 
 ### Branch: `improvements_trade_builder`

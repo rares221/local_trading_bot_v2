@@ -10,6 +10,8 @@ import json
 import logging
 from datetime import datetime, timezone, timedelta
 
+import pandas as pd
+
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException
 from pydantic import BaseModel
 from typing import Optional
@@ -407,13 +409,13 @@ async def get_chart_data(ticker: str, period: str = "1d", interval: str = "5m"):
     interval = _INTERVAL_MAP.get(period, interval)
 
     def _fetch():
-        import yfinance as yf
-        hist = yf.Ticker(ticker.upper()).history(period=period, interval=interval)
-        if hist.empty:
+        from app.services.market_data import fetch_ohlcv
+        hist = fetch_ohlcv(ticker.upper(), period=period, interval=interval)
+        if hist is None or hist.empty:
             return []
         candles = []
         for ts, row in hist.iterrows():
-            t = int(ts.timestamp())
+            t = int(pd.Timestamp(ts).timestamp())
             candles.append({
                 "time":  t,
                 "open":  round(float(row["Open"]),  4),

@@ -19,25 +19,21 @@ from app.models.daily_briefing import DailyBriefing
 
 logger = logging.getLogger(__name__)
 
-# Module-level cache for yfinance short names (persists for process lifetime; names rarely change)
-_yf_short_name_cache: dict[str, str] = {}
+# Module-level cache for instrument short names (persists for process lifetime; names rarely change)
+_short_name_cache: dict[str, str] = {}
 
 def _get_short_name(symbol: str | None, asset_id: str) -> str | None:
-    """Fetch instrument short name from yfinance with in-memory caching. Never raises."""
+    """Fetch instrument short name via market_data routing with in-memory caching. Never raises."""
     if not symbol:
         symbol = asset_id.upper()
-    if symbol in _yf_short_name_cache:
-        return _yf_short_name_cache[symbol]
+    if symbol in _short_name_cache:
+        return _short_name_cache[symbol]
     try:
-        import yfinance as yf
-        info = yf.Ticker(symbol).fast_info
-        name = getattr(info, "description", None) or None
-        # fast_info doesn't have shortName; fall back to .info (cached by yfinance internally)
-        if not name:
-            full = yf.Ticker(symbol).info
-            name = full.get("shortName") or full.get("longName") or None
+        from app.services.market_data import fetch_company_profile
+        profile = fetch_company_profile(symbol)
+        name = (profile or {}).get("name") or None
         if name:
-            _yf_short_name_cache[symbol] = name
+            _short_name_cache[symbol] = name
         return name
     except Exception:
         return None

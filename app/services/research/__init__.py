@@ -160,9 +160,8 @@ async def build_research_context(
         # Fallback: fetch live price directly if still missing
         if not calculated and not ctx.get("buy_in_price") and symbol:
             try:
-                import yfinance as yf
-                fi = yf.Ticker(symbol).fast_info
-                lp = getattr(fi, "last_price", None) or getattr(fi, "lastPrice", None)
+                from app.services.market_data import fetch_last_price
+                lp = fetch_last_price(symbol)
                 if lp:
                     ctx["buy_in_price"] = float(lp)
             except Exception:
@@ -214,75 +213,54 @@ async def build_research_context(
                 break
     except Exception:
         await session.rollback()
-    # Optional: yfinance .info for sector, industry, market cap (stocks/ETFs; skip on failure)
+    # Fundamentals: sector, industry, market cap, P/E, 52-week range via market_data routing
     symbol = get_yf_symbol(category, asset_id)
     if not symbol and category.lower() in ("stocks", "etfs", "etf", "stock"):
         symbol = asset_id.upper()
     if symbol:
         try:
-            import yfinance as yf
-            import logging
-            log = logging.getLogger("yfinance")
-            old_level = log.level
-            log.setLevel(logging.WARNING)
-            try:
-                info = yf.Ticker(symbol).info
-                if isinstance(info, dict):
-                    fund: dict[str, Any] = {}
-                    if info.get("sector"):
-                        fund["sector"] = str(info["sector"])
-                    if info.get("industry"):
-                        fund["industry"] = str(info["industry"])
-                    if info.get("marketCap") is not None:
-                        fund["market_cap"] = int(info["marketCap"])
-                    if info.get("shortName"):
-                        fund["short_name"] = str(info["shortName"])
-                    # P/E + 52-week position — used for far-horizon LLM context
-                    if info.get("trailingPE") is not None:
-                        try:
-                            fund["pe_ratio"] = round(float(info["trailingPE"]), 1)
-                        except Exception:
-                            pass
-                    high52 = info.get("fiftyTwoWeekHigh")
-                    low52 = info.get("fiftyTwoWeekLow")
-                    buy_in = ctx.get("buy_in_price")
-                    if high52 and low52 and buy_in and float(high52) > float(low52):
-                        try:
-                            fund["position_52w"] = round(
-                                (float(buy_in) - float(low52)) / (float(high52) - float(low52)) * 100, 1
-                            )
-                        except Exception:
-                            pass
-                    if fund:
-                        ctx["fundamentals"] = fund
+            from app.services.market_data import fetch_company_profile, fetch_metrics, fetch_next_earnings as _fetch_earnings
+            fund: dict[str, Any] = {}
+            profile = fetch_company_profile(symbol)
+            if profile:
+                if profile.get("sector"):
+                    fund["sector"] = str(profile["sector"])
+                if profile.get("industry"):
+                    fund["industry"] = str(profile["industry"])
+                if profile.get("market_cap") is not None:
+                    fund["market_cap"] = int(profile["market_cap"])
+                if profile.get("name"):
+                    fund["short_name"] = str(profile["name"])
+            metrics = fetch_metrics(symbol)
+            if metrics:
+                if metrics.get("pe_ratio") is not None:
+                    fund["pe_ratio"] = metrics["pe_ratio"]
+                high52 = metrics.get("high_52w")
+                low52 = metrics.get("low_52w")
+                buy_in = ctx.get("buy_in_price")
+                if high52 and low52 and buy_in and float(high52) > float(low52):
+                    try:
+                        fund["position_52w"] = round(
+                            (float(buy_in) - float(low52)) / (float(high52) - float(low52)) * 100, 1
+                        )
+                    except Exception:
+                        pass
+            if fund:
+                ctx["fundamentals"] = fund
 
-                    # F2-5: earnings date for far-horizon trades (binary event risk)
-                    # Only fetched for stocks; requires far horizon to be worth the computation.
-                    if ctx.get("horizon") == "far":
-                        try:
-                            from datetime import date as _date
-                            _today = _date.today()
-                            raw_ed = info.get("earningsDate") or info.get("nextEarningsDate")
-                            if raw_ed is not None:
-                                # earningsDate can be a list or a single value
-                                if isinstance(raw_ed, list) and raw_ed:
-                                    raw_ed = raw_ed[0]
-                                # may be a Unix timestamp (int/float) or a pd.Timestamp / datetime
-                                ed_date = None
-                                if isinstance(raw_ed, (int, float)):
-                                    from datetime import datetime as _dt, timezone as _tz
-                                    ed_date = _dt.fromtimestamp(raw_ed, tz=_tz.utc).date()
-                                elif hasattr(raw_ed, "date"):
-                                    ed_date = raw_ed.date()
-                                if ed_date:
-                                    dte = (ed_date - _today).days
-                                    if dte >= 0:
-                                        ctx["days_to_earnings"] = dte
-                                        ctx["earnings_in_window"] = dte <= int(ctx.get("expiry_days", 60))
-                        except Exception:
-                            pass
-            finally:
-                log.setLevel(old_level)
+            # Earnings date for far-horizon trades (binary event risk)
+            if ctx.get("horizon") == "far":
+                try:
+                    from datetime import date as _date
+                    _today = _date.today()
+                    ed_date = _fetch_earnings(symbol)
+                    if ed_date:
+                        dte = (ed_date - _today).days
+                        if dte >= 0:
+                            ctx["days_to_earnings"] = dte
+                            ctx["earnings_in_window"] = dte <= int(ctx.get("expiry_days", 60))
+                except Exception:
+                    pass
         except Exception:
             pass
     # Sentiment trend from analysis payload (improving / worsening / neutral)
