@@ -502,8 +502,8 @@ class StreamProcessor:
             data = json.loads(raw[start:end])
             if isinstance(data, dict) and any(k in data for k in ("rationale", "llm_sl", "trade_type")):
                 return data
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("[PROCESSOR] _parse_single_analysis JSON error: %s | raw=%r", exc, (raw or "")[:300])
         return None
 
     # ── Targeted analysis (news → specific tickers) ───────────────────────────

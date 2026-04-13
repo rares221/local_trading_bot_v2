@@ -203,12 +203,15 @@ ASSETS_BY_CATEGORY = {
 }
 
 
+ABSOLUTE_MIN_CONFIDENCE = 20  # hard floor — nothing below this ever reaches recommendations
+
 def _effective_min_confidence(
     category: str,
     asset_id: str,
     market_ctx: Optional[MarketContext],
 ) -> int:
-    """Regime floor + asset-class offset + dashboard prefs (commodities + optional equity/other)."""
+    """Regime floor + asset-class offset + dashboard prefs (commodities + optional equity/other).
+    Never returns below ABSOLUTE_MIN_CONFIDENCE regardless of regime relief."""
     base = market_ctx.min_confidence_threshold() if market_ctx else 35
     pol = get_asset_class_policy(category, asset_id)
     m = base + pol.min_confidence_offset
@@ -226,7 +229,7 @@ def _effective_min_confidence(
             m += int(nc["equity_confidence_offset"])
         elif category == "other":
             m += int(nc["other_confidence_offset"])
-    return max(0, min(100, m))
+    return max(ABSOLUTE_MIN_CONFIDENCE, min(100, m))
 
 
 def _min_rr_floor_for_build(category: str, pol: AssetClassPolicy) -> float:
@@ -1701,7 +1704,7 @@ def build_daily_candidates_for_category(
                 policy=pol,
             )
             eff_min = _effective_min_confidence(category, asset_id, market_ctx)
-            backfill_min_conf = max(15, eff_min - 20)
+            backfill_min_conf = max(ABSOLUTE_MIN_CONFIDENCE, eff_min - 15)
             if not cand:
                 # Failure reason already logged inside _build_candidate (no_snapshot / conflict / R:R).
                 continue
