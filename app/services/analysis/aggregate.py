@@ -130,13 +130,19 @@ async def run_analysis(session: AsyncSession) -> MarketAnalysis:
 
     # Time-decay weighted sentiment per asset tag; source and entity weighting
     by_asset_weighted: dict[str, list[tuple[float, float]]] = {}  # tag -> [(score, weight)]
+    tag_titles: dict[str, list[str]] = {}  # tag -> article texts for domain correction
     for it in items:
         if it.sentiment_score is not None and it.asset_tags:
             base_w = _decay_weight(it.published or it.fetched_at, now)
             src_w = _source_weight(getattr(it, "source", None))
+            text = f"{it.title or ''} {it.description or ''}".strip()
             for tag in it.asset_tags:
                 w = base_w * src_w * _entity_weight(tag)
                 by_asset_weighted.setdefault(tag, []).append((it.sentiment_score, w))
+                if text:
+                    tag_titles.setdefault(tag, []).append(text)
+
+    from app.services.sentiment.domain_correction import apply_domain_correction
 
     by_asset_sentiment: dict[str, dict] = {}
     for tag, pairs in by_asset_weighted.items():
@@ -145,9 +151,13 @@ async def run_analysis(session: AsyncSession) -> MarketAnalysis:
             weighted_avg = sum(s * w for s, w in pairs) / total_weight
         else:
             weighted_avg = sum(s for s, _ in pairs) / len(pairs) if pairs else 0
+        corrected_avg, correction_applied = apply_domain_correction(
+            tag, weighted_avg, tag_titles.get(tag, [])
+        )
         by_asset_sentiment[tag] = {
-            "avg": round(weighted_avg, 4),
+            "avg": round(corrected_avg, 4),
             "count": len(pairs),
+            "domain_correction_applied": correction_applied,
         }
 
     # Sentiment trend (recent 24h vs older 24–72h) and price trend for divergence (same source/entity weights)
