@@ -31,6 +31,18 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+
+def _sanitize_metrics(obj: Any) -> Any:
+    """Recursively replace NaN/Inf with None so metrics_json is valid JSON for PostgreSQL."""
+    import math
+    if isinstance(obj, float):
+        return None if (math.isnan(obj) or math.isinf(obj)) else obj
+    if isinstance(obj, dict):
+        return {k: _sanitize_metrics(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_metrics(v) for v in obj]
+    return obj
+
 # In-memory cache for background LLM insight results
 # key: f"{asset_id}:{direction}:{risk_tier}" → {"status": "pending"|"done"|"error", "result": dict|None}
 _insight_cache: dict[str, dict] = {}
@@ -617,7 +629,7 @@ async def _run_backtest_background(run_id: str, body: BacktestRequest) -> None:
                 run.max_drawdown = metrics.get("max_drawdown_r")
                 run.avg_rr_realized = metrics.get("avg_pnl_r")
                 run.avg_rr_projected = metrics.get("avg_rr_projected")
-                run.metrics_json = json.dumps(metrics)
+                run.metrics_json = json.dumps(_sanitize_metrics(metrics))
                 run.symbols_json = json.dumps(result.get("symbols_tested", []))
 
             await db.commit()

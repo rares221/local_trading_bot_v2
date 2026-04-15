@@ -92,6 +92,9 @@ CORRELATION_THRESHOLD = 0.75
 
 # Minimum Risk:Reward ratio to include a recommendation (skip trades where reward doesn't justify risk).
 MIN_RISK_REWARD = 1.6  # raised 1.2→1.6: 34% win rate needs R:R≥1.9 to break even; floor targets ~4×ATR TP
+# Short trades disabled: backtest shows 24.7% WR for shorts vs 35.8% for longs — shorts are net -EV.
+# Re-enable once short signal quality improves (e.g. dedicated short scoring, bear-regime-only filter).
+SHORTS_ENABLED = False
 
 # Macro-day confidence penalty: see `MACRO_DAY_CONFIDENCE_PENALTY` in `app.services.macro_calendar`.
 
@@ -1060,6 +1063,11 @@ def _build_candidate(
             # but note the conflict
             trend_aligned = False
 
+    # Hard-block signal generation in crisis and high_vol regimes.
+    # Backtest: crisis=12.5% WR (-0.71R avg), high_vol=23.5% WR (-0.009R avg) — both net negative EV.
+    if market_ctx and market_ctx.regime.regime in ("crisis", "high_vol"):
+        return None
+
     # Market regime direction override for equities
     regime_note = None
     sector_regime: Optional[SectorRegime] = None
@@ -1080,6 +1088,10 @@ def _build_candidate(
             and category in ("stocks", "indices")
         ):
             direction = "short"
+
+    # Short trades globally disabled: backtest 24.7% WR vs 35.8% longs — net negative EV.
+    if direction == "short" and not SHORTS_ENABLED:
+        return None
 
     # EMA200 hard gate for short trades: do not short an asset that is above its 200-day EMA.
     # Structural market upward bias means shorting above EMA200 fights the macro trend —

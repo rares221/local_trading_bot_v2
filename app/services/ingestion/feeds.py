@@ -82,10 +82,34 @@ def default_feeds() -> list[FeedSpec]:
         FeedSpec("https://cointelegraph.com/rss", "crypto"),
         FeedSpec("https://coindesk.com/arc/outboundfeeds/rss/", "crypto"),
         FeedSpec("https://cryptonews.com/news/feed/", "crypto"),
+
+        # ── Small / mid-cap equities ─────────────────────────────
+        FeedSpec("https://feeds.benzinga.com/benzinga", "smallcap"),                    # broad small/mid-cap movers
+        FeedSpec("https://stockanalysis.com/rss/", "smallcap"),                         # lesser-known movers & earnings
+        FeedSpec("https://finance.yahoo.com/rss/industry", "smallcap"),                 # Yahoo by-industry (mid-cap)
+        FeedSpec("https://www.investopedia.com/feedbuilder/feed/getfeed/?feedName=rss_headline", "smallcap"),
+
+        # ── SEC EDGAR filings (8-K: material events, earnings, M&A) ──
+        FeedSpec("https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=8-K&dateb=&owner=include&count=40&search_text=&output=atom", "sec_filings"),
+        FeedSpec("https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=S-1&dateb=&owner=include&count=20&search_text=&output=atom", "sec_filings"),  # IPO filings
+
+        # ── Sector-specific (Investing.com) ──────────────────────
+        FeedSpec("https://www.investing.com/rss/news_7.rss", "sector"),   # technology
+        FeedSpec("https://www.investing.com/rss/news_8.rss", "sector"),   # healthcare / pharma
+        FeedSpec("https://www.investing.com/rss/news_6.rss", "sector"),   # financials
+        FeedSpec("https://www.investing.com/rss/news_9.rss", "sector"),   # retail / consumer
+        FeedSpec("https://www.investing.com/rss/news_2.rss", "sector"),   # industrials
+        FeedSpec("https://www.investing.com/rss/news_3.rss", "sector"),   # materials / mining
+
+        # ── Biotech / healthcare (FDA, trials, approvals) ────────
+        FeedSpec("https://www.biopharmadive.com/feeds/news/", "biotech"),
+        FeedSpec("https://www.fiercebiotech.com/rss/xml", "biotech"),
+        FeedSpec("https://www.statnews.com/feed/", "biotech"),            # STAT News — clinical/regulatory
     ]
 
 
 FEED_CATEGORIES = [
     "finance", "stocks", "indices", "commodities", "forex",
     "europe", "asia", "politics", "trading", "crypto",
+    "smallcap", "sec_filings", "sector", "biotech",
 ]
