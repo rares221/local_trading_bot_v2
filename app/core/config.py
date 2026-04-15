@@ -43,6 +43,11 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     lm_studio_base_url: str = "http://localhost:1234/v1"  # LM_STUDIO_BASE_URL env var
 
+    # Finnhub market data (optional). When both are set, eligible symbols
+    # (plain stock tickers — no =, ^, -, :) are fetched via Finnhub instead of Yahoo Finance.
+    finnhub_user: str = ""
+    finnhub_key: str = ""
+
     # Ticker resolution: exchange preference and cache TTL.
     # Comma-separated Yahoo Finance exchange codes, ordered by preference.
     # US exchanges first, then Europe, Asia, etc.

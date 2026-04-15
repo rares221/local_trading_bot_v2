@@ -97,6 +97,19 @@ def _entity_weight(tag: str) -> float:
     return ENTITY_WEIGHTS.get(tag, DEFAULT_ENTITY_WEIGHT)
 
 
+def _conviction_score(pairs: list[tuple[float, float]]) -> float:
+    """Sentiment conviction: 1.0 = strong directional consensus, 0.0 = wild disagreement.
+    Uses population std-dev of raw scores (weights ignored; we want raw variance).
+    Threshold: std-dev of 0.5 maps to conviction 0.0 (half the ±1 range = full noise)."""
+    if len(pairs) < 2:
+        return 1.0
+    scores = [s for s, _ in pairs]
+    mean = sum(scores) / len(scores)
+    variance = sum((s - mean) ** 2 for s in scores) / len(scores)
+    std_dev = variance ** 0.5
+    return round(max(0.0, 1.0 - min(1.0, std_dev / 0.5)), 4)
+
+
 async def run_analysis(session: AsyncSession) -> MarketAnalysis:
     """
     Build market analysis from latest feed items (with sentiment_score and asset_tags).
@@ -225,9 +238,20 @@ async def run_analysis(session: AsyncSession) -> MarketAnalysis:
             (sentiment_trend == "improving" and price_trend == "down")
             or (sentiment_trend == "worsening" and price_trend == "up")
         )
+
+        # Velocity: magnitude and direction of sentiment change (recent − older window)
+        velocity: float | None = None
+        if recent_avg is not None and older_avg is not None:
+            velocity = round(recent_avg - older_avg, 4)
+
+        # Conviction: how consistent the recent scores are (1 = consensus, 0 = contradictory)
+        conviction = _conviction_score(recent_pairs.get(tag, []))
+
         info["sentiment_trend"] = sentiment_trend
         info["price_trend"] = price_trend
         info["divergence"] = divergence
+        info["velocity"] = velocity
+        info["conviction"] = conviction
 
     as_of = now
     summary_lines = [

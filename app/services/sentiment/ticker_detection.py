@@ -50,6 +50,12 @@ _DEFAULT_BLOCKLIST = frozenset({
     "NFL", "NHL", "NBA", "MLS", "FIFA", "UEFA", "NCAA", "NIL",
     # Macro / policy / gov tokens mistaken for symbols
     "NFP", "USMCA", "USDA", "USGS", "USTR", "NSE", "TASI", "SIFMA",
+    # Macro economic indicators / reports (not Yahoo-resolvable tickers)
+    "GDP", "GNP", "PPI", "PMI", "ISM", "NFIB", "LEI",
+    # Elliott Wave labels (common in TA commentary, not tickers)
+    "WXY",
+    # Financial slang (not exchange-listed tickers)
+    "HYPE", "FOMO",
     # Common headline words / jargon (all-caps RSS)
     "WORLD", "SPACE", "SPAC", "SPDR", "RISK", "SWING", "TRACE", "WILL", "WONT", "WOULD",
     "PLACE", "ZONES", "WPSR", "TBPN", "VAT", "RFK", "RTHK", "RWA", "SUV", "TMGH",
@@ -60,6 +66,13 @@ _DEFAULT_BLOCKLIST = frozenset({
     "PSAR", "VWMA", "CHOP", "ULTI", "BBB", "WMA",
     # Trade management abbreviations (TP/SL already common in news, SL was blocked but TP wasn't)
     "TP", "RR", "RRR", "PNL", "PRL", "ENTRY", "EXIT", "STOP", "LIMIT", "TRAIL",
+    # Trading timeframe / jargon abbreviations (not tickers, appear in TA content)
+    "HTF", "LTF", "MTF", "ATH", "ATL", "BIAS", "SETUP", "CHART", "DAILY", "WEEKLY",
+    "SCALP", "SWING", "INTRA", "FRGNT",
+    # Broker / exchange / regulatory acronyms (not Yahoo-resolvable tickers)
+    "OANDA", "AMEX", "CFTC", "AFSL", "FINRA", "SIPC", "ESMA", "MIFID", "FSCA",
+    # Financial metric acronyms (APY, APR etc. — not stock tickers)
+    "APY", "APR", "NAV", "AUM", "IRR", "EBIT", "EBITDA", "EBITA", "CAPEX", "OPEX",
     # Currency codes missing from original list (caused $AUD/$FX spam)
     "AUD", "NZD", "CHF", "CNY", "CNH", "HKD", "SGD", "INR", "BRL", "RUB", "MXN",
     "ZAR", "KRW", "TRY", "SEK", "NOK", "DKK", "PLN", "HUF", "CZK", "ILS", "THB",

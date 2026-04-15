@@ -19,25 +19,21 @@ from app.models.daily_briefing import DailyBriefing
 
 logger = logging.getLogger(__name__)
 
-# Module-level cache for yfinance short names (persists for process lifetime; names rarely change)
-_yf_short_name_cache: dict[str, str] = {}
+# Module-level cache for instrument short names (persists for process lifetime; names rarely change)
+_short_name_cache: dict[str, str] = {}
 
 def _get_short_name(symbol: str | None, asset_id: str) -> str | None:
-    """Fetch instrument short name from yfinance with in-memory caching. Never raises."""
+    """Fetch instrument short name via market_data routing with in-memory caching. Never raises."""
     if not symbol:
         symbol = asset_id.upper()
-    if symbol in _yf_short_name_cache:
-        return _yf_short_name_cache[symbol]
+    if symbol in _short_name_cache:
+        return _short_name_cache[symbol]
     try:
-        import yfinance as yf
-        info = yf.Ticker(symbol).fast_info
-        name = getattr(info, "description", None) or None
-        # fast_info doesn't have shortName; fall back to .info (cached by yfinance internally)
-        if not name:
-            full = yf.Ticker(symbol).info
-            name = full.get("shortName") or full.get("longName") or None
+        from app.services.market_data import fetch_company_profile
+        profile = fetch_company_profile(symbol)
+        name = (profile or {}).get("name") or None
         if name:
-            _yf_short_name_cache[symbol] = name
+            _short_name_cache[symbol] = name
         return name
     except Exception:
         return None
@@ -557,6 +553,7 @@ async def trade_builder_from_asset(
         await job_run_analysis()
 
     analysis = await fetch_latest_analysis(db)
+    analysis_id = analysis.id if analysis else None  # capture before any rollback expires the object
     payload = (analysis.payload or {}) if analysis else {}
     by_asset_sentiment = payload.get("by_asset_sentiment")
     active_events = payload.get("active_events")
@@ -617,7 +614,7 @@ async def trade_builder_from_asset(
         stop_loss=cand.stop_loss,
         take_profit=cand.take_profit,
         expiry_date=cand.expiry_date,
-        rationale_ref=analysis.id if analysis else None,
+        rationale_ref=analysis_id,
         rationale_text=rationale_text,
         risk_tier=cand.risk_tier,
         direction=cand.direction or "long",
@@ -857,8 +854,8 @@ async def list_active_trades(
         short_name = None
         if rec:
             cached_sym = symbol or rec.asset_id.upper()
-            if cached_sym in _yf_short_name_cache:
-                short_name = _yf_short_name_cache[cached_sym]
+            if cached_sym in _short_name_cache:
+                short_name = _short_name_cache[cached_sym]
             else:
                 try:
                     short_name = await asyncio.to_thread(_get_short_name, symbol, rec.asset_id)

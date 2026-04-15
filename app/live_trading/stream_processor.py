@@ -176,15 +176,57 @@ def _parse_asset_tags(item: dict) -> list[str]:
 
 
 def _compress_news(news_items: list[dict]) -> str:
-    top = sorted(news_items, key=lambda x: abs(x.get("sentiment_score") or 0), reverse=True)[:10]
-    lines = []
-    for item in top:
+    """Compress news to top 10 with directional context.
+    Separates bullish/bearish and leads with net direction so the LLM
+    understands consensus vs noise, not just magnitude."""
+    if not news_items:
+        return "No recent news available."
+
+    bullish = sorted(
+        [n for n in news_items if (n.get("sentiment_score") or 0) > 0],
+        key=lambda x: -(x.get("sentiment_score") or 0),
+    )
+    bearish = sorted(
+        [n for n in news_items if (n.get("sentiment_score") or 0) < 0],
+        key=lambda x: (x.get("sentiment_score") or 0),
+    )
+
+    all_scores = [n.get("sentiment_score") or 0 for n in news_items]
+    net_avg = sum(all_scores) / len(all_scores) if all_scores else 0
+    if net_avg > 0.05:
+        net_dir = "BULLISH"
+    elif net_avg < -0.05:
+        net_dir = "BEARISH"
+    else:
+        net_dir = "MIXED"
+
+    # Interleave: up to 6 from dominant side, up to 4 from the other
+    selected: list[dict] = []
+    bi, bri = 0, 0
+    while len(selected) < 10:
+        bull_slots = sum(1 for s in selected if (s.get("sentiment_score") or 0) > 0)
+        bear_slots = len(selected) - bull_slots
+        if bi < len(bullish) and bull_slots < 6:
+            selected.append(bullish[bi]); bi += 1
+        elif bri < len(bearish) and bear_slots < 4:
+            selected.append(bearish[bri]); bri += 1
+        elif bi < len(bullish):
+            selected.append(bullish[bi]); bi += 1
+        elif bri < len(bearish):
+            selected.append(bearish[bri]); bri += 1
+        else:
+            break
+
+    lines = [
+        f"Net: {net_dir} ({net_avg:+.2f}) | {len(bullish)} bullish / {len(bearish)} bearish of {len(news_items)}"
+    ]
+    for item in selected:
         score = item.get("sentiment_score") or 0
         sign = "+" if score > 0 else ""
         source = (item.get("source") or "")[:30]
         title = (item.get("title") or "")[:100]
         lines.append(f"[{source}] {title} ({sign}{score:.2f})")
-    return "\n".join(lines) if lines else "No recent news available."
+    return "\n".join(lines)
 
 
 # ── LLM prompts ───────────────────────────────────────────────────────────────
@@ -460,8 +502,8 @@ class StreamProcessor:
             data = json.loads(raw[start:end])
             if isinstance(data, dict) and any(k in data for k in ("rationale", "llm_sl", "trade_type")):
                 return data
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("[PROCESSOR] _parse_single_analysis JSON error: %s | raw=%r", exc, (raw or "")[:300])
         return None
 
     # ── Targeted analysis (news → specific tickers) ───────────────────────────
@@ -538,13 +580,19 @@ class StreamProcessor:
                         ticker, ticker, "moderate", rec_meta.get("category", "stocks")
                     )
                 tag_info = sent_data.get(asset_id) or sent_data.get(ticker) or {}
+                import functools as _functools
                 sig_tasks.append(loop.run_in_executor(
                     _snap_executor,
-                    _compute_signal_sync,
-                    asset_id, yf_symbol, risk_tier, category,
-                    float(tag_info.get("avg", 0.0)),
-                    int(tag_info.get("count", 0)),
-                    regime,
+                    _functools.partial(
+                        _compute_signal_sync,
+                        asset_id, yf_symbol, risk_tier, category,
+                        float(tag_info.get("avg", 0.0)),
+                        int(tag_info.get("count", 0)),
+                        regime,
+                        None,  # backtest_stats
+                        tag_info.get("velocity"),
+                        tag_info.get("conviction"),
+                    ),
                 ))
 
             results = await asyncio.gather(*sig_tasks, return_exceptions=True)
@@ -562,58 +610,80 @@ class StreamProcessor:
             watchlist = self._engine.watchlist if self._engine else []
             state = get_market_state(watchlist)
 
-            # LLM prompt — focused on the triggering headline + only the affected tickers
-            signals_text = json.dumps([
-                {
-                    "ticker":      s["ticker"],
-                    "category":    s["category"],
-                    "direction":   s["direction"],
-                    "entry_price": s["entry_price"],
-                    "math_sl":     s["math_sl"],
-                    "math_tp":     s["math_tp"],
-                    "confidence":  s["confidence"],
-                    "risk_reward": s["risk_reward"],
-                    "regime":      s["regime"],
-                }
-                for s in signals
-            ], indent=2)
-
             session_note = (
                 "NOTE: Equity markets (stocks, ETFs, cash indices) are CLOSED. "
                 "Only crypto (-USD), FX (=X), and CME futures (=F) are actively trading. "
                 "Deprioritize or skip equity signals; focus analysis on the open markets.\n\n"
             ) if state == "partial_24h" else ""
-            user_msg = (
+            context_prefix = (
                 f"Market session: {state}\n"
                 f"Regime: {regime_summary}\n\n"
                 f"{session_note}"
                 f"BREAKING NEWS (triggered this analysis):\n{headline}\n\n"
                 f"Recent news context:\n{news_text}\n\n"
-                f"Math-generated signals for affected tickers only:\n{signals_text}\n\n"
-                "Analyze each signal in light of the breaking news above. "
-                "For each ticker return: trade_type, rationale, llm_sl, llm_tp, catalysts."
             )
 
+            # Per-ticker LLM calls — same pattern as run_full_analysis.
+            # The old code sent all tickers in one batch with _parse_analysis_response
+            # which expects {"analyses":[...]} but _ANALYSIS_SYSTEM tells the LLM to
+            # return a single flat JSON object — format mismatch always lost LLM data.
             provider, model, api_key = _get_llm_config()
-            raw, prompt_tokens, completion_tokens = await _call_llm(
-                _ANALYSIS_SYSTEM, user_msg, provider, model, api_key
-            )
+            llm_by_ticker: dict[str, dict] = {}
+            total_prompt_tokens = 0
+            total_completion_tokens = 0
 
-            llm_by_ticker = self._parse_analysis_response(raw)
-            cost = _estimate_cost(model, prompt_tokens, completion_tokens)
+            for sig in signals:
+                signal_text = json.dumps({
+                    "ticker":      sig["ticker"],
+                    "category":    sig["category"],
+                    "direction":   sig["direction"],
+                    "entry_price": sig["entry_price"],
+                    "math_sl":     sig["math_sl"],
+                    "math_tp":     sig["math_tp"],
+                    "confidence":  sig["confidence"],
+                    "risk_reward": sig["risk_reward"],
+                    "regime":      sig["regime"],
+                })
+                user_msg = context_prefix + f"Signal:\n{signal_text}"
+                try:
+                    raw, pt, ct = await _call_llm(_ANALYSIS_SYSTEM, user_msg, provider, model, api_key)
+                    total_prompt_tokens += pt
+                    total_completion_tokens += ct
+                    parsed = self._parse_single_analysis(raw)
+                    if parsed:
+                        llm_by_ticker[sig["ticker"]] = parsed
+                        logger.debug("[PROCESSOR] Targeted LLM ok: %s", sig["ticker"])
+                    else:
+                        logger.warning("[PROCESSOR] Targeted parse failed for %s", sig["ticker"])
+                except Exception as exc:
+                    logger.warning("[PROCESSOR] Targeted LLM call failed for %s: %s", sig["ticker"], exc)
 
+            cost = _estimate_cost(model, total_prompt_tokens, total_completion_tokens)
             merged = self._merge_signals_with_llm(signals, llm_by_ticker)
 
-            # Patch _current_recs with updated data for these tickers
+            # Patch _current_recs (internal cache uses raw signal field names).
+            # Build patches with DB-style field names so the frontend renders correctly —
+            # signal dicts use math_sl/math_tp/llm_sl/llm_tp/trade_type/category but
+            # recCardHTML expects stop_loss/take_profit/llm_stop_loss/llm_take_profit/timeframe/asset_category.
             patches_by_cat: dict[str, list] = {}
             for sig in merged:
                 cat = sig["category"]
-                patches_by_cat.setdefault(cat, []).append(sig)
                 if cat in self._current_recs:
                     for i, existing in enumerate(self._current_recs[cat]):
                         if existing["ticker"] == sig["ticker"]:
                             self._current_recs[cat][i] = sig
                             break
+                normalized = {
+                    **sig,
+                    "asset_category":  sig.get("category"),
+                    "stop_loss":       sig.get("math_sl"),
+                    "take_profit":     sig.get("math_tp"),
+                    "llm_stop_loss":   sig.get("llm_sl"),
+                    "llm_take_profit": sig.get("llm_tp"),
+                    "timeframe":       sig.get("trade_type") or "swing",
+                    "market_session":  state,
+                }
+                patches_by_cat.setdefault(cat, []).append(normalized)
 
             await ws_manager.broadcast({
                 "type": "ticker_patch",
@@ -622,7 +692,7 @@ class StreamProcessor:
                 "trigger_headline": headline,
                 "estimated_cost_usd": cost,
             })
-            logger.info("[PROCESSOR] Targeted done tickers=%s cost=$%.4f", tickers, cost)
+            logger.info("[PROCESSOR] Targeted done tickers=%s llm_ok=%d cost=$%.4f", tickers, len(llm_by_ticker), cost)
 
         except Exception as exc:
             logger.warning("[PROCESSOR] Targeted analysis error: %s", exc, exc_info=True)
@@ -644,13 +714,19 @@ class StreamProcessor:
             tag_info = sent_data.get(ticker) or {}
             snap_dict: dict = {}
             try:
+                import functools as _functools
                 sig = await asyncio.get_event_loop().run_in_executor(
                     _snap_executor,
-                    _compute_signal_sync,
-                    ticker, ticker, "moderate", "stocks",
-                    float(tag_info.get("avg", 0.0)),
-                    int(tag_info.get("count", 0)),
-                    "cautious",
+                    _functools.partial(
+                        _compute_signal_sync,
+                        ticker, ticker, "moderate", "stocks",
+                        float(tag_info.get("avg", 0.0)),
+                        int(tag_info.get("count", 0)),
+                        "cautious",
+                        None,  # backtest_stats
+                        tag_info.get("velocity"),
+                        tag_info.get("conviction"),
+                    ),
                 )
                 if sig:
                     snap_dict = sig

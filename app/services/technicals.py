@@ -5,7 +5,6 @@ Pure pandas/numpy — no external TA library needed.
 """
 from __future__ import annotations
 
-import concurrent.futures
 import logging
 import math
 from dataclasses import dataclass, field
@@ -13,7 +12,6 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
-import yfinance as yf
 
 logger = logging.getLogger(__name__)
 
@@ -74,32 +72,14 @@ def fetch_ohlcv(symbol: str, period: str = "90d", interval: Optional[str] = None
         if cached.empty:
             return None
         return _apply_backtest_cutoff(cached)
-    # yfinance logs and some builds also print "$TICKER: possibly delisted" to the console;
-    # keep loggers quiet (failures still return None / empty df).
-    log = logging.getLogger("yfinance")
-    old_level = log.level
-    log.setLevel(logging.CRITICAL)
-    try:
-        ticker = yf.Ticker(symbol)
-        kwargs = {"period": "30d" if use_interval == "1h" else period, "interval": use_interval}
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(ticker.history, **kwargs)
-            try:
-                df = future.result(timeout=30)
-            except concurrent.futures.TimeoutError:
-                logger.warning("[TECHNICALS] yfinance timeout (30s) for symbol=%s", symbol)
-                cache[cache_key] = pd.DataFrame()
-                return None
-        if df is None or df.empty or "Close" not in df.columns:
-            cache[cache_key] = pd.DataFrame()
-            return None
-        cache[cache_key] = df
-        return _apply_backtest_cutoff(df)
-    except Exception:
+    from app.services.market_data import fetch_ohlcv as _md_fetch
+    actual_period = "30d" if use_interval == "1h" else period
+    df = _md_fetch(symbol, period=actual_period, interval=use_interval)
+    if df is None or df.empty or "Close" not in df.columns:
         cache[cache_key] = pd.DataFrame()
         return None
-    finally:
-        log.setLevel(old_level)
+    cache[cache_key] = df
+    return _apply_backtest_cutoff(df)
 
 
 def get_cached_price(symbol: str) -> Optional[float]:
@@ -870,8 +850,8 @@ def build_snapshot(symbol: str) -> Optional[TechnicalSnapshot]:
 # (sl_mult, tp_mult) for long trades
 ATR_MULTIPLIERS = {
     "conservative": (1.5, 2.0),
-    "moderate":     (2.5, 2.5),  # SL widened 2.0→2.5: 52% of trades hit SL in 1-5 bars (noise stops)
-    "aggressive":   (3.0, 4.0),  # TP kept at 2.5; R:R floor reduced to 1.2 keeps TP at same ~3×ATR
+    "moderate":     (2.5, 3.5),  # TP widened 2.5→3.5: base R:R 1.0→1.4; floor at 1.6 targets ~4×ATR TP
+    "aggressive":   (3.0, 4.0),
 }
 
 # Short SL: previously 1.25× (wide) but that pushed TP to 3.75×ATR after R:R floor enforcement,

@@ -12,6 +12,7 @@ alembic>=1.13.0
 feedparser>=6.0.10
 httpx>=0.26.0
 yfinance>=0.2.36
+finnhub-python>=2.4.19
 pandas>=2.0.0
 
 # Phase 1: sentiment

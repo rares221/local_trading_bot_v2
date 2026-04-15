@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-import yfinance as yf
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -45,17 +44,11 @@ def load_checklist() -> list[dict[str, Any]]:
 
 def _fetch_price(symbol: str) -> float | None:
     try:
-        log = logging.getLogger("yfinance")
-        old = log.level
-        log.setLevel(logging.WARNING)
-        try:
-            ticker = yf.Ticker(symbol)
-            hist = ticker.history(period="5d")
-            if hist is None or hist.empty or "Close" not in hist.columns:
-                return None
-            return float(hist["Close"].iloc[-1])
-        finally:
-            log.setLevel(old)
+        from app.services.market_data import fetch_ohlcv
+        hist = fetch_ohlcv(symbol, period="5d", interval="1d")
+        if hist is None or hist.empty or "Close" not in hist.columns:
+            return None
+        return float(hist["Close"].iloc[-1])
     except Exception:
         return None
 
@@ -63,22 +56,16 @@ def _fetch_price(symbol: str) -> float | None:
 def _fetch_change_pct(symbol: str) -> tuple[float | None, float | None]:
     """Return (current_close, 1d_change_pct) or (None, None)."""
     try:
-        log = logging.getLogger("yfinance")
-        old = log.level
-        log.setLevel(logging.WARNING)
-        try:
-            ticker = yf.Ticker(symbol)
-            hist = ticker.history(period="5d")
-            if hist is None or hist.empty or len(hist) < 2 or "Close" not in hist.columns:
-                return None, None
-            close = hist["Close"]
-            curr = float(close.iloc[-1])
-            prev = float(close.iloc[-2])
-            if prev == 0:
-                return curr, None
-            return curr, round((curr - prev) / prev * 100, 2)
-        finally:
-            log.setLevel(old)
+        from app.services.market_data import fetch_ohlcv
+        hist = fetch_ohlcv(symbol, period="5d", interval="1d")
+        if hist is None or hist.empty or len(hist) < 2 or "Close" not in hist.columns:
+            return None, None
+        close = hist["Close"]
+        curr = float(close.iloc[-1])
+        prev = float(close.iloc[-2])
+        if prev == 0:
+            return curr, None
+        return curr, round((curr - prev) / prev * 100, 2)
     except Exception:
         return None, None
 

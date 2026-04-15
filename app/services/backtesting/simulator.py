@@ -53,6 +53,16 @@ def simulate_outcome(
     rr = reward / risk if risk > 0 else 0.0
 
     bars = future_bars.iloc[:max_bars]
+    # Drop rows where core OHLC values are NaN (missing data causes NaN pnl_r)
+    bars = bars.dropna(subset=["Open", "High", "Low", "Close"])
+    if bars.empty:
+        return SimulatedOutcome(
+            outcome="expired",
+            closing_price=entry_price,
+            outcome_date=date.today(),
+            bars_held=0,
+            pnl_r=0.0,
+        )
 
     for i, (idx, row) in enumerate(bars.iterrows()):
         bar_date = idx.date() if hasattr(idx, "date") else idx

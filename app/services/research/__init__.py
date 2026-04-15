@@ -4,9 +4,10 @@ Builds dict: sentiment, buy_in_price, risk_tier, headlines; optionally generates
 """
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
-from sqlalchemy import cast, select, Text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from datetime import date, datetime, timedelta, timezone
@@ -42,11 +43,17 @@ async def build_research_context(
         "headlines": [],
     }
     analysis = await get_latest_analysis(session)
+    # Extract all needed data from analysis.payload NOW as plain Python dicts.
+    # The ORM object expires after asyncio.to_thread() calls recycle the connection;
+    # accessing analysis.payload later triggers a sync lazy-reload that fails with MissingGreenlet.
+    _analysis_payload: dict = {}
     if analysis and analysis.payload:
-        by_asset = (analysis.payload or {}).get("by_asset_sentiment") or {}
-        pair = get_sentiment_score_and_count(category, asset_id, by_asset)
-        if pair:
-            ctx["sentiment_avg"], ctx["sentiment_count"] = pair
+        _analysis_payload = dict(analysis.payload)  # plain dict, no ORM reference
+    by_asset = _analysis_payload.get("by_asset_sentiment") or {}
+    _active_events_raw: list = _analysis_payload.get("active_events") or []
+    pair = get_sentiment_score_and_count(category, asset_id, by_asset)
+    if pair:
+        ctx["sentiment_avg"], ctx["sentiment_count"] = pair
     price_risk = get_asset_price_and_risk(category, asset_id)
     if price_risk:
         ctx["buy_in_price"], ctx["risk_tier"] = price_risk
@@ -98,7 +105,7 @@ async def build_research_context(
                 from app.services.recommendations.engine import (
                     compute_sl_tp_for_symbol as _calc_symbol,
                 )
-                result = _calc_symbol(symbol, risk_tier, direction)
+                result = await asyncio.to_thread(_calc_symbol, symbol, risk_tier, direction)
                 if result:
                     live_price, sl, tp, snap = result
                     ctx["stop_loss"] = sl
@@ -136,22 +143,28 @@ async def build_research_context(
                         try:
                             from app.services.technicals import compute_relative_strength
                             from app.services.market_context import get_sector_etf_for_asset
-                            rs_20d = compute_relative_strength(symbol, "^GSPC", period=20)
-                            rs_60d = compute_relative_strength(symbol, "^GSPC", period=60)
-                            if rs_20d is not None:
-                                ctx["rs_20d"] = rs_20d
-                            if rs_60d is not None:
-                                ctx["rs_60d"] = rs_60d
-                            sector_etf = get_sector_etf_for_asset(asset_id)
-                            if sector_etf:
-                                sector_rs = compute_relative_strength(symbol, sector_etf, period=20)
-                                if sector_rs is not None:
-                                    ctx["sector_rs"] = sector_rs
-                                    ctx["sector_etf"] = sector_etf
-                                # F2-9: sector rotation — how the sector itself moves vs SPX
-                                sector_vs_spx = compute_relative_strength(sector_etf, "^GSPC", period=20)
-                                if sector_vs_spx is not None:
-                                    ctx["sector_vs_spx_20d"] = sector_vs_spx
+
+                            def _compute_rs_block(sym: str, _asset_id: str) -> dict:
+                                _out: dict = {}
+                                _rs_20d = compute_relative_strength(sym, "^GSPC", period=20)
+                                _rs_60d = compute_relative_strength(sym, "^GSPC", period=60)
+                                if _rs_20d is not None:
+                                    _out["rs_20d"] = _rs_20d
+                                if _rs_60d is not None:
+                                    _out["rs_60d"] = _rs_60d
+                                _sector_etf = get_sector_etf_for_asset(_asset_id)
+                                if _sector_etf:
+                                    _sector_rs = compute_relative_strength(sym, _sector_etf, period=20)
+                                    if _sector_rs is not None:
+                                        _out["sector_rs"] = _sector_rs
+                                        _out["sector_etf"] = _sector_etf
+                                    _sector_vs_spx = compute_relative_strength(_sector_etf, "^GSPC", period=20)
+                                    if _sector_vs_spx is not None:
+                                        _out["sector_vs_spx_20d"] = _sector_vs_spx
+                                return _out
+
+                            rs_data = await asyncio.to_thread(_compute_rs_block, symbol, asset_id)
+                            ctx.update(rs_data)
                         except Exception:
                             pass
                     calculated = True
@@ -160,9 +173,8 @@ async def build_research_context(
         # Fallback: fetch live price directly if still missing
         if not calculated and not ctx.get("buy_in_price") and symbol:
             try:
-                import yfinance as yf
-                fi = yf.Ticker(symbol).fast_info
-                lp = getattr(fi, "last_price", None) or getattr(fi, "lastPrice", None)
+                from app.services.market_data import fetch_last_price
+                lp = await asyncio.to_thread(fetch_last_price, symbol)
                 if lp:
                     ctx["buy_in_price"] = float(lp)
             except Exception:
@@ -194,7 +206,7 @@ async def build_research_context(
     try:
         _hq = (
             select(FeedItem)
-            .where(cast(FeedItem.asset_tags, Text).like(f'%"{asset_id}"%'))
+            .where(FeedItem.asset_tags.contains([asset_id]))
             .order_by(FeedItem.fetched_at.desc())
             .limit(_max_headlines * 3)
         )
@@ -214,91 +226,98 @@ async def build_research_context(
                 break
     except Exception:
         await session.rollback()
-    # Optional: yfinance .info for sector, industry, market cap (stocks/ETFs; skip on failure)
+    # Fundamentals: sector, industry, market cap, P/E, 52-week range via market_data routing
     symbol = get_yf_symbol(category, asset_id)
     if not symbol and category.lower() in ("stocks", "etfs", "etf", "stock"):
         symbol = asset_id.upper()
     if symbol:
         try:
-            import yfinance as yf
-            import logging
-            log = logging.getLogger("yfinance")
-            old_level = log.level
-            log.setLevel(logging.WARNING)
-            try:
-                info = yf.Ticker(symbol).info
-                if isinstance(info, dict):
-                    fund: dict[str, Any] = {}
-                    if info.get("sector"):
-                        fund["sector"] = str(info["sector"])
-                    if info.get("industry"):
-                        fund["industry"] = str(info["industry"])
-                    if info.get("marketCap") is not None:
-                        fund["market_cap"] = int(info["marketCap"])
-                    if info.get("shortName"):
-                        fund["short_name"] = str(info["shortName"])
-                    # P/E + 52-week position — used for far-horizon LLM context
-                    if info.get("trailingPE") is not None:
+            from app.services.market_data import fetch_company_profile, fetch_metrics, fetch_next_earnings as _fetch_earnings
+
+            def _fetch_fundamentals(_sym: str, _horizon: str | None, _buy_in: float | None, _expiry_days: int) -> dict:
+                _fund: dict = {}
+                _profile = fetch_company_profile(_sym)
+                if _profile:
+                    if _profile.get("sector"):
+                        _fund["sector"] = str(_profile["sector"])
+                    if _profile.get("industry"):
+                        _fund["industry"] = str(_profile["industry"])
+                    if _profile.get("market_cap") is not None:
+                        _fund["market_cap"] = int(_profile["market_cap"])
+                    if _profile.get("name"):
+                        _fund["short_name"] = str(_profile["name"])
+                _metrics = fetch_metrics(_sym)
+                if _metrics:
+                    if _metrics.get("pe_ratio") is not None:
+                        _fund["pe_ratio"] = _metrics["pe_ratio"]
+                    _high52 = _metrics.get("high_52w")
+                    _low52 = _metrics.get("low_52w")
+                    if _high52 and _low52 and _buy_in and float(_high52) > float(_low52):
                         try:
-                            fund["pe_ratio"] = round(float(info["trailingPE"]), 1)
-                        except Exception:
-                            pass
-                    high52 = info.get("fiftyTwoWeekHigh")
-                    low52 = info.get("fiftyTwoWeekLow")
-                    buy_in = ctx.get("buy_in_price")
-                    if high52 and low52 and buy_in and float(high52) > float(low52):
-                        try:
-                            fund["position_52w"] = round(
-                                (float(buy_in) - float(low52)) / (float(high52) - float(low52)) * 100, 1
+                            _fund["position_52w"] = round(
+                                (float(_buy_in) - float(_low52)) / (float(_high52) - float(_low52)) * 100, 1
                             )
                         except Exception:
                             pass
-                    if fund:
-                        ctx["fundamentals"] = fund
+                if _horizon == "far":
+                    try:
+                        from datetime import date as _date
+                        _today = _date.today()
+                        _ed_date = _fetch_earnings(_sym)
+                        if _ed_date:
+                            _dte = (_ed_date - _today).days
+                            if _dte >= 0:
+                                _fund["days_to_earnings"] = _dte
+                                _fund["earnings_in_window"] = _dte <= _expiry_days
+                    except Exception:
+                        pass
+                return _fund
 
-                    # F2-5: earnings date for far-horizon trades (binary event risk)
-                    # Only fetched for stocks; requires far horizon to be worth the computation.
-                    if ctx.get("horizon") == "far":
-                        try:
-                            from datetime import date as _date
-                            _today = _date.today()
-                            raw_ed = info.get("earningsDate") or info.get("nextEarningsDate")
-                            if raw_ed is not None:
-                                # earningsDate can be a list or a single value
-                                if isinstance(raw_ed, list) and raw_ed:
-                                    raw_ed = raw_ed[0]
-                                # may be a Unix timestamp (int/float) or a pd.Timestamp / datetime
-                                ed_date = None
-                                if isinstance(raw_ed, (int, float)):
-                                    from datetime import datetime as _dt, timezone as _tz
-                                    ed_date = _dt.fromtimestamp(raw_ed, tz=_tz.utc).date()
-                                elif hasattr(raw_ed, "date"):
-                                    ed_date = raw_ed.date()
-                                if ed_date:
-                                    dte = (ed_date - _today).days
-                                    if dte >= 0:
-                                        ctx["days_to_earnings"] = dte
-                                        ctx["earnings_in_window"] = dte <= int(ctx.get("expiry_days", 60))
-                        except Exception:
-                            pass
-            finally:
-                log.setLevel(old_level)
+            fund = await asyncio.to_thread(
+                _fetch_fundamentals,
+                symbol,
+                ctx.get("horizon"),
+                ctx.get("buy_in_price"),
+                int(ctx.get("expiry_days") or 60),
+            )
+            if fund:
+                earnings_in_window = fund.pop("earnings_in_window", None)
+                days_to_earnings = fund.pop("days_to_earnings", None)
+                if fund:
+                    ctx["fundamentals"] = fund
+                if days_to_earnings is not None:
+                    ctx["days_to_earnings"] = days_to_earnings
+                if earnings_in_window is not None:
+                    ctx["earnings_in_window"] = earnings_in_window
         except Exception:
             pass
     # Sentiment trend from analysis payload (improving / worsening / neutral)
-    if analysis and analysis.payload:
-        by_asset_s = (analysis.payload or {}).get("by_asset_sentiment") or {}
-        asset_info = by_asset_s.get(asset_id) or {}
+    # Uses pre-extracted _analysis_payload (plain dict) — avoids ORM lazy-reload after to_thread.
+    if _analysis_payload:
+        asset_info = by_asset.get(asset_id) or {}
         st = asset_info.get("sentiment_trend")
         if st:
             ctx["sentiment_trend"] = st
+        vel = asset_info.get("velocity")
+        if vel is not None:
+            ctx["sentiment_velocity"] = vel  # positive = improving, negative = worsening
+        conv = asset_info.get("conviction")
+        if conv is not None:
+            ctx["sentiment_conviction"] = conv  # 1.0 = consensus, 0.0 = contradictory
+        if _active_events_raw:
+            ctx["active_events"] = _active_events_raw  # e.g. ["earnings", "fomc", "nfp"]
 
-    # Market regime + DXY macro (global signals; sync calls reuse cached yfinance data)
+    # Market regime + DXY macro (global signals; wrapped in thread to avoid event-loop blocking)
     try:
         from app.services.market_context import detect_market_regime, detect_dxy_macro
-        regime = detect_market_regime()
+
+        def _fetch_regime_dxy() -> tuple:
+            _regime = detect_market_regime()
+            _dxy = detect_dxy_macro()
+            return _regime, _dxy
+
+        regime, dxy = await asyncio.to_thread(_fetch_regime_dxy)
         ctx["market_regime"] = regime.regime          # risk_on | risk_off | cautious
-        dxy = detect_dxy_macro()
         if dxy.available:
             ctx["dxy_trend"] = dxy.trend              # bullish | bearish | neutral
             ctx["dxy_change_5d"] = dxy.change_5d_pct

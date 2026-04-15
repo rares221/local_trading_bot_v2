@@ -333,7 +333,7 @@ class DataStreamEngine:
                     "fetched_at": now,
                     "source": (it.get("source") or "")[:256],
                     "category": (it.get("category") or "")[:64],
-                    "asset_tags": json.dumps(tags),
+                    "asset_tags": tags,
                     "sentiment_score": sentiment,
                 })
 
@@ -403,22 +403,14 @@ class DataStreamEngine:
 
     @staticmethod
     def _fetch_prices_sync(tickers: list[str]) -> dict[str, dict]:
-        """Blocking yfinance price fetch — called via asyncio.to_thread."""
-        import yfinance as yf
+        """Blocking price fetch — routed via market_data (Finnhub or yfinance)."""
+        from app.services.market_data import fetch_quote
         result = {}
         for sym in tickers:
             try:
-                fi = yf.Ticker(sym).fast_info
-                last = float(getattr(fi, "last_price", None) or 0)
-                prev = float(getattr(fi, "previous_close", None) or last or 1)
-                volume = getattr(fi, "last_volume", None)
-                if not last:
-                    continue
-                result[sym] = {
-                    "price": round(last, 4),
-                    "volume": int(volume) if volume else None,
-                    "change_pct": round((last - prev) / prev * 100, 4) if prev else 0.0,
-                }
+                q = fetch_quote(sym)
+                if q:
+                    result[sym] = q
             except Exception:
                 pass
         return result

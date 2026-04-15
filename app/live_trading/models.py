@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Optional
 from uuid import uuid4
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.base import Base
@@ -27,7 +27,7 @@ class LiveNewsItem(Base):
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     source: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
     category: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
-    asset_tags: Mapped[Optional[str]] = mapped_column(Text, nullable=True)   # JSON list
+    asset_tags: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)   # list of str
     sentiment_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
 
     __table_args__ = (

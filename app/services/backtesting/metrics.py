@@ -57,8 +57,8 @@ def compute_metrics(trades: list[dict], total_trading_days: int = 0) -> dict[str
 
     win_rate = len(wins) / total if total > 0 else 0.0
 
-    # Average R:R
-    pnl_rs = [t["pnl_r"] for t in all_outcomes if t.get("pnl_r") is not None]
+    # Average R:R — exclude None and NaN (NaN from missing OHLCV data poisons sharpe)
+    pnl_rs = [t["pnl_r"] for t in all_outcomes if t.get("pnl_r") is not None and not math.isnan(t["pnl_r"])]
     avg_pnl_r = sum(pnl_rs) / len(pnl_rs) if pnl_rs else 0.0
     avg_rr_projected = _safe_avg([t.get("risk_reward") for t in closed])
 

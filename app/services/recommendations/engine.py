@@ -91,7 +91,7 @@ CONFLICT_SKIP_THRESHOLD = 25  # raised from 20 to allow more candidates through
 CORRELATION_THRESHOLD = 0.75
 
 # Minimum Risk:Reward ratio to include a recommendation (skip trades where reward doesn't justify risk).
-MIN_RISK_REWARD = 1.2  # reduced 1.5→1.2: paired with SL widening 2.0→2.5×ATR to keep TP at ~3.0×ATR
+MIN_RISK_REWARD = 1.6  # raised 1.2→1.6: 34% win rate needs R:R≥1.9 to break even; floor targets ~4×ATR TP
 
 # Macro-day confidence penalty: see `MACRO_DAY_CONFIDENCE_PENALTY` in `app.services.macro_calendar`.
 
@@ -203,12 +203,15 @@ ASSETS_BY_CATEGORY = {
 }
 
 
+ABSOLUTE_MIN_CONFIDENCE = 20  # hard floor — nothing below this ever reaches recommendations
+
 def _effective_min_confidence(
     category: str,
     asset_id: str,
     market_ctx: Optional[MarketContext],
 ) -> int:
-    """Regime floor + asset-class offset + dashboard prefs (commodities + optional equity/other)."""
+    """Regime floor + asset-class offset + dashboard prefs (commodities + optional equity/other).
+    Never returns below ABSOLUTE_MIN_CONFIDENCE regardless of regime relief."""
     base = market_ctx.min_confidence_threshold() if market_ctx else 35
     pol = get_asset_class_policy(category, asset_id)
     m = base + pol.min_confidence_offset
@@ -226,7 +229,7 @@ def _effective_min_confidence(
             m += int(nc["equity_confidence_offset"])
         elif category == "other":
             m += int(nc["other_confidence_offset"])
-    return max(0, min(100, m))
+    return max(ABSOLUTE_MIN_CONFIDENCE, min(100, m))
 
 
 def _min_rr_floor_for_build(category: str, pol: AssetClassPolicy) -> float:
@@ -310,8 +313,11 @@ def _trade_ideas_from_analysis(by_asset_sentiment: Optional[dict]) -> set[tuple[
         if not is_likely_ticker(tag):
             continue
         cnt = int((by_asset_sentiment.get(tag) or {}).get("count") or 0)
+        avg = float((by_asset_sentiment.get(tag) or {}).get("avg") or 0.0)
         if cnt < MIN_STOCK_TAG_MENTIONS_FOR_DISCOVERY:
             continue
+        if abs(avg) <= 0.05:
+            continue  # near-neutral mentions: noise, not signal
         discovery.append((tag, cnt))
     discovery.sort(key=lambda t: (-t[1], t[0]))
     for tag, _ in discovery[:MAX_DISCOVERY_STOCK_IDEAS_PER_BATCH]:
@@ -582,6 +588,40 @@ def get_sentiment_score_and_count(
                 best_avg = avg
             total_count += cnt
     return (best_avg, total_count) if best_avg is not None else None
+
+
+def get_sentiment_velocity_and_conviction(
+    category: str,
+    asset_id: str,
+    by_asset_sentiment: dict[str, dict],
+) -> tuple[Optional[float], Optional[float]]:
+    """Return (velocity, conviction) for this asset from the latest aggregated sentiment.
+    velocity  — rate of change: recent_avg - older_avg (positive = improving).
+    conviction — consensus score 0-1 (1 = strong agreement, 0 = contradictory noise).
+    Returns (None, None) when not enough data is available."""
+    if not by_asset_sentiment:
+        return None, None
+    best_velocity: Optional[float] = None
+    best_conviction: Optional[float] = None
+    for tag, targets in SENTIMENT_TAG_TO_ASSETS.items():
+        if (category, asset_id) in targets:
+            info = by_asset_sentiment.get(tag)
+            if info:
+                v = info.get("velocity")
+                c = info.get("conviction")
+                if v is not None and (best_velocity is None or abs(v) > abs(best_velocity)):
+                    best_velocity = v
+                if c is not None and (best_conviction is None or c > best_conviction):
+                    best_conviction = c
+    if category == "stocks" and asset_id in by_asset_sentiment:
+        info = by_asset_sentiment[asset_id]
+        v = info.get("velocity")
+        c = info.get("conviction")
+        if v is not None and (best_velocity is None or abs(v) > abs(best_velocity)):
+            best_velocity = v
+        if c is not None and (best_conviction is None or c > best_conviction):
+            best_conviction = c
+    return best_velocity, best_conviction
 
 
 # Event types that affect specific tags (tag -> event_type). When active_events contains event_type, reduce confidence for that tag.
@@ -1063,6 +1103,15 @@ def _build_candidate(
 
     # Ranking score
     score = compute_technical_score(sentiment_avg, sentiment_count, snap)
+
+    # Sentiment velocity contribution: accelerating sentiment in trade direction boosts score
+    vel, conv = get_sentiment_velocity_and_conviction(category, asset_id, by_asset_sentiment or {})
+    if vel is not None:
+        # Cap at ±0.3: velocity of 0.2 → +0.3 for longs, -0.3 for shorts
+        vel_contribution = max(-0.3, min(0.3, vel * 1.5))
+        score += vel_contribution if direction == "long" else -vel_contribution
+        logger.debug("[ENGINE] %s: velocity=%.3f → score_adj=%.3f", asset_id, vel, vel_contribution)
+
     # Trend alignment bonus/penalty (scaled by asset class)
     if trend_aligned:
         score += pol.mtf_aligned_score_bonus
@@ -1191,6 +1240,15 @@ def _build_candidate(
             regime_note = f"{regime_note}; sentiment–price divergence"
         else:
             regime_note = "Sentiment–price divergence"
+
+    # Sentiment conviction: reward consensus, penalize contradictory signals
+    if conv is not None:
+        if conv >= 0.7:
+            confidence = min(100, confidence + 5)
+            logger.debug("[ENGINE] %s: high conviction (%.2f) → conf=%d", asset_id, conv, confidence)
+        elif conv < 0.3:
+            confidence = max(0, confidence - 8)
+            logger.debug("[ENGINE] %s: low conviction (%.2f) → conf=%d", asset_id, conv, confidence)
 
     # Event-type penalty: reduce confidence when asset is in an active high-impact event (Fed, earnings, etc.)
     event_pen = _event_penalty(category, asset_id, active_events, by_asset_sentiment)
@@ -1646,7 +1704,7 @@ def build_daily_candidates_for_category(
                 policy=pol,
             )
             eff_min = _effective_min_confidence(category, asset_id, market_ctx)
-            backfill_min_conf = max(15, eff_min - 20)
+            backfill_min_conf = max(ABSOLUTE_MIN_CONFIDENCE, eff_min - 15)
             if not cand:
                 # Failure reason already logged inside _build_candidate (no_snapshot / conflict / R:R).
                 continue

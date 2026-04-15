@@ -4,6 +4,23 @@
 
 ---
 
+## 2026-04-13 — `realtime_stream_analize`
+
+### Finnhub market data routing layer
+
+**Nou: `app/services/market_data.py`**
+- Modul central de routing: dacă `FINNHUB_KEY` e setat în `.env`, simbolurile eligibile (acțiuni/ETF-uri fără `=`, `^`, `-`, `:`) sunt servite de Finnhub. Futures, indici, FX, crypto, DXY rămân pe Yahoo Finance automat.
+- Funcții: `fetch_ohlcv`, `fetch_quote`, `fetch_last_price`, `fetch_company_profile`, `fetch_metrics`, `fetch_next_earnings`, `search_symbol`.
+
+**Modificat: `app/core/config.py`** — adăugate `finnhub_user`, `finnhub_key`
+
+**Modificat: `requirements.txt`** — `finnhub-python>=2.4.19` (rebuild Docker necesar)
+
+**Refactorizat: 9 fișiere** care importau `yfinance` direct acum trec prin `market_data`:
+`technicals.py`, `earnings_calendar.py`, `stream_engine.py`, `routes.py`, `live_routes.py`, `research/__init__.py`, `ticker_resolver.py`, `data_provider.py`, `briefing.py`
+
+---
+
 ## 2026-04-07 — `improvements_trade_builder` (sesiunea 9)
 
 ### LLM — P16, P18 implementate și verificate
