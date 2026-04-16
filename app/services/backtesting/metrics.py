@@ -57,6 +57,16 @@ def compute_metrics(trades: list[dict], total_trading_days: int = 0) -> dict[str
 
     win_rate = len(wins) / total if total > 0 else 0.0
 
+    # Resolved win rate: excludes expired trades — pure signal quality on trades that fully closed.
+    # If this is significantly higher than win_rate, expiry drag is masking true signal accuracy.
+    resolved_total = len(wins) + len(losses)
+    resolved_win_rate = len(wins) / resolved_total if resolved_total > 0 else 0.0
+
+    # Expired P&L breakdown: positive avg = timing issue (needed more bars); negative = weak signals
+    expired_pnl = [t["pnl_r"] for t in expired if t.get("pnl_r") is not None and not math.isnan(t["pnl_r"])]
+    expired_positive = sum(1 for p in expired_pnl if p > 0)
+    avg_pnl_r_expired = sum(expired_pnl) / len(expired_pnl) if expired_pnl else 0.0
+
     # Average R:R — exclude None and NaN (NaN from missing OHLCV data poisons sharpe)
     pnl_rs = [t["pnl_r"] for t in all_outcomes if t.get("pnl_r") is not None and not math.isnan(t["pnl_r"])]
     avg_pnl_r = sum(pnl_rs) / len(pnl_rs) if pnl_rs else 0.0
@@ -184,6 +194,9 @@ def compute_metrics(trades: list[dict], total_trading_days: int = 0) -> dict[str
         "losses": len(losses),
         "expired": len(expired),
         "win_rate": round(win_rate, 4),
+        "resolved_win_rate": round(resolved_win_rate, 4),  # TP/(TP+SL) — excludes expired drag
+        "expired_positive": expired_positive,               # expired trades that were in profit at expiry
+        "avg_pnl_r_expired": round(avg_pnl_r_expired, 4),  # positive = timing issue; negative = weak signals
         "avg_pnl_r": round(avg_pnl_r, 4),
         "avg_rr_projected": round(avg_rr_projected, 4) if avg_rr_projected else None,
         "sharpe_ratio": round(sharpe, 4) if sharpe is not None else None,

@@ -1037,6 +1037,10 @@ def _build_candidate(
         )
         return None
 
+    # Stale snapshot: live fetch failed, using cached data from a previous run.
+    # Apply a confidence penalty so the signal is visibly discounted.
+    _stale_confidence_penalty = 8 if snap.is_stale else 0
+
     price = round(snap.price, 2)
 
     # Direction from sentiment + technicals (regime-dependent weights)
@@ -1065,7 +1069,8 @@ def _build_candidate(
 
     # Hard-block signal generation in crisis and high_vol regimes.
     # Backtest: crisis=12.5% WR (-0.71R avg), high_vol=23.5% WR (-0.009R avg) — both net negative EV.
-    if market_ctx and market_ctx.regime.regime in ("crisis", "high_vol"):
+    # Uses extended_regime (5-label VIX-based) so live labels match backtest definitions.
+    if market_ctx and market_ctx.regime.extended_regime in ("crisis", "high_vol"):
         return None
 
     # Market regime direction override for equities
@@ -1081,8 +1086,10 @@ def _build_candidate(
             logger.debug("[ENGINE] %s: sector=%s, sector_regime=%s", asset_id, sector, sector_regime.regime)
         
         # In risk_off, flip long → short for equity-like books when policy allows (excludes e.g. VIX).
+        # Skip flip when SHORTS_ENABLED=False — flipping then blocking creates silent watchlist wipe.
         if (
-            market_ctx.regime.regime == "risk_off"
+            SHORTS_ENABLED
+            and market_ctx.regime.regime == "risk_off"
             and direction == "long"
             and pol.apply_risk_off_long_flip
             and category in ("stocks", "indices")
@@ -1099,6 +1106,57 @@ def _build_candidate(
     if direction == "short" and snap and snap.ema200 is not None and snap.price > snap.ema200:
         return None
 
+    # ── Load risk preference once — used by several gates below ─────────────────
+    from app.core.preferences import get_preferred_risk as _get_preferred_risk
+    _preferred_risk = _get_preferred_risk()
+
+    # RSI exhaustion gate: block entries at extremes — chasing overbought longs and oversold shorts
+    # leads to mean-reversion losses. Ceiling is regime + preference aware:
+    #   base 65, +5 in risk_on regime, +5 for aggressive preference → max 75.
+    #   risk_off hard-caps ceiling at 60 regardless of preference.
+    _rsi_long_ceiling = 65
+    if regime_id == "risk_on":
+        _rsi_long_ceiling += 5
+    if _preferred_risk == "aggressive":
+        _rsi_long_ceiling += 5
+    elif _preferred_risk == "conservative":
+        _rsi_long_ceiling -= 2
+    if regime_id == "risk_off":
+        _rsi_long_ceiling = min(_rsi_long_ceiling, 60)
+    _rsi_long_ceiling = max(58, min(75, _rsi_long_ceiling))
+    _rsi_short_floor = 100 - _rsi_long_ceiling
+
+    if snap and snap.rsi is not None:
+        if direction == "long" and snap.rsi > _rsi_long_ceiling:
+            return None
+        if direction == "short" and snap.rsi < _rsi_short_floor:
+            return None
+        # RSI slope: require momentum moving in trade direction
+        if snap.rsi_slope is not None:
+            if direction == "long" and snap.rsi_slope < -2.0:
+                return None  # RSI falling fast — long momentum fading
+            if direction == "short" and snap.rsi_slope > 2.0:
+                return None  # RSI rising fast — short momentum fading
+
+    # MACD histogram gate: require histogram aligned with trade direction.
+    # Slope check only blocks sharp momentum reversals (not normal 1-2 bar pullbacks in a trend).
+    # Threshold of 0.0002 avoids noise — minor fluctuations in a healthy trend are fine.
+    if snap and snap.macd is not None:
+        if direction == "long":
+            if snap.macd_bearish:
+                return None  # histogram negative — momentum against trade
+        if direction == "short":
+            if snap.macd_bullish:
+                return None  # histogram positive — momentum against trade
+
+    # Volume confirmation gate: threshold is preference-aware.
+    # aggressive: 0.65 (catches momentum before full volume confirms),
+    # moderate: 0.75, conservative: 0.80.
+    _vol_floor = 0.80 if _preferred_risk == "conservative" else (0.65 if _preferred_risk == "aggressive" else 0.75)
+    if snap and snap.volume_ratio is not None:
+        if snap.volume_ratio < _vol_floor:
+            return None
+
     # ATR-based stop loss / take profit
     sl, tp = compute_atr_levels(price, risk_tier, snapshot=snap, direction=direction)
     eff_min_rr = max(1.0, min_rr_floor * 0.85) if ad_hoc else min_rr_floor
@@ -1114,7 +1172,7 @@ def _build_candidate(
     expiry = date.today() + timedelta(days=expiry_days)
 
     # Ranking score
-    score = compute_technical_score(sentiment_avg, sentiment_count, snap)
+    score = compute_technical_score(sentiment_avg, sentiment_count, snap, direction=direction)
 
     # Sentiment velocity contribution: accelerating sentiment in trade direction boosts score
     vel, conv = get_sentiment_velocity_and_conviction(category, asset_id, by_asset_sentiment or {})
@@ -1123,6 +1181,18 @@ def _build_candidate(
         vel_contribution = max(-0.3, min(0.3, vel * 1.5))
         score += vel_contribution if direction == "long" else -vel_contribution
         logger.debug("[ENGINE] %s: velocity=%.3f → score_adj=%.3f", asset_id, vel, vel_contribution)
+
+    # Sentiment velocity gate: strongly reversing sentiment → hard skip.
+    # Mild decline → store penalty; applied to confidence after it is computed below.
+    vel_confidence_penalty = 0
+    if vel is not None:
+        vel_for_direction = vel if direction == "long" else -vel
+        if vel_for_direction < -0.15:
+            logger.debug("[ENGINE] %s: velocity=%.3f strongly against direction (%s) → skip", asset_id, vel, direction)
+            return None
+        elif vel_for_direction < 0:
+            # -0.1 vel → -4 pts; -0.149 vel → -5 pts
+            vel_confidence_penalty = int(abs(vel_for_direction) * 40)
 
     # Trend alignment bonus/penalty (scaled by asset class)
     if trend_aligned:
@@ -1147,6 +1217,31 @@ def _build_candidate(
         "[ENGINE] %s (%s): base_conf=%d, sent_avg=%s, sent_cnt=%d, dir=%s",
         asset_id, symbol, base_confidence, sentiment_avg, sentiment_count, direction,
     )
+    if vel_confidence_penalty > 0:
+        confidence = max(0, confidence - vel_confidence_penalty)
+        logger.debug("[ENGINE] %s: velocity penalty=%d → conf=%d", asset_id, vel_confidence_penalty, confidence)
+
+    # Order Flow Imbalance adjustment: OFI reflects institutional buying/selling pressure.
+    # Accumulation (OFI > 0.6) boosts confidence for longs; distribution (OFI < 0.4) penalizes.
+    # Strong distribution (OFI < 0.35) on a long → hard skip (sellers clearly in control).
+    if snap and snap.ofi_ratio is not None:
+        ofi = snap.ofi_ratio
+        if direction == "long":
+            if ofi < 0.35:
+                logger.debug("[ENGINE] %s: OFI=%.2f strong distribution → skip long", asset_id, ofi)
+                return None
+            elif ofi < 0.4:
+                confidence = max(0, confidence - 5)
+            elif ofi > 0.6:
+                confidence = min(100, confidence + 3)
+        elif direction == "short":
+            if ofi > 0.65:
+                logger.debug("[ENGINE] %s: OFI=%.2f strong accumulation → skip short", asset_id, ofi)
+                return None
+            elif ofi > 0.6:
+                confidence = max(0, confidence - 5)
+            elif ofi < 0.4:
+                confidence = min(100, confidence + 3)
     if trend_aligned:
         confidence = min(100, confidence + pol.mtf_aligned_confidence_bonus)
     if market_ctx:
@@ -1227,39 +1322,43 @@ def _build_candidate(
     # Stocks 60-69 vol-regime penalty: backtest confirms contracting/expanding vol in this
     # confidence band produces catastrophic results (12.9% and 27.3% win rates, ~-0.68 pnl_r).
     # Stable vol 60-69 stocks are excellent (+1.29 pnl_r) and must not be penalised.
+    # Penalty reduced from -15 → -10 → -7: stacking with downstream penalties was killing healthy candidates.
     if category == "stocks" and 60 <= confidence < 70 and snap is not None:
         if snap.volatility_regime in ("contracting", "expanding"):
-            confidence = max(0, confidence - 15)
+            confidence = max(0, confidence - 7)
             logger.debug(
                 "[ENGINE] %s: stocks 60-69 vol-regime penalty (regime=%s) → conf=%d",
                 asset_id, snap.volatility_regime, confidence,
             )
 
     # 50-59 stable vol penalty: stocks and indices both negative/near-zero pnl_r in quiet drift markets.
+    # Reduced from -15 → -10 → -7 for same stacking reason.
     if category in ("stocks", "indices") and 50 <= confidence < 60 and snap is not None:
         if snap.volatility_regime == "stable":
-            confidence = max(0, confidence - 15)
+            confidence = max(0, confidence - 7)
             logger.debug(
                 "[ENGINE] %s: 50-59 stable-vol penalty (category=%s) → conf=%d",
                 asset_id, category, confidence,
             )
 
-    # Sentiment–price divergence: reduce confidence when sentiment and price move in opposite directions
+    # Sentiment–price divergence: reduce confidence when sentiment and price move in opposite directions.
+    # Reduced from -10 → -6 → -4: informative but shouldn't override a solid technical picture.
     if _has_sentiment_divergence(category, asset_id, by_asset_sentiment):
-        confidence = max(0, confidence - 10)
+        confidence = max(0, confidence - 4)
         logger.debug("[ENGINE] %s: sentiment–price divergence → conf=%d", asset_id, confidence)
         if regime_note:
             regime_note = f"{regime_note}; sentiment–price divergence"
         else:
             regime_note = "Sentiment–price divergence"
 
-    # Sentiment conviction: reward consensus, penalize contradictory signals
+    # Sentiment conviction: reward consensus, penalize contradictory signals.
+    # Low conviction penalty reduced from -8 → -5 → -3.
     if conv is not None:
         if conv >= 0.7:
             confidence = min(100, confidence + 5)
             logger.debug("[ENGINE] %s: high conviction (%.2f) → conf=%d", asset_id, conv, confidence)
         elif conv < 0.3:
-            confidence = max(0, confidence - 8)
+            confidence = max(0, confidence - 3)
             logger.debug("[ENGINE] %s: low conviction (%.2f) → conf=%d", asset_id, conv, confidence)
 
     # Event-type penalty: reduce confidence when asset is in an active high-impact event (Fed, earnings, etc.)
@@ -1282,7 +1381,9 @@ def _build_candidate(
         if earnings_cfg["earnings_window_days"] > 0:
             near_earnings, days_to_earnings = _is_near_earnings(symbol, earnings_cfg["earnings_window_days"])
             if near_earnings:
-                pen = earnings_cfg["earnings_confidence_penalty"]
+                # Scale penalty with risk preference: aggressive accepts more earnings risk.
+                _base_pen = earnings_cfg["earnings_confidence_penalty"]
+                pen = int(_base_pen * (0.6 if _preferred_risk == "aggressive" else (0.8 if _preferred_risk == "moderate" else 1.0)))
                 confidence = max(0, confidence - pen)
                 logger.debug("[ENGINE] %s: earnings penalty=%d (days=%s) → conf=%d", asset_id, pen, days_to_earnings, confidence)
                 suffix = f"earnings ±{days_to_earnings}d" if days_to_earnings is not None else "earnings window"
@@ -1290,7 +1391,10 @@ def _build_candidate(
                     regime_note = f"{regime_note}; {suffix}"
                 else:
                     regime_note = suffix
-                if earnings_cfg["earnings_skip_enabled"]:
+                # Aggressive preference: apply penalty but don't hard-skip.
+                # Earnings volatility can also be a catalyst (gap up on beat).
+                # Conservative/moderate: respect the earnings_skip_enabled preference.
+                if earnings_cfg["earnings_skip_enabled"] and _preferred_risk != "aggressive":
                     _log_engine_skip(
                         "earnings_proximity",
                         category=category,
@@ -1308,10 +1412,11 @@ def _build_candidate(
         vp_notes: list[str] = []
 
         # 1. Price inside value area → choppy equilibrium zone → reduce confidence
+        # Reduced from -8 → -5 → -3: informative signal but shouldn't dominate.
         if snap.in_value_area():
-            confidence = max(0, confidence - 8)
+            confidence = max(0, confidence - 3)
             vp_notes.append("in value area (choppy)")
-            logger.debug("[ENGINE] %s: VP: price in value area → -8 conf=%d", asset_id, confidence)
+            logger.debug("[ENGINE] %s: VP: price in value area → -3 conf=%d", asset_id, confidence)
 
         # 2. Price near a Low Volume Node → fast directional move expected → boost
         lvn_nearby = (
@@ -1324,15 +1429,16 @@ def _build_candidate(
             logger.debug("[ENGINE] %s: VP: near LVN → +5 conf=%d", asset_id, confidence)
 
         # 3. Overextension from VPOC → mean reversion risk
+        # Reduced from -10/-5 → -7/-4 → -5/-3.
         ext = abs(snap.vp_overextension) if snap.vp_overextension is not None else 0.0
         if ext > 2.0:
-            confidence = max(0, confidence - 10)
-            vp_notes.append(f"overextended {ext:.1f}x VA from VPOC")
-            logger.debug("[ENGINE] %s: VP: overextension %.1f → -10 conf=%d", asset_id, ext, confidence)
-        elif ext > 1.3:
             confidence = max(0, confidence - 5)
-            vp_notes.append(f"extended {ext:.1f}x VA from VPOC")
+            vp_notes.append(f"overextended {ext:.1f}x VA from VPOC")
             logger.debug("[ENGINE] %s: VP: overextension %.1f → -5 conf=%d", asset_id, ext, confidence)
+        elif ext > 1.3:
+            confidence = max(0, confidence - 3)
+            vp_notes.append(f"extended {ext:.1f}x VA from VPOC")
+            logger.debug("[ENGINE] %s: VP: overextension %.1f → -3 conf=%d", asset_id, ext, confidence)
 
         # 4. Direction aligns with VP bias → confirm
         if (direction == "long" and snap.vp_bias == "below_vpoc") or \
@@ -1915,6 +2021,19 @@ def build_daily_candidates(
             logger.info(
                 "[CIRCUIT_BREAKER] defensive: applied conf penalty %d + sizing ×%.1f to %d candidates",
                 pen, mul, len(out),
+            )
+
+        # Re-gate after post-hoc penalties (macro day, circuit breaker).
+        # Penalties applied above can push candidates below the regime min threshold —
+        # drop any that no longer meet it rather than saving low-confidence noise.
+        regime_min = market_ctx.min_confidence_threshold()
+        pre_regate = len(out)
+        out = [c for c in out if (c.confidence_score or 0) >= regime_min]
+        if len(out) < pre_regate:
+            dropped = pre_regate - len(out)
+            logger.info(
+                "[ENGINE] Post-penalty re-gate (min=%d): dropped %d candidate(s) below threshold",
+                regime_min, dropped,
             )
 
         # Shadow profile B: alternate min-confidence gate (does not change who is in the batch)

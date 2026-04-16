@@ -431,9 +431,9 @@ def apply_non_commodity_engine_patch(patch: dict[str, Any]) -> dict[str, int | f
 # ---------------------------------------------------------------------------
 # Earnings Calendar config
 # ---------------------------------------------------------------------------
-_DEFAULT_EARNINGS_WINDOW_DAYS = 2
-_DEFAULT_EARNINGS_CONFIDENCE_PENALTY = 15
-_DEFAULT_EARNINGS_SKIP_ENABLED = False
+_DEFAULT_EARNINGS_WINDOW_DAYS = 5   # skip trades within 5 days of earnings (gap risk)
+_DEFAULT_EARNINGS_CONFIDENCE_PENALTY = 8  # reduced from 15 — earnings inside a 14d window is a risk factor, not a kill signal
+_DEFAULT_EARNINGS_SKIP_ENABLED = True  # hard skip, not just penalty
 
 
 def get_earnings_calendar_config() -> dict[str, Any]:

@@ -22,6 +22,10 @@ logger = logging.getLogger(__name__)
 _ohlcv_cache: dict[str, pd.DataFrame] = {}
 # Separate cache for intraday (key = symbol) to avoid overwriting daily
 _ohlcv_intraday_cache: dict[str, pd.DataFrame] = {}
+# Snapshot persistence cache: last successful TechnicalSnapshot per symbol.
+# Used as a fallback when a live fetch fails (e.g. yfinance rate limiting).
+# Keyed by the raw symbol string passed to build_snapshot.
+_snapshot_persist: "dict[str, TechnicalSnapshot]" = {}
 
 # ---------------------------------------------------------------------------
 # Backtest mode: when set, fetch_ohlcv slices data up to this date.
@@ -64,6 +68,7 @@ def fetch_ohlcv(symbol: str, period: str = "90d", interval: Optional[str] = None
     interval: None or "1d" for daily; "1h" for hourly (uses 30d period, cached separately).
     In backtest mode (_backtest_cutoff set), returns data sliced to that date.
     """
+    symbol = symbol.lstrip("$")  # strip cashtag prefix — yfinance expects CL=F not $CL=F
     use_interval = interval or "1d"
     cache_key = symbol if use_interval == "1d" else f"{symbol}_{use_interval}"
     cache = _ohlcv_cache if use_interval == "1d" else _ohlcv_intraday_cache
@@ -286,6 +291,30 @@ def calc_obv(df: pd.DataFrame) -> Optional[tuple[float, float]]:
     return (current, slope)
 
 
+def calc_order_flow_imbalance(df: pd.DataFrame, lookback: int = 10) -> Optional[float]:
+    """
+    Order Flow Imbalance ratio over the last `lookback` bars.
+    up_volume   = sum of volume on bars where Close >= Open (buying pressure)
+    down_volume = sum of volume on bars where Close < Open  (selling pressure)
+    Returns up_volume / total_volume — range [0, 1].
+      > 0.6  → clear accumulation (institutional buying)
+      < 0.4  → clear distribution (institutional selling)
+      ~0.5   → balanced / neutral
+    Returns None if volume data is unavailable or insufficient.
+    """
+    if "Volume" not in df.columns or "Open" not in df.columns or len(df) < lookback:
+        return None
+    tail = df.iloc[-lookback:]
+    tail = tail.dropna(subset=["Open", "Close", "Volume"])
+    if tail.empty:
+        return None
+    up_vol = tail.loc[tail["Close"] >= tail["Open"], "Volume"].sum()
+    total_vol = tail["Volume"].sum()
+    if total_vol <= 0:
+        return None
+    return round(float(up_vol / total_vol), 4)
+
+
 # ---------------------------------------------------------------------------
 # Support / Resistance detection (swing high/low method)
 # ---------------------------------------------------------------------------
@@ -404,6 +433,16 @@ class TechnicalSnapshot:
     vp_overextension: Optional[float] = None  # (price - vpoc) / (vah - val); >1.5 = overextended
     # 200-day EMA: macro trend direction filter (price above = long bias, below = short bias)
     ema200: Optional[float] = None
+    # Volume confirmation: ratio of latest bar volume to 20-day average (>1.0 = above average)
+    volume_ratio: Optional[float] = None  # current volume / 20d SMA volume
+    # Order Flow Imbalance: up-volume / total-volume over last 10 bars (>0.6 = accumulation, <0.4 = distribution)
+    ofi_ratio: Optional[float] = None
+    # Momentum direction: positive = increasing histogram/RSI (accelerating), negative = fading
+    macd_hist_slope: Optional[float] = None  # hist[-1] - hist[-2]: positive = momentum building
+    rsi_slope: Optional[float] = None        # rsi[-1] - rsi[-3]: positive = RSI trending up
+    # Staleness flag: True when the snapshot was served from cache due to a live fetch failure.
+    # Consumers (engine) apply a confidence penalty and note it in the rationale.
+    is_stale: bool = False
 
     @property
     def price_above_vwap(self) -> bool:
@@ -696,10 +735,19 @@ def compute_volume_profile(
     }
 
 
-def build_snapshot(symbol: str) -> Optional[TechnicalSnapshot]:
-    """Build full technical snapshot for one symbol."""
+def build_snapshot(symbol: str) -> Optional["TechnicalSnapshot"]:
+    """
+    Build full technical snapshot for one symbol.
+    On fetch failure (yfinance rate limiting, timeout) falls back to the last
+    successfully built snapshot for the same symbol, marked with is_stale=True.
+    """
     df = fetch_ohlcv(symbol)
     if df is None or df.empty or len(df) < 5:
+        cached = _snapshot_persist.get(symbol)
+        if cached is not None:
+            logger.debug("[TECHNICALS] %s: live fetch failed, using stale snapshot", symbol)
+            import dataclasses
+            return dataclasses.replace(cached, is_stale=True)
         return None
 
     price = float(df["Close"].iloc[-1])
@@ -710,6 +758,35 @@ def build_snapshot(symbol: str) -> Optional[TechnicalSnapshot]:
     atr_pct = (atr / price) if atr else None
     rsi = calc_rsi(df)
     macd = calc_macd(df)
+
+    # MACD histogram slope: hist[-1] - hist[-2] (positive = momentum building)
+    macd_hist_slope: Optional[float] = None
+    if len(df) >= 36:  # slow(26) + signal(9) + 1 extra bar
+        try:
+            close = df["Close"]
+            ema_fast = close.ewm(span=12, adjust=False).mean()
+            ema_slow = close.ewm(span=26, adjust=False).mean()
+            hist_series = (ema_fast - ema_slow) - (ema_fast - ema_slow).ewm(span=9, adjust=False).mean()
+            if len(hist_series) >= 2 and not hist_series.iloc[-1:].isna().any():
+                macd_hist_slope = round(float(hist_series.iloc[-1]) - float(hist_series.iloc[-2]), 6)
+        except Exception:
+            pass
+
+    # RSI slope: rsi[-1] - rsi[-3] over 3 bars (positive = RSI trending up)
+    rsi_slope: Optional[float] = None
+    if len(df) >= 20:
+        try:
+            close = df["Close"]
+            delta = close.diff()
+            gain = delta.clip(lower=0).rolling(14).mean()
+            loss = (-delta.clip(upper=0)).rolling(14).mean()
+            rs_series = gain / loss.replace(0, float('nan'))
+            rsi_series = 100 - (100 / (1 + rs_series))
+            if len(rsi_series) >= 3 and not rsi_series.iloc[-1:].isna().any():
+                rsi_slope = round(float(rsi_series.iloc[-1]) - float(rsi_series.iloc[-3]), 4)
+        except Exception:
+            pass
+
     bollinger = calc_bollinger(df)
     adx = calc_adx(df)
     stochastic = calc_stochastic(df)
@@ -737,6 +814,20 @@ def build_snapshot(symbol: str) -> Optional[TechnicalSnapshot]:
     lvn_levels = vp["lvn_levels"] if vp else []
     vp_bias = vp["vp_bias"] if vp else "at_vpoc"
     vp_overextension = vp["vp_overextension"] if vp else None
+
+    # Volume ratio: latest bar volume vs 20-day SMA (>1.0 = above-average volume)
+    volume_ratio: Optional[float] = None
+    if "Volume" in df.columns and len(df) >= 20:
+        try:
+            vol_sma = df["Volume"].iloc[-20:].mean()
+            latest_vol = float(df["Volume"].iloc[-1])
+            if vol_sma > 0:
+                volume_ratio = round(latest_vol / vol_sma, 4)
+        except Exception:
+            pass
+
+    # Order Flow Imbalance: up-volume / total-volume over last 10 bars
+    ofi_ratio = calc_order_flow_imbalance(df, lookback=10)
 
     # Overnight gap distribution: |Open[t] - Close[t-1]| / Close[t-1]
     overnight_gap_pct_avg: Optional[float] = None
@@ -811,7 +902,7 @@ def build_snapshot(symbol: str) -> Optional[TechnicalSnapshot]:
     def _r(v, d=4):
         return round(v, d) if v is not None else None
 
-    return TechnicalSnapshot(
+    snap = TechnicalSnapshot(
         symbol=symbol,
         price=round(price, 4),
         atr=_r(atr),
@@ -840,7 +931,13 @@ def build_snapshot(symbol: str) -> Optional[TechnicalSnapshot]:
         vp_bias=vp_bias,
         vp_overextension=_r(vp_overextension, 4) if vp_overextension is not None else None,
         ema200=_r(ema200, 4) if ema200 is not None else None,
+        volume_ratio=_r(volume_ratio, 4) if volume_ratio is not None else None,
+        ofi_ratio=_r(ofi_ratio, 4) if ofi_ratio is not None else None,
+        macd_hist_slope=_r(macd_hist_slope, 6) if macd_hist_slope is not None else None,
+        rsi_slope=_r(rsi_slope, 4) if rsi_slope is not None else None,
     )
+    _snapshot_persist[symbol] = snap
+    return snap
 
 
 # ---------------------------------------------------------------------------
@@ -1471,12 +1568,15 @@ def compute_technical_score(
     sentiment_avg: Optional[float],
     sentiment_count: int,
     snapshot: Optional[TechnicalSnapshot] = None,
+    direction: str = "long",
 ) -> float:
     """
     Combined ranking score. Higher = stronger signal. Range roughly -3 to +4.
+    Direction-aware: overbought RSI rewards shorts, not longs. Oversold rewards longs.
     Enhanced with ADX, Stochastic, OBV, and trend strength.
     """
     score = 0.0
+    long = direction == "long"
 
     if sentiment_avg is not None:
         score += sentiment_avg * 1.5
@@ -1487,23 +1587,40 @@ def compute_technical_score(
     if not snapshot:
         return score
 
-    # RSI extremes
+    # RSI extremes — direction-aware: oversold favors longs, overbought favors shorts
     if snapshot.rsi is not None:
-        if snapshot.rsi > 70 or snapshot.rsi < 30:
-            score += 0.5
-        elif snapshot.rsi > 60 or snapshot.rsi < 40:
-            score += 0.2
+        if long:
+            if snapshot.rsi < 30:
+                score += 0.5   # oversold — mean reversion long setup
+            elif snapshot.rsi < 40:
+                score += 0.2
+            elif snapshot.rsi > 70:
+                score -= 0.3   # overbought — bad for long entry
+        else:
+            if snapshot.rsi > 70:
+                score += 0.5   # overbought — mean reversion short setup
+            elif snapshot.rsi > 60:
+                score += 0.2
+            elif snapshot.rsi < 30:
+                score -= 0.3   # oversold — bad for short entry
 
-    # MACD momentum
+    # MACD momentum — reward aligned histogram direction
     if snapshot.macd is not None:
         price = snapshot.price if snapshot.price > 0 else 1
-        score += min(0.4, abs(snapshot.macd[2]) / price * 100)
+        hist = snapshot.macd[2]
+        magnitude = min(0.4, abs(hist) / price * 100)
+        if (long and hist > 0) or (not long and hist < 0):
+            score += magnitude   # histogram aligned with direction
+        else:
+            score -= magnitude * 0.5  # histogram against direction
 
-    # Bollinger extremes
-    if snapshot.near_upper_band or snapshot.near_lower_band:
-        score += 0.3
+    # Bollinger extremes — direction-aware
+    if long and snapshot.near_lower_band:
+        score += 0.3   # near lower band = potential long setup
+    elif not long and snapshot.near_upper_band:
+        score += 0.3   # near upper band = potential short setup
 
-    # ADX: strong trends get a boost
+    # ADX: strong trends get a boost (direction-agnostic — ADX measures strength not direction)
     if snapshot.adx is not None:
         adx_val = snapshot.adx[0]
         if adx_val >= 40:
@@ -1511,15 +1628,36 @@ def compute_technical_score(
         elif adx_val >= 25:
             score += 0.3
 
-    # Stochastic extremes
+    # Stochastic extremes — direction-aware
     if snapshot.stochastic is not None:
         k, _ = snapshot.stochastic
-        if k > 80 or k < 20:
-            score += 0.3
+        if long and k < 20:
+            score += 0.3   # oversold stochastic = long setup
+        elif not long and k > 80:
+            score += 0.3   # overbought stochastic = short setup
 
-    # OBV momentum
+    # OBV momentum — direction-aware
     if snapshot.obv is not None and snapshot.obv[1] != 0:
-        score += 0.2
+        slope = snapshot.obv[1]
+        if (long and slope > 0) or (not long and slope < 0):
+            score += 0.2
+        else:
+            score -= 0.1
+
+    # MACD histogram slope — soft momentum acceleration bonus (not a hard gate)
+    # Increasing histogram in trade direction = momentum building → small score boost
+    if snapshot.macd_hist_slope is not None:
+        slope = snapshot.macd_hist_slope
+        if (long and slope > 0) or (not long and slope < 0):
+            score += 0.15  # momentum accelerating in trade direction
+        elif (long and slope < 0) or (not long and slope > 0):
+            score -= 0.1   # momentum fading — soft penalty, not a block
+
+    # RSI slope — soft directional momentum bonus
+    if snapshot.rsi_slope is not None:
+        rslope = snapshot.rsi_slope
+        if (long and rslope > 0.5) or (not long and rslope < -0.5):
+            score += 0.1   # RSI trending in trade direction
 
     return round(score, 4)
 

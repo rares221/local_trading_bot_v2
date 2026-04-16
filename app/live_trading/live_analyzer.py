@@ -334,6 +334,7 @@ def _compute_signal_sync(
             sentiment_avg=sentiment_avg if sentiment_count > 0 else None,
             sentiment_count=sentiment_count,
             snapshot=snap,
+            direction=direction,
         )
     except Exception:
         tech_score = 0.0

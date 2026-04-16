@@ -322,30 +322,58 @@
   <script>
     function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
-    // ── Parse "**Label:** content" sections from LLM output ──
-    function parseSections(text) {
-      const sections = [];
-      const re = /\*\*([^*]+?)\*\*:?\s*/g;
-      let match, lastIdx = 0, lastLabel = null;
+    // ── Render content: convert **bold** → <strong>, preserve line breaks ──
+    function renderContent(text) {
+      return text
+        .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+        .replace(/\*\*([^*\n]+?)\*\*/g, '<strong>$1</strong>')
+        .replace(/\n/g, '<br>');
+    }
 
-      while ((match = re.exec(text)) !== null) {
-        if (lastLabel !== null) {
-          sections.push({ label: lastLabel, content: text.slice(lastIdx, match.index).trim() });
-        } else if (match.index > 0) {
-          // text before first label
-          const pre = text.slice(0, match.index).trim();
-          if (pre) sections.push({ label: null, content: pre });
-        }
-        lastLabel = match[1].trim();
-        lastIdx = re.lastIndex;
+    // ── Parse LLM output into sections ──
+    // Strategy 1: split on markdown ## / ### headers.
+    // Strategy 2 (fallback): split on **Label:** only when at line-start and label is a known keyword.
+    // Inline **bold values** (prices, ratios, days) are NEVER treated as section boundaries.
+    function parseSections(text) {
+      // Strategy 1: ## headers
+      const headerRe = /^#{1,3}\s+(.+)$/gm;
+      const headerMatches = [...text.matchAll(headerRe)];
+
+      if (headerMatches.length > 0) {
+        const sections = [];
+        headerMatches.forEach((m, i) => {
+          const start = m.index + m[0].length;
+          const end   = i + 1 < headerMatches.length ? headerMatches[i + 1].index : text.length;
+          const content = text.slice(start, end).replace(/^[\r\n]+/, '').trimEnd();
+          sections.push({ label: m[1].trim(), content });
+        });
+        // Any text before the first header
+        const pre = text.slice(0, headerMatches[0].index).trim();
+        if (pre) sections.unshift({ label: null, content: pre });
+        return sections.filter(s => s.content || s.label);
       }
-      if (lastLabel !== null) {
-        sections.push({ label: lastLabel, content: text.slice(lastIdx).trim() });
+
+      // Strategy 2: **Label:** only at start of a line
+      const KNOWN = ['rationale','risk','bias','setup','catalyst','analysis','summary','conclusion'];
+      const lineStartRe = /^[ \t]*\*\*([^*\n]+?)\*\*:?[ \t]*/gm;
+      const knownMatches = [...text.matchAll(lineStartRe)]
+        .filter(m => KNOWN.some(k => m[1].toLowerCase().includes(k)));
+
+      if (knownMatches.length > 0) {
+        const sections = [];
+        knownMatches.forEach((m, i) => {
+          const start = m.index + m[0].length;
+          const end   = i + 1 < knownMatches.length ? knownMatches[i + 1].index : text.length;
+          const content = text.slice(start, end).trimEnd();
+          sections.push({ label: m[1].trim(), content });
+        });
+        const pre = text.slice(0, knownMatches[0].index).trim();
+        if (pre) sections.unshift({ label: null, content: pre });
+        return sections.filter(s => s.content || s.label);
       }
-      if (sections.length === 0) {
-        sections.push({ label: null, content: text.trim() });
-      }
-      return sections;
+
+      // Fallback: single section
+      return [{ label: null, content: text.trim() }];
     }
 
     // ── Global fixed tooltip for VP strip ──
@@ -636,7 +664,7 @@
               (cfg.sub ? '<div class="rs-section-sublabel">' + esc(cfg.sub) + '</div>' : '') +
             '</div>' +
           '</div>' +
-          '<p class="rs-section-text">' + esc(s.content) + '</p>' +
+          '<p class="rs-section-text">' + renderContent(s.content) + '</p>' +
         '</div>';
       }).join('');
     }
@@ -941,8 +969,14 @@
         const d = await r.json();
         const m = d.matches || [];
         if (m.length === 0) {
-          resolveHint.textContent = 'No match for "' + raw + '". Try a ticker symbol instead.';
-          resolveHint.style.color = 'var(--warning-text)';
+          // If the input already looks like a ticker (1-5 uppercase letters/digits), use it directly
+          if (/^[A-Z0-9]{1,5}$/.test(raw)) {
+            resolveHint.textContent = 'Using ticker symbol directly: ' + raw;
+            resolveHint.style.color = '';
+          } else {
+            resolveHint.textContent = 'No match for "' + raw + '". Try a ticker symbol instead.';
+            resolveHint.style.color = 'var(--warning-text)';
+          }
         } else if (m.length === 1) {
           assetInput.value = m[0].ticker;
           resolveHint.textContent = m[0].name + ' \u2192 ' + m[0].ticker;

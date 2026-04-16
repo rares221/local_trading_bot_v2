@@ -25,6 +25,8 @@ _DEFAULT_BLOCKLIST = frozenset({
     "GOLD", "SILVER", "CRUDE", "BRENT", "NATGAS", "COPPER", "WHEAT", "CORN", "IRON", "COAL",
     "OPEX", "NGAS",
     "FTSE", "NYSE", "VIX", "SPX", "NDX", "DAX", "DJI", "DXY", "CPI", "XAU", "FOMC",
+    # Geopolitical / org acronyms / news noise
+    "IRGC", "ISI", "COVID", "STAT", "GMT", "TFA", "FXCM",
     "FVG", "ICT", "VWAP", "PIPS", "IFVG", "VASP",
     "USDT", "HBAR", "DOT",
     "IRA", "JONES", "LIKE", "LL", "LOVES", "NGM", "PCE", "PDL", "PGIM", "PIXEL",

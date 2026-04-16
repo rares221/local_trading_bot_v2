@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import logging
+import threading
 import time
 from datetime import date, datetime, timedelta
 from typing import Optional
@@ -18,6 +19,18 @@ from typing import Optional
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+# ── yfinance rate-limit throttle ──────────────────────────────────────────────
+# Yahoo Finance throttles by container IP when burst requests exceed ~1/s.
+# The live_analyzer runs up to 10 threads in parallel — without a Lock, all
+# threads read _yfinance_last_call simultaneously, see it's expired, and burst
+# into Yahoo at the same time, causing timeouts.  The Lock serialises access so
+# only one yfinance call proceeds at a time and the spacing is actually enforced.
+_YFINANCE_MIN_INTERVAL = 0.8  # seconds between yfinance calls (was 0.6)
+_yfinance_last_call: float = 0.0
+_yfinance_lock = threading.Lock()          # prevents burst from multi-threaded callers
+_YFINANCE_TIMEOUT = 15                     # seconds per call (was 10)
+_YFINANCE_RETRIES = 1                      # retry once on timeout before giving up
 
 
 # ── Eligibility ───────────────────────────────────────────────────────────────
@@ -146,22 +159,37 @@ def _ohlcv_finnhub(
 
 
 def _ohlcv_yfinance(symbol: str, period: str, interval: str) -> Optional[pd.DataFrame]:
-    try:
-        import yfinance as yf
-        ticker = yf.Ticker(symbol)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(ticker.history, period=period, interval=interval)
-            try:
-                df = future.result(timeout=30)
-            except concurrent.futures.TimeoutError:
-                logger.warning("[MARKET_DATA] yfinance timeout for %s", symbol)
+    global _yfinance_last_call
+    for attempt in range(_YFINANCE_RETRIES + 1):
+        with _yfinance_lock:
+            elapsed = time.monotonic() - _yfinance_last_call
+            if elapsed < _YFINANCE_MIN_INTERVAL:
+                time.sleep(_YFINANCE_MIN_INTERVAL - elapsed)
+            _yfinance_last_call = time.monotonic()
+        try:
+            import yfinance as yf
+            ticker = yf.Ticker(symbol)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(ticker.history, period=period, interval=interval)
+                try:
+                    df = future.result(timeout=_YFINANCE_TIMEOUT)
+                except concurrent.futures.TimeoutError:
+                    if attempt < _YFINANCE_RETRIES:
+                        logger.warning(
+                            "[MARKET_DATA] yfinance timeout for %s (attempt %d/%d), retrying",
+                            symbol, attempt + 1, _YFINANCE_RETRIES + 1,
+                        )
+                        time.sleep(1.5)
+                        continue
+                    logger.warning("[MARKET_DATA] yfinance timeout for %s (all attempts exhausted)", symbol)
+                    return None
+            if df is None or df.empty or "Close" not in df.columns:
                 return None
-        if df is None or df.empty or "Close" not in df.columns:
+            return df
+        except Exception as exc:
+            logger.debug("[MARKET_DATA] yfinance OHLCV %s failed: %s", symbol, exc)
             return None
-        return df
-    except Exception as exc:
-        logger.debug("[MARKET_DATA] yfinance OHLCV %s failed: %s", symbol, exc)
-        return None
+    return None
 
 
 # ── Live quote ────────────────────────────────────────────────────────────────
@@ -197,6 +225,12 @@ def _quote_finnhub(client, symbol: str) -> Optional[dict]:
 
 
 def _quote_yfinance(symbol: str) -> Optional[dict]:
+    global _yfinance_last_call
+    with _yfinance_lock:
+        elapsed = time.monotonic() - _yfinance_last_call
+        if elapsed < _YFINANCE_MIN_INTERVAL:
+            time.sleep(_YFINANCE_MIN_INTERVAL - elapsed)
+        _yfinance_last_call = time.monotonic()
     try:
         import yfinance as yf
         fi = yf.Ticker(symbol).fast_info

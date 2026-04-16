@@ -94,6 +94,28 @@ class MarketRegime:
     spx_above_sma50: Optional[bool] = None
     description: str = ""
 
+    @property
+    def extended_regime(self) -> str:
+        """
+        5-label regime matching the backtest's regime.py definitions.
+        Used for engine gates so live and backtest regime labels are consistent.
+          crisis   — VIX ≥ 35 (backtest: 12.5% WR, -0.71R avg)
+          high_vol — VIX 25–35 (backtest: 23.5% WR, -0.009R avg)
+          bull     — VIX < 25, SPX trending up
+          bear     — VIX < 25, SPX trending down
+          neutral  — VIX < 25, mixed signals
+        """
+        vix = self.vix_level
+        if vix is not None and vix >= 35:
+            return "crisis"
+        if vix is not None and vix >= 25:
+            return "high_vol"
+        if self.spx_trend == "bullish":
+            return "bull"
+        if self.spx_trend == "bearish":
+            return "bear"
+        return "neutral"
+
 
 def detect_market_regime() -> MarketRegime:
     """
