@@ -28,7 +28,7 @@ _DEFAULT_BLOCKLIST = frozenset({
     # Geopolitical / org acronyms / news noise
     "IRGC", "ISI", "COVID", "STAT", "GMT", "TFA", "FXCM",
     # Company abbreviations / false positives
-    "TSMC", "BOS", "CEIX",
+    "TSMC", "BOS", "CEIX", "OIL", "AACR",
     "FVG", "ICT", "VWAP", "PIPS", "IFVG", "VASP",
     "USDT", "HBAR", "DOT",
     "IRA", "JONES", "LIKE", "LL", "LOVES", "NGM", "PCE", "PDL", "PGIM", "PIXEL",
