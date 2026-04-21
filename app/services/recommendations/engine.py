@@ -1284,12 +1284,8 @@ def _build_candidate(
             return None
         if direction == "short" and snap.rsi < _rsi_short_floor:
             return None
-        # RSI slope: require momentum moving in trade direction
-        if snap.rsi_slope is not None:
-            if direction == "long" and snap.rsi_slope < -2.0:
-                return None  # RSI falling fast — long momentum fading
-            if direction == "short" and snap.rsi_slope > 2.0:
-                return None  # RSI rising fast — short momentum fading
+        # RSI slope: soft penalty instead of hard gate (volatile markets punish hard skips)
+        # Bonus for positive slope already handled in confidence scoring below.
 
     # MACD histogram gate: require histogram aligned with trade direction.
     # Slope check only blocks sharp momentum reversals (not normal 1-2 bar pullbacks in a trend).
@@ -1422,13 +1418,24 @@ def _build_candidate(
         confidence = min(100, confidence + 5)
         _bonus_parts.append(f"volume_surge=+5 ({snap.volume_ratio:.2f}x)")
 
-    # Item 5 — RSI directional momentum bonus (+4 pts):
-    # RSI slope positive while RSI is still in the non-overbought zone = momentum continuation.
-    # Only reward when RSI is heading up AND not yet extended (overbought kills the trade).
-    if direction == "long" and snap and snap.rsi is not None and snap.rsi_slope is not None:
-        if snap.rsi_slope > 0 and snap.rsi < 65:
-            confidence = min(100, confidence + 4)
-            _bonus_parts.append(f"rsi_momentum=+4 (slope={snap.rsi_slope:+.1f})")
+    # Item 5 — RSI directional momentum bonus/penalty:
+    # Positive slope + non-overbought = momentum continuation (+4 pts).
+    # Negative slope = fading momentum penalty (-4 pts mild, -8 pts steep).
+    if snap and snap.rsi is not None and snap.rsi_slope is not None:
+        if direction == "long":
+            if snap.rsi_slope > 0 and snap.rsi < 65:
+                confidence = min(100, confidence + 4)
+                _bonus_parts.append(f"rsi_momentum=+4 (slope={snap.rsi_slope:+.1f})")
+            elif snap.rsi_slope < -4.0:
+                confidence -= 8
+                _bonus_parts.append(f"rsi_momentum=-8 (slope={snap.rsi_slope:+.1f})")
+            elif snap.rsi_slope < -2.0:
+                confidence -= 4
+                _bonus_parts.append(f"rsi_momentum=-4 (slope={snap.rsi_slope:+.1f})")
+        elif direction == "short":
+            if snap.rsi_slope > 2.0:
+                confidence -= 4
+                _bonus_parts.append(f"rsi_momentum=-4 (slope={snap.rsi_slope:+.1f})")
 
     # Item 6 — 52-week high proximity bonus (+8 pts):
     # Research: stocks within 5% of 52-week high with volume >1.5× show 72% WR over ~28 days.
