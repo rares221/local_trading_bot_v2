@@ -59,14 +59,36 @@ class AssetClassPolicy:
     indicator_conflict_multiplier: float = 1.0
 
 
-_POLICY_STOCKS = AssetClassPolicy(
-    key="stocks",
+_POLICY_STOCKS_LARGE = AssetClassPolicy(
+    key="stocks_large",
     apply_risk_off_long_flip=True,
     risk_off_gate_relief=10,
     news_boost_min_mentions=4,
     news_boost_min_abs_sentiment=0.12,
     news_boost_points=10,
-    sentiment_signal_scale=1.0,  # reduced from 1.12: sentiment was inflating scores into 60-69 bucket (25% win rate)
+    sentiment_signal_scale=1.0,
+)
+
+_POLICY_STOCKS_MID = AssetClassPolicy(
+    key="stocks_mid",
+    min_confidence_offset=5,  # mid-caps need higher conviction — more volatile, wider spreads
+    apply_risk_off_long_flip=True,
+    risk_off_gate_relief=8,
+    news_boost_min_mentions=3,
+    news_boost_min_abs_sentiment=0.14,
+    news_boost_points=8,
+    sentiment_signal_scale=1.05,
+)
+
+_POLICY_STOCKS_SMALL = AssetClassPolicy(
+    key="stocks_small",
+    min_confidence_offset=10,  # small-caps require high conviction — thin liquidity, gap risk
+    apply_risk_off_long_flip=True,
+    risk_off_gate_relief=5,
+    news_boost_min_mentions=2,
+    news_boost_min_abs_sentiment=0.18,
+    news_boost_points=6,
+    sentiment_signal_scale=1.10,
 )
 
 _POLICY_INDICES = AssetClassPolicy(
@@ -176,8 +198,12 @@ def get_asset_class_policy(category: str, asset_id: str = "") -> AssetClassPolic
     """
     cat = (category or "").strip().lower()
     aid = (asset_id or "").strip()
-    if cat == "stocks":
-        return _POLICY_STOCKS
+    if cat == "stocks_large" or cat == "stocks":
+        return _POLICY_STOCKS_LARGE
+    if cat == "stocks_mid":
+        return _POLICY_STOCKS_MID
+    if cat == "stocks_small":
+        return _POLICY_STOCKS_SMALL
     if cat == "commodities":
         return _POLICY_COMMODITIES
     if cat == "other":

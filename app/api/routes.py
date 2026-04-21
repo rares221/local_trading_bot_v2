@@ -318,7 +318,10 @@ async def list_recommendations(
         recs_deduped.append(r)
     items = [_rec_to_item(r) for r in recs_deduped]
     if group_by == "category":
-        grouped: dict[str, list] = {"stocks": [], "commodities": [], "other": [], "indices": []}
+        grouped: dict[str, list] = {
+            "stocks_large": [], "stocks_mid": [], "stocks_small": [],
+            "commodities": [], "other": [], "indices": [],
+        }
         # Attach current price for each rec (from latest snapshot)
         price_snapshot: dict[str, float] = {}
         if recs_deduped:
@@ -329,7 +332,11 @@ async def list_recommendations(
                 recs_deduped,
             )
         for r in recs_deduped:
-            cat = r.asset_category if r.asset_category in grouped else "other"
+            raw_cat = r.asset_category or "other"
+            # backward compat: old DB rows saved as "stocks" before the cap-tier split
+            if raw_cat == "stocks":
+                raw_cat = "stocks_large"
+            cat = raw_cat if raw_cat in grouped else "other"
             if cat not in grouped:
                 grouped[cat] = []
             item = _rec_to_item(r)
@@ -530,7 +537,7 @@ class TradeBuilderFromAssetRequest(BaseModel):
     It still does **not** rerun the daily batch; use the Dashboard action if you want today's full list regenerated.
     """
     asset_id: str
-    category: str = "stocks"
+    category: str = "stocks_large"
     run_full_pipeline: bool = False
 
 
@@ -562,7 +569,7 @@ async def trade_builder_from_asset(
     _build = partial(
         build_trade_builder_candidate,
         body.asset_id.strip(),
-        (body.category or "stocks").strip(),
+        (body.category or "stocks_large").strip(),
         by_asset_sentiment=by_asset_sentiment,
         preferred_risk=preferred,
         active_events=active_events if isinstance(active_events, list) else None,
@@ -574,7 +581,7 @@ async def trade_builder_from_asset(
             "trade_builder_from_asset failed: %s (asset_id=%r category=%r)",
             msg,
             body.asset_id.strip(),
-            (body.category or "stocks").strip(),
+            (body.category or "stocks_large").strip(),
         )
         raise HTTPException(status_code=400, detail=msg)
 
@@ -800,7 +807,7 @@ async def list_active_trades(
         # Earnings check for stocks (cached 24h — no performance concern)
         near_earnings = False
         days_to_earnings = None
-        if rec and (rec.asset_category or "") == "stocks" and _earnings_window > 0 and symbol:
+        if rec and (rec.asset_category or "").startswith("stocks") and _earnings_window > 0 and symbol:
             try:
                 near_earnings, days_to_earnings = _is_near_earnings(symbol, _earnings_window)
             except Exception:
@@ -914,7 +921,7 @@ async def list_active_trades(
 @router.get("/active-trades/sparkline/{asset_id}")
 async def get_active_trade_sparkline(
     asset_id: str,
-    category: str = "stocks",
+    category: str = "stocks_large",
 ) -> dict[str, Any]:
     """Hourly close prices for a mini sparkline chart (last ~40 candles). Uses cached yfinance data."""
     from app.services.technicals import fetch_ohlcv
@@ -1015,7 +1022,7 @@ async def get_gap_advice(
     # Earnings
     near_earnings, days_to_earnings = False, None
     _earn_cfg = get_earnings_calendar_config()
-    if rec.asset_category == "stocks" and symbol:
+    if (rec.asset_category or "").startswith("stocks") and symbol:
         try:
             near_earnings, days_to_earnings = _is_near_earnings(symbol, _earn_cfg["earnings_window_days"])
         except Exception:

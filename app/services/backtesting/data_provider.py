@@ -23,8 +23,22 @@ DEFAULT_PERIOD = "3y"
 
 # All Yahoo symbols tracked by the engine (from ASSETS_BY_CATEGORY)
 _ENGINE_SYMBOLS: list[str] = [
-    # Stocks
-    "XOM", "CVX", "BP", "SHEL", "NEM",
+    # Large cap stocks
+    "AAPL", "MSFT", "GOOGL", "NVDA", "META", "AMZN", "TSLA", "AVGO",
+    "JPM", "BAC", "GS",
+    "JNJ", "UNH",
+    "XOM", "CVX", "BP", "SHEL",
+    "NEM",
+    "PG", "WMT", "V",
+    # Mid cap stocks
+    "PLTR", "SMCI", "IONQ", "RIVN", "ENPH", "FSLR",
+    "CCJ", "MP",
+    "SOFI", "HOOD",
+    "RIG", "HP",
+    "HIMS", "RKLB",
+    # Small cap stocks
+    "BBAI", "SOUN", "LUNR", "ACHR", "ASTS", "JOBY",
+    "ACMR", "ARRY", "RXRX", "OPEN",
     # Commodities futures
     "CL=F", "BZ=F", "GC=F", "NG=F", "SI=F",
     # FX + Crypto
@@ -36,7 +50,7 @@ _ENGINE_SYMBOLS: list[str] = [
     # Asia-Pacific
     "^N225", "^HSI", "000001.SS", "^KS11", "^BSESN", "^AXJO", "^NSEI",
     # Volatility + Macro
-    "^VIX", "^GSPC",  # SPX for market context
+    "^VIX",
     # DXY
     "DX-Y.NYB",
 ]

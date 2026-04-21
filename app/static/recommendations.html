@@ -316,12 +316,26 @@
 
     <div id="loading" class="loading-overlay"><span class="spinner spinner--lg"></span> Loading recommendations&hellip;</div>
     <div id="content" style="display:none;">
-      <section class="card" id="stocks-section">
+      <section class="card" id="stocks_large-section">
         <div class="tab-section-header">
-          <h2 class="section-title" style="margin:0;">Stocks</h2>
-          <span class="tab-section-count" id="stocks-count">0</span>
+          <h2 class="section-title" style="margin:0;">Large Cap Stocks</h2>
+          <span class="tab-section-count" id="stocks_large-count">0</span>
         </div>
-        <div id="stocks-table"></div>
+        <div id="stocks_large-table"></div>
+      </section>
+      <section class="card" id="stocks_mid-section">
+        <div class="tab-section-header">
+          <h2 class="section-title" style="margin:0;">Mid Cap Stocks</h2>
+          <span class="tab-section-count" id="stocks_mid-count">0</span>
+        </div>
+        <div id="stocks_mid-table"></div>
+      </section>
+      <section class="card" id="stocks_small-section">
+        <div class="tab-section-header">
+          <h2 class="section-title" style="margin:0;">Small Cap Stocks</h2>
+          <span class="tab-section-count" id="stocks_small-count">0</span>
+        </div>
+        <div id="stocks_small-table"></div>
       </section>
       <section class="card" id="commodities-section">
         <div class="tab-section-header">
@@ -1277,10 +1291,12 @@
         } else if (calEl) {
           calEl.style.display = 'none';
         }
-        createTable('stocks-table',      'stocks-count',      by.stocks      || []);
-        createTable('commodities-table', 'commodities-count', by.commodities || []);
-        createTable('indices-table',     'indices-count',     by.indices     || []);
-        createTable('other-table',       'other-count',       by.other       || []);
+        createTable('stocks_large-table', 'stocks_large-count', by.stocks_large || []);
+        createTable('stocks_mid-table',   'stocks_mid-count',   by.stocks_mid   || []);
+        createTable('stocks_small-table', 'stocks_small-count', by.stocks_small || []);
+        createTable('commodities-table',  'commodities-count',  by.commodities  || []);
+        createTable('indices-table',      'indices-count',      by.indices      || []);
+        createTable('other-table',        'other-count',        by.other        || []);
       } catch (e) {
         if (macroEl) macroEl.style.display = 'none';
         if (calEl) calEl.style.display = 'none';

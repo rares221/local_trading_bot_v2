@@ -440,6 +440,9 @@ class TechnicalSnapshot:
     # Momentum direction: positive = increasing histogram/RSI (accelerating), negative = fading
     macd_hist_slope: Optional[float] = None  # hist[-1] - hist[-2]: positive = momentum building
     rsi_slope: Optional[float] = None        # rsi[-1] - rsi[-3]: positive = RSI trending up
+    # 52-week high proximity: (52w_high - price) / 52w_high, range [0, 1].
+    # 0.0 = at the 52-week high; 0.05 = 5% below. None when < 252 bars available.
+    pct_from_52w_high: Optional[float] = None
     # Staleness flag: True when the snapshot was served from cache due to a live fetch failure.
     # Consumers (engine) apply a confidence penalty and note it in the rationale.
     is_stale: bool = False
@@ -829,6 +832,17 @@ def build_snapshot(symbol: str) -> Optional["TechnicalSnapshot"]:
     # Order Flow Imbalance: up-volume / total-volume over last 10 bars
     ofi_ratio = calc_order_flow_imbalance(df, lookback=10)
 
+    # 52-week high proximity: how far price is below its 1-year high (rolling 252 bars).
+    pct_from_52w_high: Optional[float] = None
+    if "High" in df.columns and len(df) >= 20:
+        try:
+            bars = min(252, len(df))
+            high_52w = float(df["High"].iloc[-bars:].max())
+            if high_52w > 0:
+                pct_from_52w_high = round((high_52w - price) / high_52w, 4)
+        except Exception:
+            pass
+
     # Overnight gap distribution: |Open[t] - Close[t-1]| / Close[t-1]
     overnight_gap_pct_avg: Optional[float] = None
     overnight_gap_pct_p95: Optional[float] = None
@@ -935,6 +949,7 @@ def build_snapshot(symbol: str) -> Optional["TechnicalSnapshot"]:
         ofi_ratio=_r(ofi_ratio, 4) if ofi_ratio is not None else None,
         macd_hist_slope=_r(macd_hist_slope, 6) if macd_hist_slope is not None else None,
         rsi_slope=_r(rsi_slope, 4) if rsi_slope is not None else None,
+        pct_from_52w_high=pct_from_52w_high,
     )
     _snapshot_persist[symbol] = snap
     return snap

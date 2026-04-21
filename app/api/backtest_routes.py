@@ -257,7 +257,7 @@ async def delete_backtest_run(run_id: str, db: AsyncSession = Depends(get_db)) -
 @router.get("/backtest/quick")
 async def quick_backtest(
     asset_id: str,
-    category: str = "stocks",
+    category: str = "stocks_large",
     direction: str = "long",
     risk_tier: str = "moderate",
     days: int = 90,
@@ -596,7 +596,7 @@ async def _run_backtest_background(run_id: str, body: BacktestRequest) -> None:
                     id=str(uuid4()),
                     run_id=run_id,
                     symbol=sig["symbol"],
-                    asset_category=sig.get("asset_category", "stocks"),
+                    asset_category=sig.get("asset_category", "stocks_large"),
                     direction=sig["direction"],
                     risk_tier=sig["risk_tier"],
                     entry_date=date.fromisoformat(sig["entry_date"]),

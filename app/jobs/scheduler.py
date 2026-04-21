@@ -25,7 +25,7 @@ def _infer_instrument_type(asset_category: str) -> str:
     cat = (asset_category or "").lower()
     if cat in ("indices", "index", "forex", "commodities", "oil", "commodity"):
         return "cfd"
-    if cat == "stocks":
+    if cat in ("stocks_large", "stocks_mid", "stocks_small", "stocks"):
         return "invest"
     return "cfd"
 from app.services.ingestion import fetch_all_feeds, save_feed_items

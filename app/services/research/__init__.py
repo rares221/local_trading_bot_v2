@@ -97,7 +97,7 @@ async def build_research_context(
         direction = ctx.get("direction") or "long"
         # get_yf_symbol only works for assets in the universe; fall back to direct ticker
         symbol = get_yf_symbol(category, asset_id)
-        if not symbol and category.lower() in ("stocks", "etfs", "etf", "stock"):
+        if not symbol and category.lower() in ("stocks_large", "stocks_mid", "stocks_small", "stocks", "etfs", "etf", "stock"):
             symbol = asset_id.upper()
         calculated = False
         if symbol:
@@ -139,7 +139,7 @@ async def build_research_context(
                         ctx["vp_overextension"] = snap.vp_overextension
                         ctx["in_value_area"] = snap.in_value_area()
                     # Relative Strength vs SPX and sector ETF (stocks only)
-                    if category.lower() in ("stocks", "etfs", "etf", "stock"):
+                    if category.lower() in ("stocks_large", "stocks_mid", "stocks_small", "stocks", "etfs", "etf", "stock"):
                         try:
                             from app.services.technicals import compute_relative_strength
                             from app.services.market_context import get_sector_etf_for_asset
@@ -228,7 +228,7 @@ async def build_research_context(
         await session.rollback()
     # Fundamentals: sector, industry, market cap, P/E, 52-week range via market_data routing
     symbol = get_yf_symbol(category, asset_id)
-    if not symbol and category.lower() in ("stocks", "etfs", "etf", "stock"):
+    if not symbol and category.lower() in ("stocks_large", "stocks_mid", "stocks_small", "stocks", "etfs", "etf", "stock"):
         symbol = asset_id.upper()
     if symbol:
         try:

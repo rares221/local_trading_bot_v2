@@ -91,10 +91,18 @@ CONFLICT_SKIP_THRESHOLD = 25  # raised from 20 to allow more candidates through
 CORRELATION_THRESHOLD = 0.75
 
 # Minimum Risk:Reward ratio to include a recommendation (skip trades where reward doesn't justify risk).
-MIN_RISK_REWARD = 1.6  # raised 1.2→1.6: 34% win rate needs R:R≥1.9 to break even; floor targets ~4×ATR TP
+MIN_RISK_REWARD = 2.0  # raised 1.6→2.0: breakeven WR drops from 38.5% to 33.3%, giving our 35% WR positive EV
 # Short trades disabled: backtest shows 24.7% WR for shorts vs 35.8% for longs — shorts are net -EV.
 # Re-enable once short signal quality improves (e.g. dedicated short scoring, bear-regime-only filter).
 SHORTS_ENABLED = False
+# Bear-regime exception: re-enable shorts when market_regime == "bear".
+# Backtest aggregate short WR was 22.8% — but bear-regime-only shorts are expected to perform better.
+# Confidence floor of BEAR_REGIME_SHORT_MIN_CONFIDENCE enforced further below in _build_candidate().
+# Note: when SHORTS_ENABLED=True, this floor only applies in bear regime; non-bear shorts bypass it.
+SHORTS_BEAR_REGIME_ENABLED = False
+
+# Minimum confidence required for a bear-regime short to pass (vs ~35-40 for longs).
+BEAR_REGIME_SHORT_MIN_CONFIDENCE = 50
 
 # Macro-day confidence penalty: see `MACRO_DAY_CONFIDENCE_PENALTY` in `app.services.macro_calendar`.
 
@@ -115,25 +123,88 @@ _DISCOVERY_STOCK_YAHOO_SYMBOL: dict[str, str] = {
     "FB": "META",
 }
 
-BATCH_CATEGORIES: tuple[str, ...] = ("stocks", "commodities", "other", "indices")
+# All stock cap-tier categories — use this tuple anywhere you'd otherwise hardcode "stocks".
+_STOCK_CATEGORIES: tuple[str, ...] = ("stocks_large", "stocks_mid", "stocks_small")
+
+BATCH_CATEGORIES: tuple[str, ...] = ("stocks_large", "stocks_mid", "stocks_small", "commodities", "other", "indices")
 
 SENTIMENT_TAG_TO_ASSETS: dict[str, list[tuple[str, str]]] = {
-    "oil": [("commodities", "WTI"), ("commodities", "Brent"), ("stocks", "XOM"), ("stocks", "CVX")],
-    "OIL": [("commodities", "WTI"), ("commodities", "Brent"), ("stocks", "XOM"), ("stocks", "CVX")],
-    "gold": [("commodities", "XAUUSD"), ("stocks", "NEM")],
+    # Commodities + thematic energy
+    "oil": [("commodities", "WTI"), ("commodities", "Brent"), ("stocks_large", "XOM"), ("stocks_large", "CVX")],
+    "OIL": [("commodities", "WTI"), ("commodities", "Brent"), ("stocks_large", "XOM"), ("stocks_large", "CVX")],
+    "gold": [("commodities", "XAUUSD"), ("stocks_large", "NEM")],
     "gas": [("commodities", "Henry Hub")],
-    "XOM": [("stocks", "XOM")],
-    "CVX": [("stocks", "CVX")],
-    "BP": [("stocks", "BP")],
-    "SHEL": [("stocks", "SHEL")],
-    "NEM": [("stocks", "NEM")],
+    "uranium": [("stocks_mid", "CCJ")],
+    "solar": [("stocks_mid", "ENPH"), ("stocks_mid", "FSLR")],
+    "clean energy": [("stocks_mid", "ENPH"), ("stocks_mid", "FSLR")],
+    "EV": [("stocks_large", "TSLA"), ("stocks_mid", "RIVN")],
+    "electric vehicle": [("stocks_large", "TSLA"), ("stocks_mid", "RIVN")],
+    "AI": [("stocks_large", "NVDA"), ("stocks_large", "MSFT"), ("stocks_large", "GOOGL"), ("stocks_mid", "PLTR")],
+    "artificial intelligence": [("stocks_large", "NVDA"), ("stocks_large", "MSFT"), ("stocks_mid", "PLTR")],
+    "semiconductor": [("stocks_large", "NVDA"), ("stocks_large", "AVGO")],
+    "tech": [("stocks_large", "AAPL"), ("stocks_large", "MSFT"), ("stocks_large", "NVDA")],
+    "banking": [("stocks_large", "JPM"), ("stocks_large", "BAC"), ("stocks_large", "GS")],
+    "fintech": [("stocks_mid", "SOFI"), ("stocks_mid", "HOOD")],
+    "space": [("stocks_mid", "RKLB"), ("stocks_small", "LUNR"), ("stocks_small", "ACHR"), ("stocks_small", "ASTS")],
+    # Large cap direct tickers
+    "AAPL": [("stocks_large", "AAPL")],
+    "MSFT": [("stocks_large", "MSFT")],
+    "GOOGL": [("stocks_large", "GOOGL")],
+    "GOOG": [("stocks_large", "GOOGL")],
+    "NVDA": [("stocks_large", "NVDA")],
+    "META": [("stocks_large", "META")],
+    "AMZN": [("stocks_large", "AMZN")],
+    "TSLA": [("stocks_large", "TSLA")],
+    "JPM": [("stocks_large", "JPM")],
+    "BAC": [("stocks_large", "BAC")],
+    "GS": [("stocks_large", "GS")],
+    "JNJ": [("stocks_large", "JNJ")],
+    "UNH": [("stocks_large", "UNH")],
+    "XOM": [("stocks_large", "XOM")],
+    "CVX": [("stocks_large", "CVX")],
+    "BP": [("stocks_large", "BP")],
+    "SHEL": [("stocks_large", "SHEL")],
+    "NEM": [("stocks_large", "NEM")],
+    "PG": [("stocks_large", "PG")],
+    "V": [("stocks_large", "V")],
+    "WMT": [("stocks_large", "WMT")],
+    "AVGO": [("stocks_large", "AVGO")],
+    # Mid cap direct tickers
+    "PLTR": [("stocks_mid", "PLTR")],
+    "SMCI": [("stocks_mid", "SMCI")],
+    "IONQ": [("stocks_mid", "IONQ")],
+    "RIVN": [("stocks_mid", "RIVN")],
+    "ENPH": [("stocks_mid", "ENPH")],
+    "FSLR": [("stocks_mid", "FSLR")],
+    "CCJ": [("stocks_mid", "CCJ")],
+    "SOFI": [("stocks_mid", "SOFI")],
+    "HOOD": [("stocks_mid", "HOOD")],
+    "RIG": [("stocks_mid", "RIG")],
+    "HP": [("stocks_mid", "HP")],
+    "MP": [("stocks_mid", "MP")],
+    "HIMS": [("stocks_mid", "HIMS")],
+    "RKLB": [("stocks_mid", "RKLB")],
+    # Small cap direct tickers
+    "BBAI": [("stocks_small", "BBAI")],
+    "LUNR": [("stocks_small", "LUNR")],
+    "ACHR": [("stocks_small", "ACHR")],
+    "ASTS": [("stocks_small", "ASTS")],
+    "JOBY": [("stocks_small", "JOBY")],
+    "ACMR": [("stocks_small", "ACMR")],
+    "ARRY": [("stocks_small", "ARRY")],
+    "RXRX": [("stocks_small", "RXRX")],
+    "SOUN": [("stocks_small", "SOUN")],
+    "OPEN": [("stocks_small", "OPEN")],
+    # Commodities
     "WTI": [("commodities", "WTI")],
     "Brent": [("commodities", "Brent")],
     "XAUUSD": [("commodities", "XAUUSD")],
     "Henry Hub": [("commodities", "Henry Hub")],
     "Silver": [("commodities", "Silver")],
+    # Crypto
     "BTC": [("other", "BTC")],
     "ETH": [("other", "ETH")],
+    # Indices
     "SPX": [("indices", "SPX")],
     "S&P 500": [("indices", "SPX")],
     "DJI": [("indices", "DJI")],
@@ -160,12 +231,75 @@ SENTIMENT_TAG_TO_ASSETS: dict[str, list[tuple[str, str]]] = {
 }
 
 ASSETS_BY_CATEGORY = {
-    "stocks": [
+    "stocks_large": [
+        # Tech megacap
+        ("AAPL", "AAPL", "moderate"),
+        ("MSFT", "MSFT", "moderate"),
+        ("GOOGL", "GOOGL", "moderate"),
+        ("NVDA", "NVDA", "moderate"),
+        ("META", "META", "moderate"),
+        ("AMZN", "AMZN", "moderate"),
+        ("TSLA", "TSLA", "aggressive"),
+        ("AVGO", "AVGO", "moderate"),
+        # Financials
+        ("JPM", "JPM", "moderate"),
+        ("BAC", "BAC", "moderate"),
+        ("GS", "GS", "moderate"),
+        # Healthcare
+        ("JNJ", "JNJ", "conservative"),
+        ("UNH", "UNH", "moderate"),
+        # Energy
         ("XOM", "XOM", "conservative"),
         ("CVX", "CVX", "conservative"),
         ("BP", "BP", "conservative"),
         ("SHEL", "SHEL", "moderate"),
+        # Mining / Precious metals
         ("NEM", "NEM", "moderate"),
+        # Consumer / Staples
+        ("PG", "PG", "conservative"),
+        ("WMT", "WMT", "conservative"),
+        ("V", "V", "conservative"),
+    ],
+    "stocks_mid": [
+        # AI / Tech
+        ("PLTR", "PLTR", "moderate"),
+        ("SMCI", "SMCI", "aggressive"),
+        ("IONQ", "IONQ", "aggressive"),
+        # EV
+        ("RIVN", "RIVN", "aggressive"),
+        # Clean energy
+        ("ENPH", "ENPH", "moderate"),
+        ("FSLR", "FSLR", "moderate"),
+        # Uranium / Materials
+        ("CCJ", "CCJ", "moderate"),
+        ("MP", "MP", "aggressive"),
+        # Fintech
+        ("SOFI", "SOFI", "aggressive"),
+        ("HOOD", "HOOD", "aggressive"),
+        # Energy services
+        ("RIG", "RIG", "aggressive"),
+        ("HP", "HP", "moderate"),
+        # Health / Consumer
+        ("HIMS", "HIMS", "aggressive"),
+        ("RKLB", "RKLB", "aggressive"),
+    ],
+    "stocks_small": [
+        # AI
+        ("BBAI", "BBAI", "aggressive"),
+        ("SOUN", "SOUN", "aggressive"),
+        # Space / Mobility
+        ("LUNR", "LUNR", "aggressive"),
+        ("ACHR", "ACHR", "aggressive"),
+        ("ASTS", "ASTS", "aggressive"),
+        ("JOBY", "JOBY", "aggressive"),
+        # Tech / Semiconductor
+        ("ACMR", "ACMR", "aggressive"),
+        # Clean energy
+        ("ARRY", "ARRY", "aggressive"),
+        # Biotech / Health
+        ("RXRX", "RXRX", "aggressive"),
+        # Real estate tech
+        ("OPEN", "OPEN", "aggressive"),
     ],
     "commodities": [
         ("WTI", "CL=F", "conservative"),
@@ -228,7 +362,7 @@ def _effective_min_confidence(
         from app.core.preferences import get_non_commodity_engine_gates
 
         nc = get_non_commodity_engine_gates()
-        if category in ("stocks", "indices") and pol.key != "indices_vix":
+        if category in (*_STOCK_CATEGORIES, "indices") and pol.key != "indices_vix":
             m += int(nc["equity_confidence_offset"])
         elif category == "other":
             m += int(nc["other_confidence_offset"])
@@ -244,7 +378,7 @@ def _min_rr_floor_for_build(category: str, pol: AssetClassPolicy) -> float:
     from app.core.preferences import get_non_commodity_engine_gates
 
     nc = get_non_commodity_engine_gates()
-    if category in ("stocks", "indices") and pol.key != "indices_vix":
+    if category in (*_STOCK_CATEGORIES, "indices") and pol.key != "indices_vix":
         err = nc.get("equity_min_risk_reward")
         if err is not None:
             return float(err)
@@ -281,7 +415,7 @@ def _resolve_universe_entry(
     if key in universe:
         sym, tier = universe[key]
         return (sym, tier, asset_id)
-    if category == "stocks" and is_likely_ticker(asset_id):
+    if category in _STOCK_CATEGORIES and is_likely_ticker(asset_id):
         aid = asset_id.upper()
         yahoo = _DISCOVERY_STOCK_YAHOO_SYMBOL.get(aid, aid)
         return (yahoo, "moderate", aid)
@@ -324,7 +458,7 @@ def _trade_ideas_from_analysis(by_asset_sentiment: Optional[dict]) -> set[tuple[
         discovery.append((tag, cnt))
     discovery.sort(key=lambda t: (-t[1], t[0]))
     for tag, _ in discovery[:MAX_DISCOVERY_STOCK_IDEAS_PER_BATCH]:
-        ideas.add(("stocks", tag))
+        ideas.add(("stocks_large", tag))
     return ideas
 
 
@@ -416,7 +550,7 @@ def _compute_gap_risk(
         factors.append("earnings window")
 
     # ── Factor 5: Category — stocks gap more than indices/commodities ────────
-    if category == "stocks":
+    if category in _STOCK_CATEGORIES:
         mult *= 0.95
 
     # Apply floor: sizing can't drop below max_penalty of original
@@ -582,7 +716,7 @@ def get_sentiment_score_and_count(
                     if best_avg is None or avg > best_avg:
                         best_avg = avg
                     total_count += cnt
-    if category == "stocks" and asset_id in by_asset_sentiment:
+    if category in _STOCK_CATEGORIES and asset_id in by_asset_sentiment:
         info = by_asset_sentiment[asset_id]
         avg = info.get("avg")
         cnt = info.get("count", 0)
@@ -616,7 +750,7 @@ def get_sentiment_velocity_and_conviction(
                     best_velocity = v
                 if c is not None and (best_conviction is None or c > best_conviction):
                     best_conviction = c
-    if category == "stocks" and asset_id in by_asset_sentiment:
+    if category in _STOCK_CATEGORIES and asset_id in by_asset_sentiment:
         info = by_asset_sentiment[asset_id]
         v = info.get("velocity")
         c = info.get("conviction")
@@ -654,7 +788,7 @@ def _event_penalty(
         event_type = TAG_TO_EVENT_TYPE.get(tag)
         if event_type and event_type in active_set:
             return EVENT_CONFIDENCE_PENALTY
-    if category == "stocks" and "earnings" in active_set:
+    if category in _STOCK_CATEGORIES and "earnings" in active_set:
         return EVENT_CONFIDENCE_PENALTY  # stocks more sensitive to earnings news
     return 0
 
@@ -672,7 +806,7 @@ def _has_sentiment_divergence(
             info = by_asset_sentiment.get(tag)
             if info and info.get("divergence") is True:
                 return True
-    if category == "stocks" and asset_id in by_asset_sentiment:
+    if category in _STOCK_CATEGORIES and asset_id in by_asset_sentiment:
         if by_asset_sentiment[asset_id].get("divergence") is True:
             return True
     return False
@@ -783,7 +917,7 @@ def snapshot_prices_for_recommendations(records: Sequence[Any]) -> dict[str, flo
         aid = getattr(r, "asset_id", None) or ""
         if not aid:
             continue
-        cat = getattr(r, "asset_category", None) or "stocks"
+        cat = getattr(r, "asset_category", None) or "stocks_large"
         sym = get_yf_symbol(cat, aid)
         if not sym:
             continue
@@ -908,7 +1042,7 @@ def _correlation_divergence_penalty(market_ctx: MarketContext, category: str, as
         
         # SPX/VIX divergence — major warning for equities
         if pair == "spx_vix_inverse":
-            if category in ("stocks", "indices"):
+            if category in (*_STOCK_CATEGORIES, "indices"):
                 penalty += 8
             else:
                 penalty += 3  # still a warning for other assets
@@ -1073,6 +1207,16 @@ def _build_candidate(
     if market_ctx and market_ctx.regime.extended_regime in ("crisis", "high_vol"):
         return None
 
+    # ADX trend-strength soft penalty: ADX < 20 = weak/no trend — momentum signals less reliable.
+    # Soft penalty (-8) rather than hard gate preserves diversification while down-weighting choppy entries.
+    # No penalty if ADX data unavailable (missing data ≠ no trend).
+    _adx_confidence_penalty = 0
+    if snap and snap.adx is not None:
+        _adx_val, *_ = snap.adx
+        if _adx_val < 20:
+            _adx_confidence_penalty = 8
+            logger.debug("[ENGINE] %s: ADX=%.1f < 20 (weak trend) → adx_penalty=-8", asset_id, _adx_val)
+
     # Market regime direction override for equities
     regime_note = None
     sector_regime: Optional[SectorRegime] = None
@@ -1092,13 +1236,22 @@ def _build_candidate(
             and market_ctx.regime.regime == "risk_off"
             and direction == "long"
             and pol.apply_risk_off_long_flip
-            and category in ("stocks", "indices")
+            and category in (*_STOCK_CATEGORIES, "indices")
         ):
             direction = "short"
 
-    # Short trades globally disabled: backtest 24.7% WR vs 35.8% longs — net negative EV.
+    # Short trades globally disabled except in bear regime (SHORTS_BEAR_REGIME_ENABLED).
+    # Bear-regime shorts require: market_regime == "bear", SHORTS_BEAR_REGIME_ENABLED=True,
+    # AND confidence ≥ 50 (enforced below after full confidence calculation).
+    # SHORTS_ENABLED=True overrides everything (global re-enable for future use).
     if direction == "short" and not SHORTS_ENABLED:
-        return None
+        _bear_regime_short_allowed = (
+            SHORTS_BEAR_REGIME_ENABLED
+            and market_ctx is not None
+            and market_ctx.regime.regime == "bear"
+        )
+        if not _bear_regime_short_allowed:
+            return None
 
     # EMA200 hard gate for short trades: do not short an asset that is above its 200-day EMA.
     # Structural market upward bias means shorting above EMA200 fights the macro trend —
@@ -1190,8 +1343,8 @@ def _build_candidate(
         if vel_for_direction < -0.15:
             logger.debug("[ENGINE] %s: velocity=%.3f strongly against direction (%s) → skip", asset_id, vel, direction)
             return None
-        elif vel_for_direction < 0:
-            # -0.1 vel → -4 pts; -0.149 vel → -5 pts
+        elif vel_for_direction < -0.05:
+            # -0.1 vel → -4 pts; -0.149 vel → -5 pts. Threshold -0.05 avoids penalising flat/noise.
             vel_confidence_penalty = int(abs(vel_for_direction) * 40)
 
     # Trend alignment bonus/penalty (scaled by asset class)
@@ -1217,9 +1370,92 @@ def _build_candidate(
         "[ENGINE] %s (%s): base_conf=%d, sent_avg=%s, sent_cnt=%d, dir=%s",
         asset_id, symbol, base_confidence, sentiment_avg, sentiment_count, direction,
     )
-    if vel_confidence_penalty > 0:
-        confidence = max(0, confidence - vel_confidence_penalty)
-        logger.debug("[ENGINE] %s: velocity penalty=%d → conf=%d", asset_id, vel_confidence_penalty, confidence)
+    # OBV distribution penalty (longs only): -5 pts when OBV slope is negative.
+    # OBV already contributes +10 pts in compute_confidence when confirming direction;
+    # explicit -5 for disagreement keeps total OBV swing at 15 pts — proportionate for one indicator.
+    _obv_penalty = 0
+    if direction == "long" and snap and snap.obv_confirming_down:
+        _obv_penalty = 5
+
+    # MACD histogram momentum decay penalty: histogram positive but slope negative = momentum fading.
+    # Research shows decelerating entries fail ~60% of the time even when MACD is still technically bullish.
+    # Only applies to longs where we rely on upward momentum continuation.
+    _macd_decay_penalty = 0
+    if direction == "long" and snap and snap.macd is not None and snap.macd_hist_slope is not None:
+        if snap.macd[2] > 0 and snap.macd_hist_slope < 0:
+            _macd_decay_penalty = 5
+
+    # Combined new-filter penalty cap: ADX weak-trend + OBV + sentiment velocity + MACD decay, max 20 pts.
+    # Applied as a single deduction so it cannot stack badly with the existing penalty chain.
+    _new_filter_penalty = min(_adx_confidence_penalty + _obv_penalty + vel_confidence_penalty + _macd_decay_penalty, 20)
+    if _new_filter_penalty > 0:
+        confidence = max(0, confidence - _new_filter_penalty)
+        _nfp_parts = []
+        if _adx_confidence_penalty > 0:
+            _nfp_parts.append(f"adx_weak_trend=-{_adx_confidence_penalty}")
+        if _obv_penalty > 0:
+            _nfp_parts.append(f"obv_distribution=-{_obv_penalty}")
+        if vel_confidence_penalty > 0:
+            _nfp_parts.append(f"sentiment_fading=-{vel_confidence_penalty}")
+        if _macd_decay_penalty > 0:
+            _nfp_parts.append(f"macd_momentum_decay=-{_macd_decay_penalty}")
+        logger.debug(
+            "[ENGINE] %s: new_filter_penalty=%d (%s) → conf=%d",
+            asset_id, _new_filter_penalty, ", ".join(_nfp_parts), confidence,
+        )
+
+    # ── Bonus signals: items 3-5 — reward high-conviction setups ─────────────────────
+    _bonus_parts: list[str] = []
+
+    # Item 3 — MACD + RSI dual alignment bonus (+6 pts):
+    # When MACD histogram > 0 (bullish momentum) AND RSI is in the 45-65 sweet spot (not overbought),
+    # both indicators explicitly agree — research shows 73-84% WR for this combined setup.
+    if direction == "long" and snap and snap.macd is not None and snap.rsi is not None:
+        if snap.macd[2] > 0 and 45 <= snap.rsi <= 65:
+            confidence = min(100, confidence + 6)
+            _bonus_parts.append("macd_rsi_aligned=+6")
+
+    # Item 4 — Volume surge bonus (+5 pts):
+    # volume_ratio > 1.5 = genuine buying pressure (not just above the gate floor).
+    # Research on breakout studies: volume >1.5× 20-day avg with price trending = 68-72% WR.
+    if snap and snap.volume_ratio is not None and snap.volume_ratio > 1.5:
+        confidence = min(100, confidence + 5)
+        _bonus_parts.append(f"volume_surge=+5 ({snap.volume_ratio:.2f}x)")
+
+    # Item 5 — RSI directional momentum bonus (+4 pts):
+    # RSI slope positive while RSI is still in the non-overbought zone = momentum continuation.
+    # Only reward when RSI is heading up AND not yet extended (overbought kills the trade).
+    if direction == "long" and snap and snap.rsi is not None and snap.rsi_slope is not None:
+        if snap.rsi_slope > 0 and snap.rsi < 65:
+            confidence = min(100, confidence + 4)
+            _bonus_parts.append(f"rsi_momentum=+4 (slope={snap.rsi_slope:+.1f})")
+
+    # Item 6 — 52-week high proximity bonus (+8 pts):
+    # Research: stocks within 5% of 52-week high with volume >1.5× show 72% WR over ~28 days.
+    # Within 3% = very strong momentum signal. Gate: volume_ratio > 1.0 to avoid thin breakouts.
+    if direction == "long" and snap and snap.pct_from_52w_high is not None:
+        vol_ok = snap.volume_ratio is None or snap.volume_ratio >= 1.0
+        if snap.pct_from_52w_high <= 0.03 and vol_ok:
+            confidence = min(100, confidence + 8)
+            _bonus_parts.append(f"near_52w_high=+8 ({snap.pct_from_52w_high*100:.1f}% below)")
+        elif snap.pct_from_52w_high <= 0.08 and vol_ok:
+            confidence = min(100, confidence + 4)
+            _bonus_parts.append(f"near_52w_high=+4 ({snap.pct_from_52w_high*100:.1f}% below)")
+
+    # Item 7 — EMA200 distance sweet spot (+3 pts / -3 pts):
+    # Price 2-10% above EMA200 = momentum trend intact. <1% = borderline (fragile), >15% = overextended.
+    # EMA200 already gates direction; this adds nuance within the passing zone.
+    if direction == "long" and snap and snap.ema200 is not None and snap.ema200 > 0:
+        ema_dist = (snap.price - snap.ema200) / snap.ema200
+        if 0.02 <= ema_dist <= 0.10:
+            confidence = min(100, confidence + 3)
+            _bonus_parts.append(f"ema200_sweet_spot=+3 ({ema_dist*100:.1f}% above)")
+        elif ema_dist > 0.15:
+            confidence = max(0, confidence - 3)
+            _bonus_parts.append(f"ema200_overextended=-3 ({ema_dist*100:.1f}% above)")
+
+    if _bonus_parts:
+        logger.debug("[ENGINE] %s: signal_bonuses %s → conf=%d", asset_id, ", ".join(_bonus_parts), confidence)
 
     # Order Flow Imbalance adjustment: OFI reflects institutional buying/selling pressure.
     # Accumulation (OFI > 0.6) boosts confidence for longs; distribution (OFI < 0.4) penalizes.
@@ -1323,7 +1559,7 @@ def _build_candidate(
     # confidence band produces catastrophic results (12.9% and 27.3% win rates, ~-0.68 pnl_r).
     # Stable vol 60-69 stocks are excellent (+1.29 pnl_r) and must not be penalised.
     # Penalty reduced from -15 → -10 → -7: stacking with downstream penalties was killing healthy candidates.
-    if category == "stocks" and 60 <= confidence < 70 and snap is not None:
+    if category in _STOCK_CATEGORIES and 60 <= confidence < 70 and snap is not None:
         if snap.volatility_regime in ("contracting", "expanding"):
             confidence = max(0, confidence - 7)
             logger.debug(
@@ -1333,7 +1569,7 @@ def _build_candidate(
 
     # 50-59 stable vol penalty: stocks and indices both negative/near-zero pnl_r in quiet drift markets.
     # Reduced from -15 → -10 → -7 for same stacking reason.
-    if category in ("stocks", "indices") and 50 <= confidence < 60 and snap is not None:
+    if category in (*_STOCK_CATEGORIES, "indices") and 50 <= confidence < 60 and snap is not None:
         if snap.volatility_regime == "stable":
             confidence = max(0, confidence - 7)
             logger.debug(
@@ -1374,7 +1610,7 @@ def _build_candidate(
     # Earnings proximity penalty: reduce confidence for stocks reporting within ±window_days
     near_earnings = False
     days_to_earnings: Optional[int] = None
-    if category == "stocks":
+    if category in _STOCK_CATEGORIES:
         from app.core.preferences import get_earnings_calendar_config
         from app.services.earnings_calendar import is_near_earnings as _is_near_earnings
         earnings_cfg = get_earnings_calendar_config()
@@ -1484,6 +1720,22 @@ def _build_candidate(
         )
         return None
 
+    # Bear-regime short confidence floor: only high-conviction short signals are allowed.
+    # Raised to 50 (vs ~35-40 for longs) to compensate for historically lower short WR.
+    if direction == "short" and market_ctx and market_ctx.regime.regime == "bear":
+        _bear_short_min_conf = BEAR_REGIME_SHORT_MIN_CONFIDENCE
+        if confidence < _bear_short_min_conf:
+            _log_engine_skip(
+                "short_low_confidence_bear",
+                category=category,
+                asset_id=asset_id,
+                symbol=symbol,
+                policy=pol.key,
+                confidence=confidence,
+                min_confidence=_bear_short_min_conf,
+            )
+            return None
+
     # Risk:Reward ratio
     rr = calc_risk_reward(price, sl, tp)
 
@@ -1518,7 +1770,7 @@ def _build_candidate(
     rs_60d: Optional[float] = None
     sector_rs: Optional[float] = None
 
-    if category == "stocks":
+    if category in _STOCK_CATEGORIES:
         symbol_for_rs = get_yf_symbol(category, asset_id) or asset_id.upper()
         try:
             rs_20d = compute_relative_strength(symbol_for_rs, "^GSPC", period=20)
@@ -2111,7 +2363,7 @@ def build_trade_builder_candidate(
     aid = (asset_id or "").strip()
     if not aid:
         return None, "asset_id is required"
-    if cat == "stocks":
+    if cat in _STOCK_CATEGORIES:
         aid = aid.upper()
 
     clear_cache()

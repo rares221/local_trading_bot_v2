@@ -28,6 +28,12 @@ from app.services.technicals import (
     compute_relative_strength,
     calc_risk_reward,
 )
+from app.services.recommendations.engine import (
+    SHORTS_ENABLED,
+    SHORTS_BEAR_REGIME_ENABLED,
+    BEAR_REGIME_SHORT_MIN_CONFIDENCE,
+    _STOCK_CATEGORIES,
+)
 from app.services.backtesting.data_provider import (
     get_future_bars,
     get_trading_days,
@@ -214,6 +220,11 @@ def _build_signal(
         if len(available) < MIN_BARS_FOR_SIGNAL:
             return None
 
+    # Hard-block crisis and high_vol regimes — mirrors live engine gate.
+    # Backtest: crisis=8.3% WR (-0.809R), high_vol=26.0% WR (-0.002R) — both net negative EV.
+    if day_regime in ("crisis", "high_vol"):
+        return None
+
     # Extract per-symbol sentiment from historical snapshot (if available)
     # by_asset_sentiment keys are asset tags (e.g. "AAPL", "Oil", "Gold")
     # Try symbol as-is, then strip exchange suffix (e.g. "CL=F" → "CL")
@@ -227,6 +238,14 @@ def _build_signal(
                 hist_sentiment = entry.get("avg")
                 hist_count = entry.get("count", 0)
                 break
+
+    # ADX trend-strength soft penalty: ADX < 20 = weak/no trend — mirrors live engine.
+    # Soft penalty (-8) rather than hard gate preserves diversification.
+    _adx_penalty = 0
+    if snap.adx is not None:
+        _adx_val, *_ = snap.adx
+        if _adx_val < 20:
+            _adx_penalty = 8
 
     # Direction from sentiment + technicals, mirroring the live engine.
     # Pass hist_sentiment so macro-linked assets (oil, FX, gold) use the same
@@ -246,26 +265,65 @@ def _build_signal(
         sentiment_count=hist_count,
         snapshot=snap,
         direction=direction,
+        regime=day_regime,
     )
 
-    # Short confidence premium: require stronger signal for shorts (mirrors engine gate).
-    # Backtest shows shorts win ~20-25% vs ~40% for longs — needs higher conviction bar.
-    if direction == "short":
-        confidence = max(0, confidence - 8)
+    # Short filtering — driven by the same flags as the live engine so backtest and live stay in sync.
+    if direction == "short" and not SHORTS_ENABLED:
+        _bear_short_allowed = (
+            SHORTS_BEAR_REGIME_ENABLED
+            and day_regime == "bear"
+        )
+        if not _bear_short_allowed:
+            return None
+        if confidence < BEAR_REGIME_SHORT_MIN_CONFIDENCE:
+            return None
+
+    # Combined new-filter penalty cap: ADX + OBV + MACD decay, capped at 20 pts total.
+    _obv_penalty = 5 if (direction == "long" and snap.obv_confirming_down) else 0
+    _macd_decay_penalty = 0
+    if direction == "long" and snap.macd is not None and snap.macd_hist_slope is not None:
+        if snap.macd[2] > 0 and snap.macd_hist_slope < 0:
+            _macd_decay_penalty = 5
+    _new_filter_penalty = min(_adx_penalty + _obv_penalty + _macd_decay_penalty, 20)
+    if _new_filter_penalty > 0:
+        confidence = max(0, confidence - _new_filter_penalty)
+
+    # Signal bonuses (mirrors engine.py)
+    if direction == "long" and snap.macd is not None and snap.rsi is not None:
+        if snap.macd[2] > 0 and 45 <= snap.rsi <= 65:
+            confidence = min(100, confidence + 6)
+    if snap.volume_ratio is not None and snap.volume_ratio > 1.5:
+        confidence = min(100, confidence + 5)
+    if direction == "long" and snap.rsi is not None and snap.rsi_slope is not None:
+        if snap.rsi_slope > 0 and snap.rsi < 65:
+            confidence = min(100, confidence + 4)
+    if direction == "long" and snap.pct_from_52w_high is not None:
+        vol_ok = snap.volume_ratio is None or snap.volume_ratio >= 1.0
+        if snap.pct_from_52w_high <= 0.03 and vol_ok:
+            confidence = min(100, confidence + 8)
+        elif snap.pct_from_52w_high <= 0.08 and vol_ok:
+            confidence = min(100, confidence + 4)
+    if direction == "long" and snap.ema200 is not None and snap.ema200 > 0:
+        ema_dist = (snap.price - snap.ema200) / snap.ema200
+        if 0.02 <= ema_dist <= 0.10:
+            confidence = min(100, confidence + 3)
+        elif ema_dist > 0.15:
+            confidence = max(0, confidence - 3)
 
     # Volume Profile walk-forward adjustments (same logic as live engine)
     # snap.vpoc is computed from OHLCV sliced to sim_date — fully walk-forward.
     vp_flag = "none"
     if snap.vpoc is not None:
         if snap.in_value_area():
-            confidence = max(0, confidence - 8)
+            confidence = max(0, confidence - 3)
             vp_flag = "in_value_area"
         ext = abs(snap.vp_overextension or 0)
         if ext > 2.0:
-            confidence = max(0, confidence - 10)
+            confidence = max(0, confidence - 5)
             vp_flag = vp_flag + "+overextended" if vp_flag != "none" else "overextended"
         elif ext > 1.3:
-            confidence = max(0, confidence - 5)
+            confidence = max(0, confidence - 3)
         if (direction == "long" and snap.vp_bias == "below_vpoc") or \
            (direction == "short" and snap.vp_bias == "above_vpoc"):
             confidence = min(100, confidence + 4)
@@ -273,7 +331,7 @@ def _build_signal(
     # Relative Strength walk-forward (fetch_ohlcv respects _backtest_cutoff)
     rs_20d = None
     category = _guess_category(symbol)
-    if category == "stocks":
+    if category in _STOCK_CATEGORIES:
         try:
             rs_20d = compute_relative_strength(symbol, "^GSPC", period=20)
             if rs_20d is not None:
@@ -301,9 +359,9 @@ def _build_signal(
     #   stable vol:      50.0% win rate, +1.290 pnl_r  ← excellent, keep untouched
     # Root cause: in contracting/expanding ATR environments, multiple indicators align
     # mid-move (late momentum or false breakout) inflating confidence without a real edge.
-    if category == "stocks" and 60 <= confidence < 70:
+    if category in _STOCK_CATEGORIES and 60 <= confidence < 70:
         if snap.volatility_regime in ("contracting", "expanding"):
-            confidence -= 15  # push most out of the 60-69 danger zone
+            confidence -= 7  # push most out of the 60-69 danger zone
 
     # 50-59 stable vol penalty: both stocks and indices show negative/near-zero pnl_r
     # in stable vol at low confidence — quiet drift market, weak signal = noise trade.
@@ -311,9 +369,9 @@ def _build_signal(
     #   stocks 55-59 stable:  22.2% win rate, -0.519 pnl_r
     #   indices 50-54 stable: 37.2% win rate, +0.009 pnl_r (near-zero, remove noise)
     #   indices 55-59 stable: 33.3% win rate, -0.251 pnl_r
-    if category in ("stocks", "indices") and 50 <= confidence < 60:
+    if category in (*_STOCK_CATEGORIES, "indices") and 50 <= confidence < 60:
         if snap.volatility_regime == "stable":
-            confidence -= 15
+            confidence -= 7
 
     if confidence < effective_min_confidence:
         return None
@@ -391,11 +449,32 @@ def _simulate_signal_outcome(sig: dict, ohlcv_data: dict[str, pd.DataFrame], max
 
 # Symbol → category mapping (best-effort; used for metrics grouping only)
 _CATEGORY_MAP: dict[str, str] = {
-    "XOM": "stocks", "CVX": "stocks", "BP": "stocks", "SHEL": "stocks", "NEM": "stocks",
+    # Large cap stocks
+    "AAPL": "stocks_large", "MSFT": "stocks_large", "GOOGL": "stocks_large",
+    "NVDA": "stocks_large", "META": "stocks_large", "AMZN": "stocks_large",
+    "TSLA": "stocks_large", "AVGO": "stocks_large",
+    "JPM": "stocks_large", "BAC": "stocks_large", "GS": "stocks_large",
+    "JNJ": "stocks_large", "UNH": "stocks_large",
+    "XOM": "stocks_large", "CVX": "stocks_large", "BP": "stocks_large", "SHEL": "stocks_large",
+    "NEM": "stocks_large", "PG": "stocks_large", "WMT": "stocks_large", "V": "stocks_large",
+    # Mid cap stocks
+    "PLTR": "stocks_mid", "SMCI": "stocks_mid", "IONQ": "stocks_mid",
+    "RIVN": "stocks_mid", "ENPH": "stocks_mid", "FSLR": "stocks_mid",
+    "CCJ": "stocks_mid", "MP": "stocks_mid",
+    "SOFI": "stocks_mid", "HOOD": "stocks_mid",
+    "RIG": "stocks_mid", "HP": "stocks_mid",
+    "HIMS": "stocks_mid", "RKLB": "stocks_mid",
+    # Small cap stocks
+    "BBAI": "stocks_small", "SOUN": "stocks_small", "LUNR": "stocks_small",
+    "ACHR": "stocks_small", "ASTS": "stocks_small", "JOBY": "stocks_small",
+    "ACMR": "stocks_small", "ARRY": "stocks_small", "RXRX": "stocks_small", "OPEN": "stocks_small",
+    # Commodities
     "CL=F": "commodities", "BZ=F": "commodities", "GC=F": "commodities",
     "NG=F": "commodities", "SI=F": "commodities",
+    # FX + Crypto
     "EURUSD=X": "other", "GBPUSD=X": "other", "USDJPY=X": "other",
     "BTC-USD": "other", "ETH-USD": "other",
+    # Indices
     "^GSPC": "indices", "^DJI": "indices", "^IXIC": "indices", "^RUT": "indices",
     "^FTSE": "indices", "^GDAXI": "indices", "^FCHI": "indices", "^STOXX50E": "indices",
     "^N225": "indices", "^HSI": "indices", "000001.SS": "indices",
@@ -405,7 +484,7 @@ _CATEGORY_MAP: dict[str, str] = {
 
 
 def _guess_category(symbol: str) -> str:
-    return _CATEGORY_MAP.get(symbol, "stocks")
+    return _CATEGORY_MAP.get(symbol, "stocks_large")
 
 
 def run_walkforward_backtest(
