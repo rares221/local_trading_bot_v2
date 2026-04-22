@@ -219,6 +219,7 @@
         <div class="tab" onclick="showTab('symbol-stats')">By Symbol</div>
         <div class="tab" onclick="showTab('direction-stats')">By Direction</div>
         <div class="tab" onclick="showTab('regime-stats')" title="" data-tooltip="Market regime at signal date: bull (SPX>200SMA, VIX&lt;20), bear, high_vol (VIX≥30), crisis (VIX≥40). Shows whether your strategy holds up across different market conditions.">By Regime</div>
+        <div class="tab" onclick="showTab('category-stats')" data-tooltip="Win rate and average P&amp;L broken down by asset category (large-cap stocks, indices, commodities, etc.). Identifies which asset classes the strategy performs best on.">By Category</div>
       </div>
 
       <div id="tab-trades">
@@ -247,6 +248,9 @@
       </div>
       <div id="tab-regime-stats" class="hidden">
         <div id="regime-stats-wrap"></div>
+      </div>
+      <div id="tab-category-stats" class="hidden">
+        <div id="category-stats-wrap"></div>
       </div>
     </div>
 
@@ -503,6 +507,27 @@ function showResults(data) {
     </tbody></table>`
     : '<div class="no-data">No regime data. Run a new backtest to see regime breakdown.</div>';
 
+  // By category
+  const catStats = m.by_category || {};
+  const catOrder = ['stocks_large', 'stocks_mid', 'stocks_small', 'indices', 'commodities', 'other', 'unknown'];
+  const catLabels = { stocks_large: 'Large-Cap Stocks', stocks_mid: 'Mid-Cap Stocks', stocks_small: 'Small-Cap Stocks', indices: 'Indices (ETF)', commodities: 'Commodities', other: 'Other', unknown: '— Unknown' };
+  const sortedCats = catOrder.filter(c => catStats[c]).concat(Object.keys(catStats).filter(c => !catOrder.includes(c)));
+  document.getElementById('category-stats-wrap').innerHTML = sortedCats.length
+    ? `<div style="font-size:12px;color:var(--muted);margin-bottom:10px;">Performance broken down by asset category. Identifies which asset classes the strategy performs best on.</div>
+    <table><thead><tr><th>Category</th><th>Trades</th><th>Win Rate</th><th>Avg P&L (R)</th><th>Bar</th></tr></thead><tbody>
+    ${sortedCats.map(c => {
+      const cs = catStats[c];
+      return `<tr>
+        <td style="white-space:nowrap">${catLabels[c] || c}</td>
+        <td>${cs.total}</td>
+        <td class="${winCls(cs.win_rate,0.5)}">${pct(cs.win_rate)}</td>
+        <td class="${winCls(cs.avg_pnl_r,0)}">${fmt(cs.avg_pnl_r)}</td>
+        <td style="width:140px"><div class="bucket-bar"><div class="bucket-fill" style="width:${Math.round((cs.win_rate||0)*100)}%"></div></div></td>
+      </tr>`;
+    }).join('')}
+    </tbody></table>`
+    : '<div class="no-data">No category data. Run a new backtest to see category breakdown.</div>';
+
   document.getElementById('disclaimer-box').textContent = data.disclaimer || '';
   initBacktestHorizonChart(data);
 }
@@ -589,7 +614,7 @@ async function deleteRun(e, runId) {
 }
 
 function showTab(name) {
-  const tabs = ['trades','symbol-stats','direction-stats','regime-stats'];
+  const tabs = ['trades','symbol-stats','direction-stats','regime-stats','category-stats'];
   document.querySelectorAll('.tabs .tab').forEach((t, i) => {
     t.classList.toggle('active', tabs[i] === name);
   });

@@ -84,6 +84,12 @@ _DEFAULT_BLOCKLIST = frozenset({
     "PHP", "IDR", "TWD", "SAR", "AED", "QAR", "KWD",
     # Region / exchange abbreviations that yfinance can't resolve
     "HK", "SS", "AT", "FX", "EM", "DM", "AP", "APAC", "EMEA", "LATAM",
+    # Month names (appear as tags/dates in headlines, not tickers)
+    "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC",
+    "JANUARY", "FEBRUARY", "MARCH", "APRIL", "JUNE", "JULY", "AUGUST",
+    "SEPTEMBER", "OCTOBER", "NOVEMBER", "DECEMBER",
+    # Investment platform / product noise
+    "IDEAS",
 })
 
 

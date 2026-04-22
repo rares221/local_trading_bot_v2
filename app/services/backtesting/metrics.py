@@ -197,6 +197,22 @@ def compute_metrics(trades: list[dict], total_trading_days: int = 0) -> dict[str
         rs["win_rate"] = round(w / n, 4) if n > 0 else 0.0
         rs["avg_pnl_r"] = round(rs["pnl_r_sum"] / n, 4) if n > 0 else 0.0
 
+    # Asset category breakdown — win rate per category (stocks_large/mid/small, indices, commodities, other)
+    category_stats: dict[str, dict] = {}
+    for t in all_outcomes:
+        cat = t.get("asset_category") or "unknown"
+        if cat not in category_stats:
+            category_stats[cat] = {"total": 0, "wins": 0, "pnl_r_sum": 0.0}
+        category_stats[cat]["total"] += 1
+        if t.get("outcome") == "hit_tp":
+            category_stats[cat]["wins"] += 1
+        category_stats[cat]["pnl_r_sum"] += t.get("pnl_r") or 0.0
+    for cat, cs in category_stats.items():
+        n = cs["total"]
+        w = cs["wins"]
+        cs["win_rate"] = round(w / n, 4) if n > 0 else 0.0
+        cs["avg_pnl_r"] = round(cs["pnl_r_sum"] / n, 4) if n > 0 else 0.0
+
     return {
         "total_signals": len(trades),
         "total_trades": total,
@@ -221,6 +237,7 @@ def compute_metrics(trades: list[dict], total_trading_days: int = 0) -> dict[str
         "volume_profile": vp_metrics,
         "relative_strength": rs_metrics,
         "by_regime": regime_stats,
+        "by_category": category_stats,
     }
 
 
