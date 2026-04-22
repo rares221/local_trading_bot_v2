@@ -33,7 +33,10 @@ from app.services.recommendations.engine import (
     SHORTS_BEAR_REGIME_ENABLED,
     BEAR_REGIME_SHORT_MIN_CONFIDENCE,
     _STOCK_CATEGORIES,
+    MIN_RISK_REWARD,
+    _min_rr_floor_for_build,
 )
+from app.services.recommendations.asset_class_policy import get_asset_class_policy
 from app.services.backtesting.data_provider import (
     get_future_bars,
     get_trading_days,
@@ -279,13 +282,42 @@ def _build_signal(
         if confidence < BEAR_REGIME_SHORT_MIN_CONFIDENCE:
             return None
 
-    # Combined new-filter penalty cap: ADX + OBV + MACD decay, capped at 20 pts total.
+    # Combined soft-penalty cap: all confidence-reducing signals pooled so no combination of weak
+    # signals can stack into an invisible hard gate. Cap 25 pts.
+    # --- MIRRORED FROM engine.py ---
+    category = _guess_category(symbol)
+    pol = get_asset_class_policy(category, symbol)
     _obv_penalty = 5 if (direction == "long" and snap.obv_confirming_down) else 0
     _macd_decay_penalty = 0
     if direction == "long" and snap.macd is not None and snap.macd_hist_slope is not None:
         if snap.macd[2] > 0 and snap.macd_hist_slope < 0:
             _macd_decay_penalty = 5
-    _new_filter_penalty = min(_adx_penalty + _obv_penalty + _macd_decay_penalty, 20)
+    _rsi_slope_penalty = 0
+    if snap.rsi is not None and snap.rsi_slope is not None:
+        if direction == "long":
+            if snap.rsi_slope < -4.0:
+                _rsi_slope_penalty = 8
+            elif snap.rsi_slope < -2.0:
+                _rsi_slope_penalty = 4
+        elif direction == "short":
+            if snap.rsi_slope > 2.0:
+                _rsi_slope_penalty = 4
+    _macd_alignment_penalty = 0
+    if snap.macd is not None:
+        if direction == "long" and snap.macd_bearish:
+            _macd_alignment_penalty = 8
+        elif direction == "short" and snap.macd_bullish:
+            _macd_alignment_penalty = 8
+    _vol_floor = 0.75  # moderate default; Step 4 will make this preference-aware
+    _volume_penalty = 0
+    if snap.volume_ratio is not None and category in _STOCK_CATEGORIES:
+        if snap.volume_ratio < _vol_floor:
+            _volume_penalty = 6
+    _new_filter_penalty = min(
+        _adx_penalty + _obv_penalty + _macd_decay_penalty
+        + _rsi_slope_penalty + _macd_alignment_penalty + _volume_penalty,
+        25,
+    )
     if _new_filter_penalty > 0:
         confidence = max(0, confidence - _new_filter_penalty)
 
@@ -295,8 +327,9 @@ def _build_signal(
             confidence = min(100, confidence + 6)
     if snap.volume_ratio is not None and snap.volume_ratio > 1.5:
         confidence = min(100, confidence + 5)
-    if direction == "long" and snap.rsi is not None and snap.rsi_slope is not None:
-        if snap.rsi_slope > 0 and snap.rsi < 65:
+    # RSI momentum bonus (+4 pts): positive slope + non-overbought. Penalties pooled above.
+    if snap.rsi is not None and snap.rsi_slope is not None:
+        if direction == "long" and snap.rsi_slope > 0 and snap.rsi < 65:
             confidence = min(100, confidence + 4)
     if direction == "long" and snap.pct_from_52w_high is not None:
         vol_ok = snap.volume_ratio is None or snap.volume_ratio >= 1.0
@@ -330,7 +363,6 @@ def _build_signal(
 
     # Relative Strength walk-forward (fetch_ohlcv respects _backtest_cutoff)
     rs_20d = None
-    category = _guess_category(symbol)
     if category in _STOCK_CATEGORIES:
         try:
             rs_20d = compute_relative_strength(symbol, "^GSPC", period=20)
@@ -345,12 +377,10 @@ def _build_signal(
         except Exception:
             pass
 
-    # Per-category confidence gate: mirror the asset_class_policy offsets from the live engine.
-    # FX and crypto ("other") need a higher bar — confirmed negative pnl_r in backtests.
-    # Raised from +20 to +35: crypto at confidence 73 still hit 100% SL rate (3/3 trades).
-    effective_min_confidence = min_confidence
-    if category == "other":
-        effective_min_confidence += 35
+    # Per-category confidence gate: use asset_class_policy offsets — mirrors live engine exactly.
+    # pol.min_confidence_offset: +0 large-cap, +5 mid-cap, +10 small-cap, +20 FX, +35 crypto.
+    # --- MIRRORED FROM engine.py ---
+    effective_min_confidence = min_confidence + pol.min_confidence_offset
 
     # Stocks 60-69 confidence penalty: this band has 25% avg win rate — but the breakdown
     # reveals it is entirely a volatility-regime problem:
@@ -380,7 +410,9 @@ def _build_signal(
     sl, tp = compute_atr_levels(snap.price, risk_tier, snapshot=snap, direction=direction)
     rr = calc_risk_reward(snap.price, sl, tp)
 
-    if rr is None or rr < 1.0:
+    # --- MIRRORED FROM engine.py ---
+    _min_rr = _min_rr_floor_for_build(category, pol)
+    if rr is None or rr < _min_rr:
         return None
 
     return {

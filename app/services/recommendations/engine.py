@@ -1287,24 +1287,22 @@ def _build_candidate(
         # RSI slope: soft penalty instead of hard gate (volatile markets punish hard skips)
         # Bonus for positive slope already handled in confidence scoring below.
 
-    # MACD histogram gate: require histogram aligned with trade direction.
-    # Slope check only blocks sharp momentum reversals (not normal 1-2 bar pullbacks in a trend).
-    # Threshold of 0.0002 avoids noise — minor fluctuations in a healthy trend are fine.
+    # MACD alignment penalty: bearish histogram on longs / bullish on shorts = momentum against trade.
+    # Was a hard gate (4 skips/run) — converted to soft penalty; pooled in _new_filter_penalty below.
+    _macd_alignment_penalty = 0
     if snap and snap.macd is not None:
-        if direction == "long":
-            if snap.macd_bearish:
-                return None  # histogram negative — momentum against trade
-        if direction == "short":
-            if snap.macd_bullish:
-                return None  # histogram positive — momentum against trade
+        if direction == "long" and snap.macd_bearish:
+            _macd_alignment_penalty = 8
+        elif direction == "short" and snap.macd_bullish:
+            _macd_alignment_penalty = 8
 
-    # Volume confirmation gate: threshold is preference-aware.
-    # aggressive: 0.65 (catches momentum before full volume confirms),
-    # moderate: 0.75, conservative: 0.80.
+    # Volume confirmation: threshold is preference-aware.
+    # Was a hard gate (18 skips/run, unreliable on non-equity) — soft penalty, equity-only; pooled below.
     _vol_floor = 0.80 if _preferred_risk == "conservative" else (0.65 if _preferred_risk == "aggressive" else 0.75)
+    _volume_penalty = 0
     if snap and snap.volume_ratio is not None:
-        if snap.volume_ratio < _vol_floor:
-            return None
+        if category in _STOCK_CATEGORIES and snap.volume_ratio < _vol_floor:
+            _volume_penalty = 6
 
     # ATR-based stop loss / take profit
     sl, tp = compute_atr_levels(price, risk_tier, snapshot=snap, direction=direction)
@@ -1381,9 +1379,25 @@ def _build_candidate(
         if snap.macd[2] > 0 and snap.macd_hist_slope < 0:
             _macd_decay_penalty = 5
 
-    # Combined new-filter penalty cap: ADX weak-trend + OBV + sentiment velocity + MACD decay, max 20 pts.
-    # Applied as a single deduction so it cannot stack badly with the existing penalty chain.
-    _new_filter_penalty = min(_adx_confidence_penalty + _obv_penalty + vel_confidence_penalty + _macd_decay_penalty, 20)
+    # RSI slope penalty: fading momentum — pooled below. Bonus (+4) stays outside the cap.
+    _rsi_slope_penalty = 0
+    if snap and snap.rsi is not None and snap.rsi_slope is not None:
+        if direction == "long":
+            if snap.rsi_slope < -4.0:
+                _rsi_slope_penalty = 8
+            elif snap.rsi_slope < -2.0:
+                _rsi_slope_penalty = 4
+        elif direction == "short":
+            if snap.rsi_slope > 2.0:
+                _rsi_slope_penalty = 4
+
+    # Combined soft-penalty cap: all confidence-reducing signals pooled so no combination of weak
+    # signals can stack into an invisible hard gate. Cap raised 20→25 with MACD+volume added.
+    _new_filter_penalty = min(
+        _adx_confidence_penalty + _obv_penalty + vel_confidence_penalty + _macd_decay_penalty
+        + _rsi_slope_penalty + _macd_alignment_penalty + _volume_penalty,
+        25,
+    )
     if _new_filter_penalty > 0:
         confidence = max(0, confidence - _new_filter_penalty)
         _nfp_parts = []
@@ -1395,6 +1409,12 @@ def _build_candidate(
             _nfp_parts.append(f"sentiment_fading=-{vel_confidence_penalty}")
         if _macd_decay_penalty > 0:
             _nfp_parts.append(f"macd_momentum_decay=-{_macd_decay_penalty}")
+        if _rsi_slope_penalty > 0:
+            _nfp_parts.append(f"rsi_slope=-{_rsi_slope_penalty}")
+        if _macd_alignment_penalty > 0:
+            _nfp_parts.append(f"macd_alignment=-{_macd_alignment_penalty}")
+        if _volume_penalty > 0:
+            _nfp_parts.append(f"volume_low=-{_volume_penalty}")
         logger.debug(
             "[ENGINE] %s: new_filter_penalty=%d (%s) → conf=%d",
             asset_id, _new_filter_penalty, ", ".join(_nfp_parts), confidence,
@@ -1418,24 +1438,12 @@ def _build_candidate(
         confidence = min(100, confidence + 5)
         _bonus_parts.append(f"volume_surge=+5 ({snap.volume_ratio:.2f}x)")
 
-    # Item 5 — RSI directional momentum bonus/penalty:
-    # Positive slope + non-overbought = momentum continuation (+4 pts).
-    # Negative slope = fading momentum penalty (-4 pts mild, -8 pts steep).
+    # Item 5 — RSI directional momentum bonus (+4 pts):
+    # Positive slope + non-overbought = momentum continuation. Penalties pooled in _new_filter_penalty.
     if snap and snap.rsi is not None and snap.rsi_slope is not None:
-        if direction == "long":
-            if snap.rsi_slope > 0 and snap.rsi < 65:
-                confidence = min(100, confidence + 4)
-                _bonus_parts.append(f"rsi_momentum=+4 (slope={snap.rsi_slope:+.1f})")
-            elif snap.rsi_slope < -4.0:
-                confidence -= 8
-                _bonus_parts.append(f"rsi_momentum=-8 (slope={snap.rsi_slope:+.1f})")
-            elif snap.rsi_slope < -2.0:
-                confidence -= 4
-                _bonus_parts.append(f"rsi_momentum=-4 (slope={snap.rsi_slope:+.1f})")
-        elif direction == "short":
-            if snap.rsi_slope > 2.0:
-                confidence -= 4
-                _bonus_parts.append(f"rsi_momentum=-4 (slope={snap.rsi_slope:+.1f})")
+        if direction == "long" and snap.rsi_slope > 0 and snap.rsi < 65:
+            confidence = min(100, confidence + 4)
+            _bonus_parts.append(f"rsi_momentum=+4 (slope={snap.rsi_slope:+.1f})")
 
     # Item 6 — 52-week high proximity bonus (+8 pts):
     # Research: stocks within 5% of 52-week high with volume >1.5× show 72% WR over ~28 days.

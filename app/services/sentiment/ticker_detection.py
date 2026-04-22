@@ -29,7 +29,7 @@ _DEFAULT_BLOCKLIST = frozenset({
     "IRGC", "ISI", "COVID", "STAT", "GMT", "TFA", "FXCM",
     # Company abbreviations / false positives
     "TSMC", "BOS", "CEIX", "OIL", "AACR", "USOIL", "MAHA", "BTIG",
-    "ABC", "CATL", "IQVIA", "KRAS", "OCBC", "SCMP", "WATCH",
+    "ABC", "CATL", "IQVIA", "KRAS", "OCBC", "SCMP", "WATCH", "GPT", "UAE", "MACRO",
     "FVG", "ICT", "VWAP", "PIPS", "IFVG", "VASP",
     "USDT", "HBAR", "DOT",
     "IRA", "JONES", "LIKE", "LL", "LOVES", "NGM", "PCE", "PDL", "PGIM", "PIXEL",
