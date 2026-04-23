@@ -313,9 +313,16 @@ def _build_signal(
     if snap.volume_ratio is not None and category in _STOCK_CATEGORIES:
         if snap.volume_ratio < _vol_floor:
             _volume_penalty = 6
+    # --- MIRRORED FROM engine.py ---
+    # Step 6 confirmed sweet spot — mid -4 / small -6 / other ungated. See engine.py for rationale.
+    _cap_tier_penalty = 0
+    if category == "stocks_mid":
+        _cap_tier_penalty = 4
+    elif category == "stocks_small":
+        _cap_tier_penalty = 6
     _new_filter_penalty = min(
         _adx_penalty + _obv_penalty + _macd_decay_penalty
-        + _rsi_slope_penalty + _macd_alignment_penalty + _volume_penalty,
+        + _rsi_slope_penalty + _macd_alignment_penalty + _volume_penalty + _cap_tier_penalty,
         25,
     )
     if _new_filter_penalty > 0:

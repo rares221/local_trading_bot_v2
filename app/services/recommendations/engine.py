@@ -1391,11 +1391,20 @@ def _build_candidate(
             if snap.rsi_slope > 2.0:
                 _rsi_slope_penalty = 4
 
+    # Cap-tier penalty — Step 6 is the confirmed sweet spot (Sharpe 2.486, +0.119R, 244R DD).
+    # All variations tested (Step 6b/6c/6d) regressed vs Step 6. Mid -4 / small -6 is final.
+    # "other" left ungated — hard gate caused perverse selection (3.7% WR remaining).
+    _cap_tier_penalty = 0
+    if category == "stocks_mid":
+        _cap_tier_penalty = 4
+    elif category == "stocks_small":
+        _cap_tier_penalty = 6
+
     # Combined soft-penalty cap: all confidence-reducing signals pooled so no combination of weak
     # signals can stack into an invisible hard gate. Cap raised 20→25 with MACD+volume added.
     _new_filter_penalty = min(
         _adx_confidence_penalty + _obv_penalty + vel_confidence_penalty + _macd_decay_penalty
-        + _rsi_slope_penalty + _macd_alignment_penalty + _volume_penalty,
+        + _rsi_slope_penalty + _macd_alignment_penalty + _volume_penalty + _cap_tier_penalty,
         25,
     )
     if _new_filter_penalty > 0:
@@ -1415,6 +1424,8 @@ def _build_candidate(
             _nfp_parts.append(f"macd_alignment=-{_macd_alignment_penalty}")
         if _volume_penalty > 0:
             _nfp_parts.append(f"volume_low=-{_volume_penalty}")
+        if _cap_tier_penalty > 0:
+            _nfp_parts.append(f"cap_tier=-{_cap_tier_penalty}")
         logger.debug(
             "[ENGINE] %s: new_filter_penalty=%d (%s) → conf=%d",
             asset_id, _new_filter_penalty, ", ".join(_nfp_parts), confidence,
