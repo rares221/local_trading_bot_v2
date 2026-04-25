@@ -1,5 +1,5 @@
 # Use "docker compose" (Docker Desktop plugin) or "docker-compose" (standalone)
-COMPOSE = docker compose
+COMPOSE = docker-compose
 start:
 	$(COMPOSE) up -d --remove-orphans
 stop:

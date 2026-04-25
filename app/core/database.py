@@ -29,13 +29,17 @@ AsyncSessionLocal = async_session_factory
 async def init_db() -> None:
     """
     Initialize database.
-    Schema is managed by Alembic migrations — this only ensures the
-    TimescaleDB extension exists before migrations run.
+    Schema is managed by Alembic migrations for PostgreSQL.
+    For SQLite (dev), create_all is used as fallback.
     """
     import app.models  # noqa: F401 — register all models with Base.metadata
 
     async with engine.begin() as conn:
         await conn.run_sync(_ensure_timescaledb_extension)
+        # For SQLite dev: create any tables that don't exist yet (idempotent).
+        # PostgreSQL uses Alembic migrations instead.
+        if "sqlite" in str(engine.url):
+            await conn.run_sync(Base.metadata.create_all)
 
 
 def _ensure_timescaledb_extension(sync_conn) -> None:

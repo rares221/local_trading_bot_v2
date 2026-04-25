@@ -112,54 +112,21 @@ def _get_exchange_priority() -> list[str]:
 # Layer 3: Live yfinance.Search
 # ---------------------------------------------------------------------------
 
-def _search_yfinance(query: str) -> Optional[dict]:
+def _search_live(query: str) -> Optional[dict]:
     """
-    Call yfinance.Search and return best match as
-    {"symbol": str, "exchange": str, "short_name": str} or None.
+    Layer 3 live symbol search — routed via market_data (Finnhub or yfinance).
+    Returns {"symbol": str, "exchange": str, "short_name": str} or None.
     """
     global _live_lookup_count
     if _live_lookup_count >= MAX_LIVE_LOOKUPS_PER_RUN:
         return None
-
+    _live_lookup_count += 1
     try:
-        import yfinance as yf
-        results = yf.Search(query, max_results=8)
-        quotes = results.quotes if hasattr(results, "quotes") else []
+        from app.services.market_data import search_symbol
+        return search_symbol(query)
     except Exception as exc:
-        logger.debug("yfinance.Search('%s') failed: %s", query, exc)
+        logger.debug("search_symbol('%s') failed: %s", query, exc)
         return None
-    finally:
-        _live_lookup_count += 1
-
-    if not quotes:
-        return None
-
-    exchange_prio = _get_exchange_priority()
-
-    # Score each quote: lower = better
-    def _score(q: dict) -> int:
-        exch = q.get("exchange", "")
-        try:
-            return exchange_prio.index(exch)
-        except ValueError:
-            return len(exchange_prio) + 1
-
-    # Filter to equities/ETFs/futures/indices — skip options, warrants, etc
-    valid_types = {"EQUITY", "ETF", "FUTURE", "INDEX", "MUTUALFUND", "CRYPTOCURRENCY"}
-    filtered = [q for q in quotes if q.get("quoteType", "EQUITY") in valid_types]
-    if not filtered:
-        filtered = quotes  # fallback to all results
-
-    best = min(filtered, key=_score)
-    symbol = best.get("symbol")
-    if not symbol:
-        return None
-
-    return {
-        "symbol": symbol,
-        "exchange": best.get("exchange", ""),
-        "short_name": best.get("shortname", best.get("longname", "")),
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -200,8 +167,8 @@ def resolve_name(name: str) -> Optional[str]:
     if neg_ts and (time.time() - neg_ts) < NEGATIVE_CACHE_TTL_SECONDS:
         return None
 
-    # Layer 3: live yfinance.Search
-    result = _search_yfinance(key)
+    # Layer 3: live search (Finnhub or yfinance via market_data)
+    result = _search_live(key)
     if result and result.get("symbol"):
         result["resolved_at"] = datetime.now(timezone.utc).isoformat()
         with _lock:

@@ -82,10 +82,19 @@ def default_feeds() -> list[FeedSpec]:
         FeedSpec("https://cointelegraph.com/rss", "crypto"),
         FeedSpec("https://coindesk.com/arc/outboundfeeds/rss/", "crypto"),
         FeedSpec("https://cryptonews.com/news/feed/", "crypto"),
+
+        # ── Sector-specific (Investing.com) ──────────────────────
+        FeedSpec("https://www.investing.com/rss/news_2.rss", "sector"),   # industrials
+
+        # ── Biotech / healthcare (FDA, trials, approvals) ────────
+        FeedSpec("https://www.biopharmadive.com/feeds/news/", "biotech"),
+        FeedSpec("https://www.fiercebiotech.com/rss/xml", "biotech"),
+        FeedSpec("https://www.statnews.com/feed/", "biotech"),            # STAT News — clinical/regulatory
     ]
 
 
 FEED_CATEGORIES = [
     "finance", "stocks", "indices", "commodities", "forex",
     "europe", "asia", "politics", "trading", "crypto",
+    "sector", "biotech",
 ]

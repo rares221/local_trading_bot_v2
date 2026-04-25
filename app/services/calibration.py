@@ -68,7 +68,7 @@ def fit_platt_calibration(confidences: list[float], outcomes: list[float]) -> Op
         from sklearn.linear_model import LogisticRegression
         import numpy as np
 
-        X = np.array(confidences).reshape(-1, 1)
+        X = np.array(confidences).reshape(-1, 1) / 100.0  # normalize to [0,1] — apply() also divides by 100
         y = np.array(outcomes)
 
         # Fit logistic regression with no regularization (C=1e10) for Platt scaling

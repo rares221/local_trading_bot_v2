@@ -19,25 +19,21 @@ from app.models.daily_briefing import DailyBriefing
 
 logger = logging.getLogger(__name__)
 
-# Module-level cache for yfinance short names (persists for process lifetime; names rarely change)
-_yf_short_name_cache: dict[str, str] = {}
+# Module-level cache for instrument short names (persists for process lifetime; names rarely change)
+_short_name_cache: dict[str, str] = {}
 
 def _get_short_name(symbol: str | None, asset_id: str) -> str | None:
-    """Fetch instrument short name from yfinance with in-memory caching. Never raises."""
+    """Fetch instrument short name via market_data routing with in-memory caching. Never raises."""
     if not symbol:
         symbol = asset_id.upper()
-    if symbol in _yf_short_name_cache:
-        return _yf_short_name_cache[symbol]
+    if symbol in _short_name_cache:
+        return _short_name_cache[symbol]
     try:
-        import yfinance as yf
-        info = yf.Ticker(symbol).fast_info
-        name = getattr(info, "description", None) or None
-        # fast_info doesn't have shortName; fall back to .info (cached by yfinance internally)
-        if not name:
-            full = yf.Ticker(symbol).info
-            name = full.get("shortName") or full.get("longName") or None
+        from app.services.market_data import fetch_company_profile
+        profile = fetch_company_profile(symbol)
+        name = (profile or {}).get("name") or None
         if name:
-            _yf_short_name_cache[symbol] = name
+            _short_name_cache[symbol] = name
         return name
     except Exception:
         return None
@@ -94,12 +90,12 @@ async def list_research_providers() -> dict[str, Any]:
         for p in PROVIDERS
     ]
     model = (settings.research_llm_model or "").strip()
-    p = get_provider_by_id(settings.research_llm_provider or "openai")
+    p = get_provider_by_id(settings.research_llm_provider or "")
     if p and not model:
         model = p.default_model
     return _with_disclaimer({
         "providers": providers,
-        "current": {"provider": settings.research_llm_provider or "openai", "model": model or ""},
+        "current": {"provider": settings.research_llm_provider or "", "model": model or ""},
     })
 
 
@@ -557,6 +553,7 @@ async def trade_builder_from_asset(
         await job_run_analysis()
 
     analysis = await fetch_latest_analysis(db)
+    analysis_id = analysis.id if analysis else None  # capture before any rollback expires the object
     payload = (analysis.payload or {}) if analysis else {}
     by_asset_sentiment = payload.get("by_asset_sentiment")
     active_events = payload.get("active_events")
@@ -617,7 +614,7 @@ async def trade_builder_from_asset(
         stop_loss=cand.stop_loss,
         take_profit=cand.take_profit,
         expiry_date=cand.expiry_date,
-        rationale_ref=analysis.id if analysis else None,
+        rationale_ref=analysis_id,
         rationale_text=rationale_text,
         risk_tier=cand.risk_tier,
         direction=cand.direction or "long",
@@ -857,8 +854,8 @@ async def list_active_trades(
         short_name = None
         if rec:
             cached_sym = symbol or rec.asset_id.upper()
-            if cached_sym in _yf_short_name_cache:
-                short_name = _yf_short_name_cache[cached_sym]
+            if cached_sym in _short_name_cache:
+                short_name = _short_name_cache[cached_sym]
             else:
                 try:
                     short_name = await asyncio.to_thread(_get_short_name, symbol, rec.asset_id)
@@ -1555,6 +1552,7 @@ class PreferencesUpdate(BaseModel):
     research_llm_provider: str | None = None
     research_llm_model: str | None = None
     ollama_base_url: str | None = None
+    lm_studio_base_url: str | None = None
     research_llm_thinking_budget: int | None = None  # 0 = disabled; max depends on provider (Anthropic: up to 32000)
     risk_budget_1r: float | None = None
     sentiment_half_life_hours: float | None = None
@@ -1588,12 +1586,14 @@ async def update_preferences(body: PreferencesUpdate) -> dict[str, Any]:
             body.research_llm_provider is not None
             or body.research_llm_model is not None
             or body.ollama_base_url is not None
+            or body.lm_studio_base_url is not None
             or body.research_llm_thinking_budget is not None
         ):
             set_research_llm_config(
                 provider=body.research_llm_provider,
                 model=body.research_llm_model,
                 ollama_base_url=body.ollama_base_url,
+                lm_studio_base_url=body.lm_studio_base_url,
                 thinking_budget=body.research_llm_thinking_budget,
             )
         if body.risk_budget_1r is not None:

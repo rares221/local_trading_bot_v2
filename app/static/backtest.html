@@ -90,6 +90,10 @@
     .tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
 
     .hidden { display: none !important; }
+    /* 3s hover tooltip system */
+    .tt-popup { position:fixed; z-index:9999; background:rgba(15,17,30,0.97); border:1px solid rgba(108,99,255,0.4);
+      border-radius:8px; padding:10px 14px; font-size:12px; line-height:1.5; color:rgba(226,232,240,0.9);
+      max-width:300px; pointer-events:none; box-shadow:0 4px 20px rgba(0,0,0,0.6); display:none; }
     .spin { animation: spin 1s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -109,6 +113,7 @@
     <a href="/research"><span data-icon="search"></span> Research</a>
     <a href="/analysis"><span data-icon="bar-chart-2"></span> Analysis</a>
     <a href="/active-trades"><span data-icon="activity"></span> Active trades</a>
+    <a href="/live-trading"><span data-icon="zap"></span> Live Trading</a>
     <a href="/backtest" class="active"><span data-icon="history"></span> Backtest</a>
     <a href="/journal"><span data-icon="book-open"></span> Journal</a>
     <a href="/briefing"><span data-icon="newspaper"></span> Briefing</a>
@@ -123,11 +128,12 @@
     <strong style="color:#a5b4fc;">ℹ What is this page for?</strong><br>
     This is a <strong>strategy validation tool</strong> — it replays the recommendation engine on historical data to answer questions like:
     <em>"Does a higher confidence score actually lead to more profitable trades?"</em> or
-    <em>"Does moderate vs aggressive risk tier perform better?"</em><br><br>
-    Runs on all 28 tracked symbols over a custom date range. It takes ~2–5 minutes to complete.<br>
+    <em>"Does the strategy hold up across different market regimes (bull, bear, crisis)?"</em><br><br>
+    Results include <strong>market regime breakdown</strong> (bull/bear/crisis/high-vol) and a <strong>Walk-Forward Analysis</strong> tool to detect overfitting.
+    Industry best practice: backtest <strong>at least 2–3 years</strong> including the 2022 bear market and 2020 COVID crash.<br>
     <strong>For a quick analysis of a specific trade you have open</strong>, use the
     <a href="/active-trades" style="color:#818cf8;text-decoration:underline;">Active Trades</a>
-    page — each card has a <strong>Backtest button</strong> that runs a focused analysis on that symbol.
+    page — each card has a <strong>Backtest button</strong>.
   </div>
 
   <div class="grid grid-2" style="margin-bottom:24px;">
@@ -212,6 +218,7 @@
         <div class="tab active" onclick="showTab('trades')">Trades</div>
         <div class="tab" onclick="showTab('symbol-stats')">By Symbol</div>
         <div class="tab" onclick="showTab('direction-stats')">By Direction</div>
+        <div class="tab" onclick="showTab('regime-stats')" title="" data-tooltip="Market regime at signal date: bull (SPX>200SMA, VIX&lt;20), bear, high_vol (VIX≥30), crisis (VIX≥40). Shows whether your strategy holds up across different market conditions.">By Regime</div>
       </div>
 
       <div id="tab-trades">
@@ -238,6 +245,31 @@
       <div id="tab-direction-stats" class="hidden">
         <div id="direction-stats-wrap"></div>
       </div>
+      <div id="tab-regime-stats" class="hidden">
+        <div id="regime-stats-wrap"></div>
+      </div>
+    </div>
+
+    <!-- Walk-Forward Analysis -->
+    <div class="card" style="margin-top:20px;" id="walkforward-card">
+      <h2 data-tooltip="Walk-forward analysis splits your date range into rolling In-Sample (training) and Out-of-Sample (validation) windows. A degradation ratio ≥0.85 means the strategy parameters generalise well. Below 0.70 = likely overfit to the training data." style="cursor:help;">Walk-Forward Analysis <span style="font-size:11px;font-weight:400;color:var(--muted);margin-left:8px;">In-Sample vs Out-of-Sample</span></h2>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:14px;line-height:1.5;">
+        Splits the backtest range into rolling IS/OOS windows. A strategy with <strong>degradation ratio ≥ 0.85</strong> is robust;
+        below 0.70 suggests the parameters are curve-fit. Requires the same date range as the full backtest above.
+      </p>
+      <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;margin-bottom:14px;">
+        <div>
+          <label style="font-size:12px;">IS Window (days)</label>
+          <input type="number" id="wf-is-days" value="252" min="63" max="500" style="width:100px;" />
+        </div>
+        <div>
+          <label style="font-size:12px;">OOS Window (days)</label>
+          <input type="number" id="wf-oos-days" value="63" min="21" max="252" style="width:100px;" />
+        </div>
+        <button class="btn btn-primary btn-sm" id="wf-btn" onclick="runWalkForward()">Run Walk-Forward</button>
+        <span id="wf-status" style="font-size:12px;color:var(--muted);"></span>
+      </div>
+      <div id="wf-results"></div>
     </div>
 
     <div class="disclaimer" id="disclaimer-box"></div>
@@ -250,13 +282,16 @@ let _tradesOffset = 0;
 const _tradesLimit = 50;
 let _allSymbols = [];
 
-// Set default dates: 1 year ago to today
+// Read ?ticker= param from Live Trading card backtest button
+const _prefilterTicker = new URLSearchParams(location.search).get('ticker') || null;
+
+// Set default dates: 3 years ago to today (industry best practice minimum)
 (function initDates() {
   const today = new Date();
-  const oneYearAgo = new Date(today);
-  oneYearAgo.setFullYear(today.getFullYear() - 1);
+  const threeYearsAgo = new Date(today);
+  threeYearsAgo.setFullYear(today.getFullYear() - 3);
   document.getElementById('end-date').value = today.toISOString().slice(0, 10);
-  document.getElementById('start-date').value = oneYearAgo.toISOString().slice(0, 10);
+  document.getElementById('start-date').value = threeYearsAgo.toISOString().slice(0, 10);
 })();
 
 async function startBacktest() {
@@ -328,6 +363,22 @@ async function loadRuns() {
   const el = document.getElementById('runs-list');
   document.getElementById('runs-count').textContent = `(${runs.length})`;
   if (!runs.length) { el.innerHTML = '<div class="no-data">No runs yet.</div>'; return; }
+
+  // Auto-select first completed run and filter to pre-fill ticker from Live Trading
+  if (_prefilterTicker && !_currentRunId) {
+    const first = runs.find(r => r.status === 'completed');
+    if (first) {
+      setTimeout(() => {
+        selectRun(first.id).then(() => {
+          const sel = document.getElementById('filter-symbol');
+          if (sel) {
+            sel.value = _prefilterTicker;
+            sel.dispatchEvent(new Event('change'));
+          }
+        });
+      }, 100);
+    }
+  }
 
   el.innerHTML = runs.map(r => `
     <div class="run-row ${r.id === _currentRunId ? 'selected' : ''}" onclick="selectRun('${r.id}')">
@@ -418,6 +469,27 @@ function showResults(data) {
     </tbody></table>`
     : '<div class="no-data">No data.</div>';
 
+  // By regime
+  const regimeStats = m.by_regime || {};
+  const regimeOrder = ['bull', 'bear', 'high_vol', 'crisis', 'neutral', 'unknown'];
+  const regimeLabels = { bull: '🟢 Bull (SPX > 200-SMA, VIX < 20)', bear: '🔴 Bear (SPX < 200-SMA, VIX ≥ 20)', high_vol: '🟠 High Vol (VIX ≥ 30)', crisis: '🚨 Crisis (VIX ≥ 40)', neutral: '⚪ Neutral', unknown: '— Unknown' };
+  const sortedRegimes = regimeOrder.filter(r => regimeStats[r]);
+  document.getElementById('regime-stats-wrap').innerHTML = sortedRegimes.length
+    ? `<div style="font-size:12px;color:var(--muted);margin-bottom:10px;">Performance broken down by market regime at signal date. Key insight: does your strategy hold up in bear/crisis conditions?</div>
+    <table><thead><tr><th>Regime</th><th>Trades</th><th>Win Rate</th><th>Avg P&L (R)</th><th>Bar</th></tr></thead><tbody>
+    ${sortedRegimes.map(r => {
+      const rs = regimeStats[r];
+      return `<tr>
+        <td style="white-space:nowrap">${regimeLabels[r] || r}</td>
+        <td>${rs.total}</td>
+        <td class="${winCls(rs.win_rate,0.5)}">${pct(rs.win_rate)}</td>
+        <td class="${winCls(rs.avg_pnl_r,0)}">${fmt(rs.avg_pnl_r)}</td>
+        <td style="width:140px"><div class="bucket-bar"><div class="bucket-fill" style="width:${Math.round((rs.win_rate||0)*100)}%"></div></div></td>
+      </tr>`;
+    }).join('')}
+    </tbody></table>`
+    : '<div class="no-data">No regime data. Run a new backtest to see regime breakdown.</div>';
+
   document.getElementById('disclaimer-box').textContent = data.disclaimer || '';
   initBacktestHorizonChart(data);
 }
@@ -504,11 +576,11 @@ async function deleteRun(e, runId) {
 }
 
 function showTab(name) {
+  const tabs = ['trades','symbol-stats','direction-stats','regime-stats'];
   document.querySelectorAll('.tabs .tab').forEach((t, i) => {
-    const tabs = ['trades','symbol-stats','direction-stats'];
     t.classList.toggle('active', tabs[i] === name);
   });
-  ['trades','symbol-stats','direction-stats'].forEach(n => {
+  tabs.forEach(n => {
     document.getElementById(`tab-${n}`).classList.toggle('hidden', n !== name);
   });
 }
@@ -700,6 +772,136 @@ function initBacktestHorizonChart(data) {
     clearTimeout(_hcTimer); tooltip.style.display = 'none';
   });
 }
+
+// ── Walk-Forward Analysis ──────────────────────────────────────────────────
+async function runWalkForward() {
+  const btn = document.getElementById('wf-btn');
+  const status = document.getElementById('wf-status');
+  const results = document.getElementById('wf-results');
+  const start = document.getElementById('start-date').value;
+  const end = document.getElementById('end-date').value;
+  const isDays = parseInt(document.getElementById('wf-is-days').value) || 252;
+  const oosDays = parseInt(document.getElementById('wf-oos-days').value) || 63;
+
+  if (!start || !end) { status.textContent = 'Set start/end dates first.'; return; }
+
+  btn.disabled = true;
+  status.textContent = '⏳ Running walk-forward… (this may take several minutes)';
+  results.innerHTML = '';
+
+  try {
+    const res = await fetch('/api/backtest/walkforward', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        start_date: start,
+        end_date: end,
+        risk_tier: document.getElementById('risk-tier').value,
+        min_confidence: parseInt(document.getElementById('min-confidence').value),
+        period: document.getElementById('history-period').value,
+        in_sample_days: isDays,
+        out_sample_days: oosDays,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Unknown error');
+
+    status.textContent = `✓ Done — ${data.total_windows} windows`;
+    renderWalkForward(data);
+  } catch (e) {
+    status.textContent = `Error: ${e.message}`;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function renderWalkForward(data) {
+  const el = document.getElementById('wf-results');
+
+  const robustnessColor = { robust: 'var(--win)', acceptable: 'var(--warn)', likely_overfit: 'var(--loss)', insufficient_data: 'var(--muted)' };
+  const robustnessLabel = { robust: '✓ Robust', acceptable: '~ Acceptable', likely_overfit: '✗ Likely Overfit', insufficient_data: '— Insufficient Data' };
+  const rc = robustnessColor[data.robustness] || 'var(--muted)';
+  const rl = robustnessLabel[data.robustness] || data.robustness;
+
+  const ism = data.is_metrics || {};
+  const oosm = data.oos_metrics || {};
+
+  const windows = data.windows || [];
+
+  el.innerHTML = `
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px;">
+      <div class="stat-card">
+        <div class="stat-label">Robustness</div>
+        <div class="stat-value" style="font-size:16px;color:${rc};">${rl}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Degradation Ratio</div>
+        <div class="stat-value ${winCls(data.degradation_ratio, 0.85)}" style="font-size:20px;">${data.degradation_ratio != null ? data.degradation_ratio.toFixed(3) : '—'}</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:4px;">OOS WR / IS WR &nbsp;(≥0.85 = robust)</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">IS Win Rate (avg)</div>
+        <div class="stat-value ${winCls(ism.win_rate, 0.5)}">${pct(ism.win_rate)}</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:4px;">${ism.total_trades ?? 0} trades · Sharpe ${fmt(ism.sharpe_ratio)}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">OOS Win Rate (avg)</div>
+        <div class="stat-value ${winCls(oosm.win_rate, 0.5)}">${pct(oosm.win_rate)}</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:4px;">${oosm.total_trades ?? 0} trades · Sharpe ${fmt(oosm.sharpe_ratio)}</div>
+      </div>
+    </div>
+    <table>
+      <thead><tr>
+        <th>#</th><th>IS Period</th><th>IS Trades</th><th>IS WR</th><th>IS Sharpe</th>
+        <th>OOS Period</th><th>OOS Trades</th><th>OOS WR</th><th>OOS Sharpe</th>
+      </tr></thead>
+      <tbody>
+      ${windows.map(w => `
+        <tr>
+          <td>${w.window}</td>
+          <td style="font-size:11px">${w.is_start} → ${w.is_end}</td>
+          <td>${w.is_trades}</td>
+          <td class="${winCls(w.is_win_rate,0.5)}">${pct(w.is_win_rate)}</td>
+          <td>${fmt(w.is_sharpe)}</td>
+          <td style="font-size:11px">${w.oos_start} → ${w.oos_end}</td>
+          <td>${w.oos_trades}</td>
+          <td class="${winCls(w.oos_win_rate,0.5)}">${pct(w.oos_win_rate)}</td>
+          <td>${fmt(w.oos_sharpe)}</td>
+        </tr>
+      `).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+// ── 3s hover tooltip system ────────────────────────────────────────────────
+(function initTooltips() {
+  const popup = document.createElement('div');
+  popup.className = 'tt-popup';
+  document.body.appendChild(popup);
+  let _timer = null;
+  document.addEventListener('mouseover', e => {
+    const el = e.target.closest('[data-tooltip]');
+    if (!el) return;
+    clearTimeout(_timer);
+    _timer = setTimeout(() => {
+      popup.textContent = el.dataset.tooltip;
+      popup.style.display = 'block';
+    }, 3000);
+  });
+  document.addEventListener('mousemove', e => {
+    if (popup.style.display === 'block') {
+      popup.style.left = (e.clientX + 14) + 'px';
+      popup.style.top  = (e.clientY + 14) + 'px';
+    }
+  });
+  document.addEventListener('mouseout', e => {
+    const el = e.target.closest('[data-tooltip]');
+    if (!el) return;
+    clearTimeout(_timer);
+    popup.style.display = 'none';
+  });
+})();
 
 // Init
 loadRuns();

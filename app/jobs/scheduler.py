@@ -130,7 +130,12 @@ async def job_daily_batch() -> None:
             if not analysis:
                 print("[BATCH] No analysis found — run the full pipeline first")
                 return
-            print(f"[BATCH] Analysis found (id={analysis.id})")
+            # Cache id before heavy async work — the asyncpg connection may go idle
+            # during asyncio.to_thread(_build) and LLM calls, causing SQLAlchemy to
+            # expire the ORM instance; accessing analysis.id after that triggers a
+            # pre-ping in a non-greenlet context → MissingGreenlet error.
+            analysis_id = analysis.id
+            print(f"[BATCH] Analysis found (id={analysis_id})")
             q_taken = select(Recommendation.asset_category, Recommendation.asset_id).where(
                 Recommendation.status == "taken"
             ).distinct()
@@ -186,14 +191,18 @@ async def job_daily_batch() -> None:
             llm_failures = []
             progress.update(60, "batch", f"Generating rationales for {total_candidates} candidates…")
             from app.services.research import build_research_context, generate_rationale
+            from datetime import date as _date
+            from app.services.technicals import classify_horizon as _classify_horizon
             for i, c in enumerate(candidates):
                 llm_pct = 60 + int((i / total_candidates) * 36)
                 progress.update(llm_pct, "batch", f"LLM rationale {i + 1}/{total_candidates} — {c.asset_id}")
                 rationale_text = None
                 try:
-                    from datetime import date as _date
-                    from app.services.technicals import classify_horizon as _classify_horizon
-                    ctx = await build_research_context(session, c.asset_id, c.asset_category)
+                    # Fresh session per candidate: the main batch session may have an idle
+                    # PostgreSQL connection after the long asyncio.to_thread(_build) call.
+                    # Reusing it triggers asyncpg pre-ping outside a greenlet → MissingGreenlet.
+                    async with async_session_factory() as research_session:
+                        ctx = await build_research_context(research_session, c.asset_id, c.asset_category)
                     ctx["buy_in_price"] = c.buy_in_price
                     ctx["direction"] = c.direction
                     if c.expiry_date and "expiry_days" not in ctx:
@@ -202,7 +211,9 @@ async def job_daily_batch() -> None:
                         ctx["horizon"] = _classify_horizon(_ed)
                     rationale_text = await generate_rationale(ctx)
                 except Exception as exc:
+                    import traceback
                     print(f"  [BATCH] LLM rationale failed for {c.asset_id}: {exc}")
+                    print(f"  [BATCH] Traceback:\n{''.join(traceback.format_exc())}")
                     llm_failures.append(f"{c.asset_id}: {exc}")
                 # Persist regime / divergence / event hints with technical notes (Candidate.market_regime_note is not a DB column)
                 _reg_note = getattr(c, "market_regime_note", None)
@@ -223,7 +234,7 @@ async def job_daily_batch() -> None:
                     stop_loss=c.stop_loss,
                     take_profit=c.take_profit,
                     expiry_date=c.expiry_date,
-                    rationale_ref=analysis.id,
+                    rationale_ref=analysis_id,
                     rationale_text=rationale_text,
                     risk_tier=c.risk_tier,
                     direction=c.direction,
@@ -702,6 +713,74 @@ async def job_cleanup_feed_items() -> None:
         await session.commit()
 
 
+async def job_refresh_backtest_stats() -> None:
+    """
+    Run a full backtest for all base universe symbols (last 3 years).
+    Runs on startup and weekly (Sunday 05:00) to keep backtest_trades
+    up-to-date so live confidence scores are statistically grounded.
+    """
+    import json as _json
+    from sqlalchemy import update
+    from app.live_trading.live_analyzer import _BASE_UNIVERSE
+    from app.api.backtest_routes import _run_backtest_background, BacktestRequest
+    from app.models.backtest import BacktestRun
+
+    base_symbols = [yf for _, yf, _, _ in _BASE_UNIVERSE]
+    end = date.today()
+    start = end - timedelta(days=3 * 365)
+
+    try:
+        async with async_session_factory() as session:
+            now = datetime.now(timezone.utc)
+            stale_cutoff = now - timedelta(hours=6)
+
+            # Check 1: mark orphaned "running" rows as failed (container crashed mid-run)
+            await session.execute(
+                update(BacktestRun)
+                .where(BacktestRun.status == "running", BacktestRun.created_at < stale_cutoff)
+                .values(status="failed", error_message="Marked failed on restart — container was restarted mid-run")
+            )
+            await session.commit()
+
+            # Check 2: skip if a backtest is actively running (started within last 6h)
+            active = await session.execute(
+                select(BacktestRun.id).where(
+                    BacktestRun.status == "running",
+                    BacktestRun.created_at >= stale_cutoff,
+                ).limit(1)
+            )
+            if active.scalar_one_or_none():
+                print("[BACKTEST_STATS] Backtest already in progress — skipping")
+                return
+
+            run_id = str(uuid4())
+            session.add(BacktestRun(
+                id=run_id,
+                created_at=now,
+                start_date=start,
+                end_date=end,
+                symbols_json=_json.dumps(base_symbols),
+                risk_tier="moderate",
+                min_confidence=30,
+                status="running",
+            ))
+            await session.commit()
+
+        body = BacktestRequest(
+            start_date=start.isoformat(),
+            end_date=end.isoformat(),
+            symbols=base_symbols,
+            risk_tier="moderate",
+            min_confidence=30,
+            period="3y",
+        )
+        asyncio.create_task(_run_backtest_background(run_id, body))
+        print(f"[BACKTEST_STATS] Auto-backtest started run_id={run_id} for {len(base_symbols)} symbols")
+
+    except Exception as exc:
+        print(f"[BACKTEST_STATS] Failed (non-fatal): {exc}")
+
+
 def start_scheduler() -> AsyncIOScheduler:
     """Schedule jobs."""
     scheduler = AsyncIOScheduler()
@@ -752,6 +831,21 @@ def start_scheduler() -> AsyncIOScheduler:
         hour=6,
         minute=0,
         id="build_hallucination_profile",
+    )
+    # Backtest stats: startup auto-run DISABLED (manual backtest work in progress)
+    # scheduler.add_job(
+    #     job_refresh_backtest_stats,
+    #     "date",
+    #     run_date=datetime.now(timezone.utc) + timedelta(seconds=60),
+    #     id="backtest_stats_startup",
+    # )
+    scheduler.add_job(
+        job_refresh_backtest_stats,
+        "cron",
+        day_of_week="sun",
+        hour=5,
+        minute=0,
+        id="backtest_stats_weekly",
     )
     scheduler.start()
     return scheduler

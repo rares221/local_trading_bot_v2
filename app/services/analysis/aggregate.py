@@ -97,6 +97,19 @@ def _entity_weight(tag: str) -> float:
     return ENTITY_WEIGHTS.get(tag, DEFAULT_ENTITY_WEIGHT)
 
 
+def _conviction_score(pairs: list[tuple[float, float]]) -> float:
+    """Sentiment conviction: 1.0 = strong directional consensus, 0.0 = wild disagreement.
+    Uses population std-dev of raw scores (weights ignored; we want raw variance).
+    Threshold: std-dev of 0.5 maps to conviction 0.0 (half the ±1 range = full noise)."""
+    if len(pairs) < 2:
+        return 1.0
+    scores = [s for s, _ in pairs]
+    mean = sum(scores) / len(scores)
+    variance = sum((s - mean) ** 2 for s in scores) / len(scores)
+    std_dev = variance ** 0.5
+    return round(max(0.0, 1.0 - min(1.0, std_dev / 0.5)), 4)
+
+
 async def run_analysis(session: AsyncSession) -> MarketAnalysis:
     """
     Build market analysis from latest feed items (with sentiment_score and asset_tags).
@@ -130,13 +143,19 @@ async def run_analysis(session: AsyncSession) -> MarketAnalysis:
 
     # Time-decay weighted sentiment per asset tag; source and entity weighting
     by_asset_weighted: dict[str, list[tuple[float, float]]] = {}  # tag -> [(score, weight)]
+    tag_titles: dict[str, list[str]] = {}  # tag -> article texts for domain correction
     for it in items:
         if it.sentiment_score is not None and it.asset_tags:
             base_w = _decay_weight(it.published or it.fetched_at, now)
             src_w = _source_weight(getattr(it, "source", None))
+            text = f"{it.title or ''} {it.description or ''}".strip()
             for tag in it.asset_tags:
                 w = base_w * src_w * _entity_weight(tag)
                 by_asset_weighted.setdefault(tag, []).append((it.sentiment_score, w))
+                if text:
+                    tag_titles.setdefault(tag, []).append(text)
+
+    from app.services.sentiment.domain_correction import apply_domain_correction
 
     by_asset_sentiment: dict[str, dict] = {}
     for tag, pairs in by_asset_weighted.items():
@@ -145,9 +164,13 @@ async def run_analysis(session: AsyncSession) -> MarketAnalysis:
             weighted_avg = sum(s * w for s, w in pairs) / total_weight
         else:
             weighted_avg = sum(s for s, _ in pairs) / len(pairs) if pairs else 0
+        corrected_avg, correction_applied = apply_domain_correction(
+            tag, weighted_avg, tag_titles.get(tag, [])
+        )
         by_asset_sentiment[tag] = {
-            "avg": round(weighted_avg, 4),
+            "avg": round(corrected_avg, 4),
             "count": len(pairs),
+            "domain_correction_applied": correction_applied,
         }
 
     # Sentiment trend (recent 24h vs older 24–72h) and price trend for divergence (same source/entity weights)
@@ -215,9 +238,20 @@ async def run_analysis(session: AsyncSession) -> MarketAnalysis:
             (sentiment_trend == "improving" and price_trend == "down")
             or (sentiment_trend == "worsening" and price_trend == "up")
         )
+
+        # Velocity: magnitude and direction of sentiment change (recent − older window)
+        velocity: float | None = None
+        if recent_avg is not None and older_avg is not None:
+            velocity = round(recent_avg - older_avg, 4)
+
+        # Conviction: how consistent the recent scores are (1 = consensus, 0 = contradictory)
+        conviction = _conviction_score(recent_pairs.get(tag, []))
+
         info["sentiment_trend"] = sentiment_trend
         info["price_trend"] = price_trend
         info["divergence"] = divergence
+        info["velocity"] = velocity
+        info["conviction"] = conviction
 
     as_of = now
     summary_lines = [

@@ -5,7 +5,6 @@ Pure pandas/numpy — no external TA library needed.
 """
 from __future__ import annotations
 
-import concurrent.futures
 import logging
 import math
 from dataclasses import dataclass, field
@@ -13,7 +12,6 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
-import yfinance as yf
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +22,10 @@ logger = logging.getLogger(__name__)
 _ohlcv_cache: dict[str, pd.DataFrame] = {}
 # Separate cache for intraday (key = symbol) to avoid overwriting daily
 _ohlcv_intraday_cache: dict[str, pd.DataFrame] = {}
+# Snapshot persistence cache: last successful TechnicalSnapshot per symbol.
+# Used as a fallback when a live fetch fails (e.g. yfinance rate limiting).
+# Keyed by the raw symbol string passed to build_snapshot.
+_snapshot_persist: "dict[str, TechnicalSnapshot]" = {}
 
 # ---------------------------------------------------------------------------
 # Backtest mode: when set, fetch_ohlcv slices data up to this date.
@@ -66,6 +68,7 @@ def fetch_ohlcv(symbol: str, period: str = "90d", interval: Optional[str] = None
     interval: None or "1d" for daily; "1h" for hourly (uses 30d period, cached separately).
     In backtest mode (_backtest_cutoff set), returns data sliced to that date.
     """
+    symbol = symbol.lstrip("$")  # strip cashtag prefix — yfinance expects CL=F not $CL=F
     use_interval = interval or "1d"
     cache_key = symbol if use_interval == "1d" else f"{symbol}_{use_interval}"
     cache = _ohlcv_cache if use_interval == "1d" else _ohlcv_intraday_cache
@@ -74,32 +77,14 @@ def fetch_ohlcv(symbol: str, period: str = "90d", interval: Optional[str] = None
         if cached.empty:
             return None
         return _apply_backtest_cutoff(cached)
-    # yfinance logs and some builds also print "$TICKER: possibly delisted" to the console;
-    # keep loggers quiet (failures still return None / empty df).
-    log = logging.getLogger("yfinance")
-    old_level = log.level
-    log.setLevel(logging.CRITICAL)
-    try:
-        ticker = yf.Ticker(symbol)
-        kwargs = {"period": "30d" if use_interval == "1h" else period, "interval": use_interval}
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(ticker.history, **kwargs)
-            try:
-                df = future.result(timeout=30)
-            except concurrent.futures.TimeoutError:
-                logger.warning("[TECHNICALS] yfinance timeout (30s) for symbol=%s", symbol)
-                cache[cache_key] = pd.DataFrame()
-                return None
-        if df is None or df.empty or "Close" not in df.columns:
-            cache[cache_key] = pd.DataFrame()
-            return None
-        cache[cache_key] = df
-        return _apply_backtest_cutoff(df)
-    except Exception:
+    from app.services.market_data import fetch_ohlcv as _md_fetch
+    actual_period = "30d" if use_interval == "1h" else period
+    df = _md_fetch(symbol, period=actual_period, interval=use_interval)
+    if df is None or df.empty or "Close" not in df.columns:
         cache[cache_key] = pd.DataFrame()
         return None
-    finally:
-        log.setLevel(old_level)
+    cache[cache_key] = df
+    return _apply_backtest_cutoff(df)
 
 
 def get_cached_price(symbol: str) -> Optional[float]:
@@ -306,6 +291,30 @@ def calc_obv(df: pd.DataFrame) -> Optional[tuple[float, float]]:
     return (current, slope)
 
 
+def calc_order_flow_imbalance(df: pd.DataFrame, lookback: int = 10) -> Optional[float]:
+    """
+    Order Flow Imbalance ratio over the last `lookback` bars.
+    up_volume   = sum of volume on bars where Close >= Open (buying pressure)
+    down_volume = sum of volume on bars where Close < Open  (selling pressure)
+    Returns up_volume / total_volume — range [0, 1].
+      > 0.6  → clear accumulation (institutional buying)
+      < 0.4  → clear distribution (institutional selling)
+      ~0.5   → balanced / neutral
+    Returns None if volume data is unavailable or insufficient.
+    """
+    if "Volume" not in df.columns or "Open" not in df.columns or len(df) < lookback:
+        return None
+    tail = df.iloc[-lookback:]
+    tail = tail.dropna(subset=["Open", "Close", "Volume"])
+    if tail.empty:
+        return None
+    up_vol = tail.loc[tail["Close"] >= tail["Open"], "Volume"].sum()
+    total_vol = tail["Volume"].sum()
+    if total_vol <= 0:
+        return None
+    return round(float(up_vol / total_vol), 4)
+
+
 # ---------------------------------------------------------------------------
 # Support / Resistance detection (swing high/low method)
 # ---------------------------------------------------------------------------
@@ -422,6 +431,18 @@ class TechnicalSnapshot:
     lvn_levels: list[float] = field(default_factory=list)  # Low Volume Nodes (price moves fast here)
     vp_bias: str = "at_vpoc"             # "above_vpoc" | "below_vpoc" | "at_vpoc"
     vp_overextension: Optional[float] = None  # (price - vpoc) / (vah - val); >1.5 = overextended
+    # 200-day EMA: macro trend direction filter (price above = long bias, below = short bias)
+    ema200: Optional[float] = None
+    # Volume confirmation: ratio of latest bar volume to 20-day average (>1.0 = above average)
+    volume_ratio: Optional[float] = None  # current volume / 20d SMA volume
+    # Order Flow Imbalance: up-volume / total-volume over last 10 bars (>0.6 = accumulation, <0.4 = distribution)
+    ofi_ratio: Optional[float] = None
+    # Momentum direction: positive = increasing histogram/RSI (accelerating), negative = fading
+    macd_hist_slope: Optional[float] = None  # hist[-1] - hist[-2]: positive = momentum building
+    rsi_slope: Optional[float] = None        # rsi[-1] - rsi[-3]: positive = RSI trending up
+    # Staleness flag: True when the snapshot was served from cache due to a live fetch failure.
+    # Consumers (engine) apply a confidence penalty and note it in the rationale.
+    is_stale: bool = False
 
     @property
     def price_above_vwap(self) -> bool:
@@ -597,8 +618,9 @@ def compute_volume_profile(
     if len(tail) < 10:
         return None
 
-    # Drop zero-volume bars (halts, data gaps)
+    # Drop zero-volume bars and rows with NaN price data (halts, data gaps)
     tail = tail[tail["Volume"] > 0]
+    tail = tail.dropna(subset=["High", "Low", "Close", "Volume"])
     if tail.empty:
         return None
 
@@ -713,20 +735,58 @@ def compute_volume_profile(
     }
 
 
-def build_snapshot(symbol: str) -> Optional[TechnicalSnapshot]:
-    """Build full technical snapshot for one symbol."""
+def build_snapshot(symbol: str) -> Optional["TechnicalSnapshot"]:
+    """
+    Build full technical snapshot for one symbol.
+    On fetch failure (yfinance rate limiting, timeout) falls back to the last
+    successfully built snapshot for the same symbol, marked with is_stale=True.
+    """
     df = fetch_ohlcv(symbol)
     if df is None or df.empty or len(df) < 5:
+        cached = _snapshot_persist.get(symbol)
+        if cached is not None:
+            logger.debug("[TECHNICALS] %s: live fetch failed, using stale snapshot", symbol)
+            import dataclasses
+            return dataclasses.replace(cached, is_stale=True)
         return None
 
     price = float(df["Close"].iloc[-1])
-    if price <= 0:
+    if not price or not (price > 0):
         return None
 
     atr = calc_atr(df)
     atr_pct = (atr / price) if atr else None
     rsi = calc_rsi(df)
     macd = calc_macd(df)
+
+    # MACD histogram slope: hist[-1] - hist[-2] (positive = momentum building)
+    macd_hist_slope: Optional[float] = None
+    if len(df) >= 36:  # slow(26) + signal(9) + 1 extra bar
+        try:
+            close = df["Close"]
+            ema_fast = close.ewm(span=12, adjust=False).mean()
+            ema_slow = close.ewm(span=26, adjust=False).mean()
+            hist_series = (ema_fast - ema_slow) - (ema_fast - ema_slow).ewm(span=9, adjust=False).mean()
+            if len(hist_series) >= 2 and not hist_series.iloc[-1:].isna().any():
+                macd_hist_slope = round(float(hist_series.iloc[-1]) - float(hist_series.iloc[-2]), 6)
+        except Exception:
+            pass
+
+    # RSI slope: rsi[-1] - rsi[-3] over 3 bars (positive = RSI trending up)
+    rsi_slope: Optional[float] = None
+    if len(df) >= 20:
+        try:
+            close = df["Close"]
+            delta = close.diff()
+            gain = delta.clip(lower=0).rolling(14).mean()
+            loss = (-delta.clip(upper=0)).rolling(14).mean()
+            rs_series = gain / loss.replace(0, float('nan'))
+            rsi_series = 100 - (100 / (1 + rs_series))
+            if len(rsi_series) >= 3 and not rsi_series.iloc[-1:].isna().any():
+                rsi_slope = round(float(rsi_series.iloc[-1]) - float(rsi_series.iloc[-3]), 4)
+        except Exception:
+            pass
+
     bollinger = calc_bollinger(df)
     adx = calc_adx(df)
     stochastic = calc_stochastic(df)
@@ -737,6 +797,14 @@ def build_snapshot(symbol: str) -> Optional[TechnicalSnapshot]:
     vwap = calc_vwap(df, period=20)
     vol_regime = calc_atr_regime(df, lookback=10)
 
+    # EMA200: needs at least 200 bars; gracefully None for shorter histories (e.g. recent IPOs)
+    ema200: Optional[float] = None
+    if len(df) >= 200:
+        try:
+            ema200 = float(df["Close"].ewm(span=200, adjust=False).mean().iloc[-1])
+        except Exception:
+            pass
+
     # Volume Profile (daily-bar approximation, 60-day lookback)
     vp = compute_volume_profile(df)
     vpoc = vp["vpoc"] if vp else None
@@ -746,6 +814,20 @@ def build_snapshot(symbol: str) -> Optional[TechnicalSnapshot]:
     lvn_levels = vp["lvn_levels"] if vp else []
     vp_bias = vp["vp_bias"] if vp else "at_vpoc"
     vp_overextension = vp["vp_overextension"] if vp else None
+
+    # Volume ratio: latest bar volume vs 20-day SMA (>1.0 = above-average volume)
+    volume_ratio: Optional[float] = None
+    if "Volume" in df.columns and len(df) >= 20:
+        try:
+            vol_sma = df["Volume"].iloc[-20:].mean()
+            latest_vol = float(df["Volume"].iloc[-1])
+            if vol_sma > 0:
+                volume_ratio = round(latest_vol / vol_sma, 4)
+        except Exception:
+            pass
+
+    # Order Flow Imbalance: up-volume / total-volume over last 10 bars
+    ofi_ratio = calc_order_flow_imbalance(df, lookback=10)
 
     # Overnight gap distribution: |Open[t] - Close[t-1]| / Close[t-1]
     overnight_gap_pct_avg: Optional[float] = None
@@ -820,7 +902,7 @@ def build_snapshot(symbol: str) -> Optional[TechnicalSnapshot]:
     def _r(v, d=4):
         return round(v, d) if v is not None else None
 
-    return TechnicalSnapshot(
+    snap = TechnicalSnapshot(
         symbol=symbol,
         price=round(price, 4),
         atr=_r(atr),
@@ -848,23 +930,36 @@ def build_snapshot(symbol: str) -> Optional[TechnicalSnapshot]:
         lvn_levels=[round(l, 4) for l in lvn_levels],
         vp_bias=vp_bias,
         vp_overextension=_r(vp_overextension, 4) if vp_overextension is not None else None,
+        ema200=_r(ema200, 4) if ema200 is not None else None,
+        volume_ratio=_r(volume_ratio, 4) if volume_ratio is not None else None,
+        ofi_ratio=_r(ofi_ratio, 4) if ofi_ratio is not None else None,
+        macd_hist_slope=_r(macd_hist_slope, 6) if macd_hist_slope is not None else None,
+        rsi_slope=_r(rsi_slope, 4) if rsi_slope is not None else None,
     )
+    _snapshot_persist[symbol] = snap
+    return snap
 
 
 # ---------------------------------------------------------------------------
 # ATR + S/R aware SL/TP
 # ---------------------------------------------------------------------------
 
+# (sl_mult, tp_mult) for long trades
 ATR_MULTIPLIERS = {
-    "conservative": (1.5, 2.5),
-    "moderate":     (2.0, 3.5),
-    "aggressive":   (3.0, 5.0),
+    "conservative": (1.5, 2.0),
+    "moderate":     (2.5, 3.5),  # TP widened 2.5→3.5: base R:R 1.0→1.4; floor at 1.6 targets ~4×ATR TP
+    "aggressive":   (3.0, 4.0),
 }
 
+# Short SL: previously 1.25× (wide) but that pushed TP to 3.75×ATR after R:R floor enforcement,
+# vs 3.0×ATR for longs. In an upward-biased market shorts couldn't reach TP → 71.7% SL hit rate.
+# Equalised to 1.0× so shorts and longs both need ~3×ATR to hit TP after the 1.5 R:R floor.
+SHORT_SL_EXTRA_MULT = 1.0    # short SL = long SL × 1.0  (moderate: 2.0× ATR, same as longs)
+
 FALLBACK_SL_TP = {
-    "conservative": (0.015, 0.03),
-    "moderate":     (0.02, 0.04),
-    "aggressive":   (0.03, 0.06),
+    "conservative": (0.015, 0.025),
+    "moderate":     (0.02,  0.03),
+    "aggressive":   (0.03,  0.05),
 }
 
 
@@ -884,20 +979,40 @@ def compute_atr_levels(
     if snapshot and snapshot.atr and snapshot.atr > 0:
         sl_mult, tp_mult = ATR_MULTIPLIERS.get(risk_tier, ATR_MULTIPLIERS["moderate"])
         atr = snapshot.atr
-        vol_mult = 1.1 if getattr(snapshot, "volatility_regime", "stable") == "contracting" else (
-            0.95 if getattr(snapshot, "volatility_regime", "stable") == "expanding" else 1.0
-        )
-        atr = atr * vol_mult
-        if direction == "short":
-            sl_base = price + atr * sl_mult
-            tp_base = price - atr * tp_mult
+        vol_regime = getattr(snapshot, "volatility_regime", "stable")
+        if vol_regime == "contracting":
+            # Contracting ATR means the market is consolidating — daily moves are SMALLER.
+            # Widen SL (protect against false breakouts) but keep TP at base ATR so it
+            # remains achievable. Applying ×1.1 to TP in a consolidating market places the
+            # target further than the stock typically moves → confirmed negative pnl_r.
+            atr_sl = atr * 1.1
+            atr_tp = atr  # base ATR for TP
+        elif vol_regime == "expanding":
+            atr_sl = atr * 0.95
+            atr_tp = atr * 0.95
         else:
-            sl_base = price - atr * sl_mult
-            tp_base = price + atr * tp_mult
+            atr_sl = atr
+            atr_tp = atr
+
+        # ADX regime-adaptive TP: strong trends sustain momentum past the base ATR target.
+        # ADX >= 40 (strong trend) → widen TP by 10% to capture extended move without
+        # pushing the target so far that it can't be reached in the 30-bar outcome window.
+        # ADX 25–39 (trending)    → no change, base multiplier is correct.
+        # ADX < 20 (ranging)      → direction weights already shift to mean-reversion upstream.
+        if snapshot.adx is not None:
+            adx_val = snapshot.adx[0]
+            if adx_val >= 40:
+                atr_tp *= 1.1
+        if direction == "short":
+            sl_base = price + atr_sl * sl_mult * SHORT_SL_EXTRA_MULT
+            tp_base = price - atr_tp * tp_mult
+        else:
+            sl_base = price - atr_sl * sl_mult
+            tp_base = price + atr_tp * tp_mult
     else:
         sl_pct, tp_pct = FALLBACK_SL_TP.get(risk_tier, FALLBACK_SL_TP["moderate"])
         if direction == "short":
-            sl_base = price * (1 + sl_pct)
+            sl_base = price * (1 + sl_pct * SHORT_SL_EXTRA_MULT)
             tp_base = price * (1 - tp_pct)
         else:
             sl_base = price * (1 - sl_pct)
@@ -927,22 +1042,25 @@ def compute_atr_levels(
                 tp = snapshot.vah * 0.998
 
         else:  # short
-            # SL: prefer nearest HVN above or VAH
+            # SL: only snap to HVN/VAH that is ABOVE sl_base (widens stop to natural resistance).
+            # Do NOT snap to closer HVNs — tightening a short stop increases whipsaw risk.
             for vp_anchor in [snapshot.nearest_hvn_above(), snapshot.vah]:
-                if vp_anchor and vp_anchor > price:
-                    vp_sl = vp_anchor * 1.002
-                    max_sl_dist = price * 1.005
-                    if sl_base > vp_sl > max_sl_dist:
-                        sl = vp_sl
-                        break
+                if vp_anchor and vp_anchor > sl_base:
+                    sl = vp_anchor * 1.002
+                    break
 
             # TP: avoid placing TP inside an HVN below
+            # Guard: snapped TP must remain BELOW entry (short target must be lower than price)
             hvn_below = snapshot.nearest_hvn_below()
             if hvn_below and tp_base < hvn_below < price:
-                tp = hvn_below * 1.003  # just above the HVN
+                candidate = hvn_below * 1.003  # just above the HVN
+                if candidate < price:           # only snap if still below entry
+                    tp = candidate
             # VAL as TP cap: strong support at value area boundary
             if snapshot.val and tp_base < snapshot.val < price:
-                tp = snapshot.val * 1.002
+                candidate = snapshot.val * 1.002
+                if candidate < price:           # only snap if still below entry
+                    tp = candidate
 
     # ── Swing S/R fallback (when VP levels don't apply) ──────────────────────
     if snapshot:
@@ -957,21 +1075,59 @@ def compute_atr_levels(
             resistance = snapshot.nearest_resistance_above()
             if resistance is not None and resistance > price:
                 if resistance < tp_base:
-                    tp = resistance * 0.998
+                    snapped_tp = resistance * 0.998
+                    # Only snap if resulting R:R >= 1.0 — otherwise resistance is too close
+                    sl_dist = abs(price - sl)
+                    tp_dist = abs(snapped_tp - price)
+                    if sl_dist > 0 and tp_dist / sl_dist >= 1.0:
+                        tp = snapped_tp
         else:  # short
             resistance = snapshot.nearest_resistance_above()
             if resistance is not None and resistance > price:
                 sr_sl = resistance * 1.002
-                max_sl = price * 1.005
-                if sr_sl < sl_base and sr_sl > max_sl:
-                    pass
-                elif sr_sl < sl_base:
+                # For shorts: only WIDEN the SL (snap to resistance above sl_base).
+                # Snapping to resistance BELOW sl_base tightens the stop, producing
+                # inflated R:R (TP unchanged but SL shrinks) → trades almost never hit TP.
+                if sr_sl > sl_base:
                     sl = sr_sl
 
             support = snapshot.nearest_support_below()
             if support is not None and support < price:
                 if support > tp_base:
-                    tp = support * 1.002
+                    snapped_tp = support * 1.002
+                    # Guard: TP must remain BELOW entry for short; reject if snapping pushes it above
+                    if snapped_tp >= price:
+                        pass  # support too close to price — keep calculated tp_base
+                    else:
+                        sl_dist = abs(price - sl)
+                        tp_dist = abs(snapped_tp - price)
+                        if sl_dist > 0 and tp_dist / sl_dist >= 1.0:
+                            tp = snapped_tp
+
+    # Final sanity check: for SHORT, TP must be < price; for LONG, TP must be > price.
+    # If any snapping logic produced a wrong-side TP, fall back to base calculation.
+    if direction == "short" and tp >= price:
+        if snapshot and snapshot.atr and snapshot.atr > 0:
+            _, tp_mult = ATR_MULTIPLIERS.get(risk_tier, ATR_MULTIPLIERS["moderate"])
+            tp = price - snapshot.atr * tp_mult
+        else:
+            _, tp_pct = FALLBACK_SL_TP.get(risk_tier, FALLBACK_SL_TP["moderate"])
+            tp = price * (1 - tp_pct)
+    elif direction == "long" and tp <= price:
+        if snapshot and snapshot.atr and snapshot.atr > 0:
+            _, tp_mult = ATR_MULTIPLIERS.get(risk_tier, ATR_MULTIPLIERS["moderate"])
+            tp = price + snapshot.atr * tp_mult
+        else:
+            _, tp_pct = FALLBACK_SL_TP.get(risk_tier, FALLBACK_SL_TP["moderate"])
+            tp = price * (1 + tp_pct)
+
+    # ── Short SL cap: VP/S&R snapping must not widen SL beyond 1.5× ATR base ────
+    # Without this cap, snapping SL to a distant HVN/VAH forces the R:R floor
+    # to stretch TP to 4-6×ATR — rarely reachable, causing the 20-25% short win rate.
+    if direction == "short" and snapshot and snapshot.atr and snapshot.atr > 0:
+        sl_mult_used, _ = ATR_MULTIPLIERS.get(risk_tier, ATR_MULTIPLIERS["moderate"])
+        short_sl_cap = price + atr_sl * sl_mult_used * SHORT_SL_EXTRA_MULT * 1.5
+        sl = min(sl, short_sl_cap)
 
     return round(sl, 2), round(tp, 2)
 
@@ -1091,6 +1247,18 @@ def determine_direction(
 
     if snapshot:
         trend_mult, mean_rev_mult = _regime_tech_weights(regime)
+
+        # ADX-adaptive weighting: in strong trends, trust trend indicators more;
+        # in ranging markets (ADX < 20), lean on mean-reversion signals instead.
+        if snapshot.adx is not None:
+            _adx_val = snapshot.adx[0]
+            if _adx_val > 25:
+                trend_mult = min(1.5, trend_mult + 0.15)
+                mean_rev_mult = max(0.70, mean_rev_mult - 0.15)
+            elif _adx_val < 20:
+                trend_mult = max(0.70, trend_mult - 0.15)
+                mean_rev_mult = min(1.30, mean_rev_mult + 0.15)
+
         trend_sum = 0.0
         trend_count = 0
         mean_rev_sum = 0.0
@@ -1195,13 +1363,16 @@ def get_indicator_conflict_penalty(
         elif not is_long and hist > 0:
             penalty += 7
 
-    # ADX DI: -DI > +DI suggests bearish trend; +DI > -DI suggests bullish
+    # ADX DI: -DI > +DI suggests bearish trend; +DI > -DI suggests bullish.
+    # Gate on ADX > 20: industry consensus is that below 20 there is no meaningful trend
+    # and DI crossovers are pure whipsaw noise that corrupt the conflict score.
     if snapshot.adx is not None:
-        _, plus_di, minus_di = snapshot.adx
-        if is_long and minus_di > plus_di:
-            penalty += 5
-        elif not is_long and plus_di > minus_di:
-            penalty += 5
+        adx_val, plus_di, minus_di = snapshot.adx
+        if adx_val > 20:
+            if is_long and minus_di > plus_di:
+                penalty += 5
+            elif not is_long and plus_di > minus_di:
+                penalty += 5
 
     # Stochastic vs direction: overbought + long, or oversold + short
     if snapshot.stochastic is not None:
@@ -1219,7 +1390,7 @@ def get_indicator_conflict_penalty(
             penalty += 5
 
     scaled = int(round(penalty * max(0.0, min(1.5, penalty_scale))))
-    return min(25, scaled)
+    return min(30, scaled)  # raised from 25: full conflict set can now score up to 30
 
 
 # ---------------------------------------------------------------------------
@@ -1294,14 +1465,17 @@ def compute_confidence(
             elif snapshot.rsi > rsi_bull:
                 points += 8
 
-    # MACD alignment (15 pts)
+    # MACD alignment (15 pts; discounted to 7 when ADX < 20 — ranging markets generate
+    # frequent false MACD crossovers, so the signal carries less weight there)
     max_points += 15
     if snapshot.macd is not None:
         _, _, hist = snapshot.macd
+        adx_now = snapshot.adx[0] if snapshot.adx is not None else 25
+        macd_max = 15 if adx_now >= 20 else 7
         if (is_long and hist > 0) or (not is_long and hist < 0):
-            points += 15
+            points += macd_max
         elif abs(hist) / max(snapshot.price, 1) < 0.001:
-            points += 5  # near crossover
+            points += min(5, macd_max // 2)  # near crossover — proportionally scaled
 
     # Stochastic alignment (10 pts) — regime-specific thresholds
     max_points += 10
@@ -1345,6 +1519,38 @@ def compute_confidence(
         if (is_long and snapshot.price_above_vwap) or (not is_long and not snapshot.price_above_vwap):
             points += 5
 
+    # EMA200 macro trend filter (10 pts when aligned; -8 when trading against macro trend).
+    # Most widely validated long/short gate in the literature: price above EMA200 = long bias,
+    # price below EMA200 = short bias. Absent for assets with < 200 days of history.
+    if snapshot.ema200 is not None:
+        max_points += 10
+        price_above_ema200 = snapshot.price > snapshot.ema200
+        if (is_long and price_above_ema200) or (not is_long and not price_above_ema200):
+            points += 10
+        else:
+            # Counter-trend trade: penalise in addition to not earning the 10 pts
+            points = max(0.0, points - 8)
+
+    # Indicator consensus check: count how many of 5 key indicators agree with direction.
+    # Low consensus means the direction call is a coin-flip — penalise before conflict penalty.
+    if snapshot:
+        agree = 0
+        if snapshot.macd is not None:
+            agree += 1 if (is_long and snapshot.macd[2] > 0) or (not is_long and snapshot.macd[2] < 0) else 0
+        if snapshot.adx is not None:
+            _, plus_di, minus_di = snapshot.adx
+            agree += 1 if (is_long and plus_di > minus_di) or (not is_long and minus_di > plus_di) else 0
+        if snapshot.obv is not None:
+            agree += 1 if (is_long and snapshot.obv[1] > 0) or (not is_long and snapshot.obv[1] < 0) else 0
+        if snapshot.rsi is not None:
+            agree += 1 if (is_long and snapshot.rsi >= 50) or (not is_long and snapshot.rsi < 50) else 0
+        if snapshot.stochastic is not None:
+            k, _ = snapshot.stochastic
+            agree += 1 if (is_long and k >= 50) or (not is_long and k < 50) else 0
+        # < 3/5 indicators agree → direction is a coin-flip, penalise heavily
+        if agree < 3:
+            points = max(0.0, points - 12)
+
     # Indicator conflict penalty: reduce score when key indicators disagree with direction
     conflict_penalty = get_indicator_conflict_penalty(
         snapshot, direction, regime, penalty_scale=indicator_conflict_multiplier
@@ -1362,12 +1568,15 @@ def compute_technical_score(
     sentiment_avg: Optional[float],
     sentiment_count: int,
     snapshot: Optional[TechnicalSnapshot] = None,
+    direction: str = "long",
 ) -> float:
     """
     Combined ranking score. Higher = stronger signal. Range roughly -3 to +4.
+    Direction-aware: overbought RSI rewards shorts, not longs. Oversold rewards longs.
     Enhanced with ADX, Stochastic, OBV, and trend strength.
     """
     score = 0.0
+    long = direction == "long"
 
     if sentiment_avg is not None:
         score += sentiment_avg * 1.5
@@ -1378,23 +1587,40 @@ def compute_technical_score(
     if not snapshot:
         return score
 
-    # RSI extremes
+    # RSI extremes — direction-aware: oversold favors longs, overbought favors shorts
     if snapshot.rsi is not None:
-        if snapshot.rsi > 70 or snapshot.rsi < 30:
-            score += 0.5
-        elif snapshot.rsi > 60 or snapshot.rsi < 40:
-            score += 0.2
+        if long:
+            if snapshot.rsi < 30:
+                score += 0.5   # oversold — mean reversion long setup
+            elif snapshot.rsi < 40:
+                score += 0.2
+            elif snapshot.rsi > 70:
+                score -= 0.3   # overbought — bad for long entry
+        else:
+            if snapshot.rsi > 70:
+                score += 0.5   # overbought — mean reversion short setup
+            elif snapshot.rsi > 60:
+                score += 0.2
+            elif snapshot.rsi < 30:
+                score -= 0.3   # oversold — bad for short entry
 
-    # MACD momentum
+    # MACD momentum — reward aligned histogram direction
     if snapshot.macd is not None:
         price = snapshot.price if snapshot.price > 0 else 1
-        score += min(0.4, abs(snapshot.macd[2]) / price * 100)
+        hist = snapshot.macd[2]
+        magnitude = min(0.4, abs(hist) / price * 100)
+        if (long and hist > 0) or (not long and hist < 0):
+            score += magnitude   # histogram aligned with direction
+        else:
+            score -= magnitude * 0.5  # histogram against direction
 
-    # Bollinger extremes
-    if snapshot.near_upper_band or snapshot.near_lower_band:
-        score += 0.3
+    # Bollinger extremes — direction-aware
+    if long and snapshot.near_lower_band:
+        score += 0.3   # near lower band = potential long setup
+    elif not long and snapshot.near_upper_band:
+        score += 0.3   # near upper band = potential short setup
 
-    # ADX: strong trends get a boost
+    # ADX: strong trends get a boost (direction-agnostic — ADX measures strength not direction)
     if snapshot.adx is not None:
         adx_val = snapshot.adx[0]
         if adx_val >= 40:
@@ -1402,15 +1628,36 @@ def compute_technical_score(
         elif adx_val >= 25:
             score += 0.3
 
-    # Stochastic extremes
+    # Stochastic extremes — direction-aware
     if snapshot.stochastic is not None:
         k, _ = snapshot.stochastic
-        if k > 80 or k < 20:
-            score += 0.3
+        if long and k < 20:
+            score += 0.3   # oversold stochastic = long setup
+        elif not long and k > 80:
+            score += 0.3   # overbought stochastic = short setup
 
-    # OBV momentum
+    # OBV momentum — direction-aware
     if snapshot.obv is not None and snapshot.obv[1] != 0:
-        score += 0.2
+        slope = snapshot.obv[1]
+        if (long and slope > 0) or (not long and slope < 0):
+            score += 0.2
+        else:
+            score -= 0.1
+
+    # MACD histogram slope — soft momentum acceleration bonus (not a hard gate)
+    # Increasing histogram in trade direction = momentum building → small score boost
+    if snapshot.macd_hist_slope is not None:
+        slope = snapshot.macd_hist_slope
+        if (long and slope > 0) or (not long and slope < 0):
+            score += 0.15  # momentum accelerating in trade direction
+        elif (long and slope < 0) or (not long and slope > 0):
+            score -= 0.1   # momentum fading — soft penalty, not a block
+
+    # RSI slope — soft directional momentum bonus
+    if snapshot.rsi_slope is not None:
+        rslope = snapshot.rsi_slope
+        if (long and rslope > 0.5) or (not long and rslope < -0.5):
+            score += 0.1   # RSI trending in trade direction
 
     return round(score, 4)
 

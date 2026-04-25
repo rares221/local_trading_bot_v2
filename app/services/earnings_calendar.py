@@ -7,8 +7,6 @@ import time
 from datetime import date
 from typing import Optional
 
-import yfinance as yf
-
 logger = logging.getLogger(__name__)
 
 _CACHE: dict[str, tuple[Optional[date], float]] = {}
@@ -16,52 +14,9 @@ _TTL_SECONDS = 86_400  # 24 hours
 
 
 def _fetch_next_earnings(symbol: str) -> Optional[date]:
-    """Fetch the next upcoming earnings date from yfinance. Returns None if unavailable."""
-    try:
-        ticker = yf.Ticker(symbol)
-        cal = ticker.calendar
-        if cal is None:
-            return None
-
-        today = date.today()
-
-        # Modern yfinance: dict with 'Earnings Date' key containing list of Timestamps
-        if isinstance(cal, dict):
-            earnings_dates = cal.get("Earnings Date") or []
-            if not isinstance(earnings_dates, (list, tuple)):
-                earnings_dates = [earnings_dates]
-            for e in earnings_dates:
-                try:
-                    if hasattr(e, "date"):
-                        d = e.date()
-                    else:
-                        d = date.fromisoformat(str(e)[:10])
-                    if d >= today:
-                        return d
-                except Exception:
-                    continue
-            return None
-
-        # Older yfinance: DataFrame
-        if hasattr(cal, "columns"):
-            col = None
-            for c in cal.columns:
-                if "earnings" in str(c).lower():
-                    col = c
-                    break
-            if col is not None:
-                for val in cal[col]:
-                    try:
-                        d = val.date() if hasattr(val, "date") else date.fromisoformat(str(val)[:10])
-                        if d >= today:
-                            return d
-                    except Exception:
-                        continue
-
-        return None
-    except Exception as exc:
-        logger.debug("[EARNINGS] %s: fetch failed: %s", symbol, exc)
-        return None
+    """Fetch the next upcoming earnings date via market_data routing layer."""
+    from app.services.market_data import fetch_next_earnings
+    return fetch_next_earnings(symbol)
 
 
 def get_next_earnings(symbol: str) -> Optional[date]:

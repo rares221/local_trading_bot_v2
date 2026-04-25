@@ -12,6 +12,7 @@ alembic>=1.13.0
 feedparser>=6.0.10
 httpx>=0.26.0
 yfinance>=0.2.36
+finnhub-python>=2.4.19
 pandas>=2.0.0
 
 # Phase 1: sentiment
@@ -28,6 +29,9 @@ pydantic-settings>=2.1.0
 # Research rationale (Option B): multi-provider LLM (OpenAI, Anthropic, Ollama, OpenRouter)
 openai>=1.12.0
 anthropic>=0.39.0
+
+# Live Trading — real-time stream
+sse-starlette>=1.6.5
 
 # Testing
 pytest>=8.0.0
