@@ -47,6 +47,14 @@ def _sanitize_metrics(obj: Any) -> Any:
 # key: f"{asset_id}:{direction}:{risk_tier}" → {"status": "pending"|"done"|"error", "result": dict|None}
 _insight_cache: dict[str, dict] = {}
 
+# Live progress for running backtests — updated from the executor thread via progress_callback
+# key: run_id → {"phase": "prefetch"|"replay"|"done", "current": int, "total": int}
+_backtest_progress: dict[str, dict] = {}
+
+# Live progress for walk-forward runs
+# key: run_id → {"phase": "prefetch"|"windows"|"done"|"failed", "current": int, "total": int}
+_walkforward_progress: dict[str, dict] = {}
+
 DISCLAIMER = (
     "Backtesting results are for educational purposes only. Past performance does not "
     "guarantee future results. Backtests do not account for slippage, commissions, or "
@@ -254,6 +262,15 @@ async def delete_backtest_run(run_id: str, db: AsyncSession = Depends(get_db)) -
     return {"deleted": run_id}
 
 
+@router.get("/backtest/status/{run_id}")
+async def get_backtest_status(run_id: str) -> dict[str, Any]:
+    """Live progress for a running backtest. Polled every 2s by the frontend progress bar."""
+    progress = _backtest_progress.get(run_id)
+    if progress is None:
+        return {"run_id": run_id, "phase": "unknown", "current": 0, "total": 0}
+    return {"run_id": run_id, **progress}
+
+
 @router.get("/backtest/quick")
 async def quick_backtest(
     asset_id: str,
@@ -451,17 +468,13 @@ async def get_backtest_insight(asset_id: str, direction: str = "long", risk_tier
 @router.post("/backtest/walkforward")
 async def start_walkforward(
     body: WalkForwardRequest = Body(...),
+    db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """
-    Walk-forward analysis: splits [start_date, end_date] into rolling IS/OOS windows
-    and compares in-sample vs out-of-sample performance.
-
-    Industry-standard method for detecting overfitting. A degradation_ratio >= 0.85 means
-    the strategy is robust; below 0.70 suggests the parameters are curve-fit to the IS data.
-
-    Runs synchronously (blocks until complete). Expect 5–15 minutes for 3+ year ranges.
+    Start walk-forward analysis in the background. Returns run_id immediately.
+    Poll GET /api/backtest/walkforward/status/{run_id} for progress and results.
     """
-    from app.services.backtesting.replay import run_walkforward_backtest
+    from app.models.walkforward import WalkForwardRun
 
     try:
         start = date.fromisoformat(body.start_date)
@@ -471,29 +484,121 @@ async def start_walkforward(
 
     if start >= end:
         raise HTTPException(status_code=422, detail="start_date must be before end_date")
-
     if (end - start).days > 1825:
         raise HTTPException(status_code=422, detail="Date range too wide (max ~5 years)")
-
     if body.in_sample_days < 63:
         raise HTTPException(status_code=422, detail="in_sample_days must be >= 63")
-
     if body.out_sample_days < 21:
         raise HTTPException(status_code=422, detail="out_sample_days must be >= 21")
 
-    loop = asyncio.get_event_loop()
-    try:
-        result = await loop.run_in_executor(
-            None,
-            lambda: _run_walkforward_sync(body, start, end),
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Walk-forward failed: {e}")
+    run_id = str(uuid4())
+    run = WalkForwardRun(
+        id=run_id,
+        created_at=datetime.now(timezone.utc),
+        start_date=start,
+        end_date=end,
+        risk_tier=body.risk_tier,
+        min_confidence=body.min_confidence,
+        in_sample_days=body.in_sample_days,
+        out_sample_days=body.out_sample_days,
+        status="running",
+    )
+    db.add(run)
+    await db.commit()
 
-    return {**result, "disclaimer": DISCLAIMER}
+    asyncio.create_task(_run_walkforward_background(run_id, body, start, end))
+
+    return {
+        "run_id": run_id,
+        "status": "running",
+        "message": f"Walk-forward started. Poll GET /api/backtest/walkforward/status/{run_id} for progress.",
+    }
 
 
-def _run_walkforward_sync(body: WalkForwardRequest, start: date, end: date) -> dict:
+@router.get("/backtest/walkforward/status/{run_id}")
+async def get_walkforward_status(run_id: str, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    """Live progress for a running walk-forward. Polled every 2s by the frontend."""
+    from app.models.walkforward import WalkForwardRun
+
+    progress = _walkforward_progress.get(run_id, {})
+    result = await db.execute(select(WalkForwardRun).where(WalkForwardRun.id == run_id))
+    run = result.scalar_one_or_none()
+    if not run:
+        return {"run_id": run_id, "status": "not_found", "phase": "unknown", "current": 0, "total": 0}
+
+    response: dict[str, Any] = {
+        "run_id": run_id,
+        "status": run.status,
+        "phase": progress.get("phase", "unknown"),
+        "current": progress.get("current", 0),
+        "total": progress.get("total", 0),
+        "error_message": run.error_message,
+    }
+    if run.status == "completed":
+        response["result"] = run.result
+        response["degradation_ratio"] = run.degradation_ratio
+        response["robustness"] = run.robustness
+        response["total_windows"] = run.total_windows
+    return response
+
+
+@router.get("/backtest/walkforward/runs")
+async def list_walkforward_runs(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    """List past walk-forward runs, newest first."""
+    from app.models.walkforward import WalkForwardRun
+
+    result = await db.execute(
+        select(WalkForwardRun).order_by(WalkForwardRun.created_at.desc()).limit(20)
+    )
+    runs = result.scalars().all()
+    return {
+        "runs": [
+            {
+                "id": r.id,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "start_date": r.start_date.isoformat() if r.start_date else None,
+                "end_date": r.end_date.isoformat() if r.end_date else None,
+                "status": r.status,
+                "risk_tier": r.risk_tier,
+                "in_sample_days": r.in_sample_days,
+                "out_sample_days": r.out_sample_days,
+                "total_windows": r.total_windows,
+                "degradation_ratio": r.degradation_ratio,
+                "robustness": r.robustness,
+            }
+            for r in runs
+        ]
+    }
+
+
+@router.get("/backtest/walkforward/runs/{run_id}")
+async def get_walkforward_run(run_id: str, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    """Full result for a specific walk-forward run."""
+    from app.models.walkforward import WalkForwardRun
+
+    result = await db.execute(select(WalkForwardRun).where(WalkForwardRun.id == run_id))
+    run = result.scalar_one_or_none()
+    if not run:
+        raise HTTPException(status_code=404, detail="Walk-forward run not found")
+    return {
+        "id": run.id,
+        "created_at": run.created_at.isoformat() if run.created_at else None,
+        "start_date": run.start_date.isoformat() if run.start_date else None,
+        "end_date": run.end_date.isoformat() if run.end_date else None,
+        "status": run.status,
+        "error_message": run.error_message,
+        "risk_tier": run.risk_tier,
+        "in_sample_days": run.in_sample_days,
+        "out_sample_days": run.out_sample_days,
+        "total_windows": run.total_windows,
+        "degradation_ratio": run.degradation_ratio,
+        "robustness": run.robustness,
+        "result": run.result,
+        "disclaimer": DISCLAIMER,
+    }
+
+
+def _run_walkforward_in_thread(body: WalkForwardRequest, start: date, end: date, progress_callback: Any) -> dict:
     from app.services.backtesting.replay import run_walkforward_backtest
     with _backtest_lock:
         return run_walkforward_backtest(
@@ -505,7 +610,57 @@ def _run_walkforward_sync(body: WalkForwardRequest, start: date, end: date) -> d
             period=body.period,
             in_sample_days=body.in_sample_days,
             out_sample_days=body.out_sample_days,
+            progress_callback=progress_callback,
         )
+
+
+async def _run_walkforward_background(run_id: str, body: WalkForwardRequest, start: date, end: date) -> None:
+    from app.core.database import AsyncSessionLocal
+    from app.models.walkforward import WalkForwardRun
+
+    try:
+        _walkforward_progress[run_id] = {"phase": "prefetch", "current": 0, "total": 0}
+
+        def _progress_cb(current: int, total: int) -> None:
+            _walkforward_progress[run_id] = {"phase": "windows", "current": current, "total": total}
+
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: _run_walkforward_in_thread(body, start, end, _progress_cb),
+        )
+
+        _walkforward_progress[run_id] = {"phase": "done", "current": 1, "total": 1}
+
+        async with AsyncSessionLocal() as db:
+            run_result = await db.execute(select(WalkForwardRun).where(WalkForwardRun.id == run_id))
+            run = run_result.scalar_one_or_none()
+            if run:
+                run.status = "completed"
+                run.total_windows = result.get("total_windows", 0)
+                run.degradation_ratio = result.get("degradation_ratio")
+                run.robustness = result.get("robustness")
+                run.result_json = json.dumps(_sanitize_metrics(result))
+            await db.commit()
+
+        logger.info("[WF] Run %s completed: %d windows, degradation=%.3f",
+                    run_id, result.get("total_windows", 0), result.get("degradation_ratio") or 0)
+
+    except Exception as e:
+        logger.exception("[WF] Run %s failed: %s", run_id, e)
+        _walkforward_progress[run_id] = {"phase": "failed", "current": 0, "total": 0}
+        try:
+            from app.core.database import AsyncSessionLocal
+            from app.models.walkforward import WalkForwardRun
+            async with AsyncSessionLocal() as db:
+                run_result = await db.execute(select(WalkForwardRun).where(WalkForwardRun.id == run_id))
+                run = run_result.scalar_one_or_none()
+                if run:
+                    run.status = "failed"
+                    run.error_message = str(e)[:500]
+                await db.commit()
+        except Exception:
+            pass
 
 
 def _compute_current_signal(symbol: str, risk_tier: str, by_asset_sentiment: dict) -> Optional[dict]:
@@ -571,6 +726,11 @@ async def _run_backtest_background(run_id: str, body: BacktestRequest) -> None:
         start = date.fromisoformat(body.start_date)
         end = date.fromisoformat(body.end_date)
 
+        _backtest_progress[run_id] = {"phase": "prefetch", "current": 0, "total": 0}
+
+        def _progress_cb(current: int, total: int) -> None:
+            _backtest_progress[run_id] = {"phase": "replay", "current": current, "total": total}
+
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
             None,
@@ -581,8 +741,11 @@ async def _run_backtest_background(run_id: str, body: BacktestRequest) -> None:
                 risk_tier=body.risk_tier,
                 min_confidence=body.min_confidence,
                 period=body.period,
+                progress_callback=_progress_cb,
             ),
         )
+
+        _backtest_progress[run_id] = {"phase": "done", "current": 1, "total": 1}
 
         signals = result.get("signals", [])
         metrics = result.get("metrics", {})

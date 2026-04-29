@@ -536,6 +536,7 @@ def run_walkforward_backtest(
     in_sample_days: int = 252,   # 1 year in-sample
     out_sample_days: int = 63,   # 1 quarter out-of-sample
     max_outcome_bars: int = OUTCOME_MAX_BARS,
+    progress_callback: Optional[Any] = None,
 ) -> dict[str, Any]:
     """
     Walk-forward analysis: split the date range into rolling IS/OOS windows
@@ -602,6 +603,12 @@ def run_walkforward_backtest(
     window_results = []
 
     for w_idx, w in enumerate(windows):
+        if progress_callback:
+            try:
+                progress_callback(w_idx + 1, len(windows))
+            except Exception:
+                pass
+
         is_start, is_end = w["is_start"], w["is_end"]
         oos_start, oos_end = w["oos_start"], w["oos_end"]
 
