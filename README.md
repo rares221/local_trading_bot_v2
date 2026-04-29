@@ -192,6 +192,12 @@ Database volume (`timescale_data`) is managed by Docker/Podman and persists acro
 
 ---
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for branch rules, the baseline/verification checklist, signal engine contribution rules, and PR requirements.
+
+---
+
 ## Disclaimer
 
 All analysis and recommendations are for **educational and research purposes only**. Past backtest performance does not guarantee future results. Not financial advice.
