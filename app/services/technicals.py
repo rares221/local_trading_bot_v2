@@ -81,7 +81,7 @@ def fetch_ohlcv(symbol: str, period: str = "90d", interval: Optional[str] = None
     actual_period = "30d" if use_interval == "1h" else period
     df = _md_fetch(symbol, period=actual_period, interval=use_interval)
     if df is None or df.empty or "Close" not in df.columns:
-        cache[cache_key] = pd.DataFrame()
+        # Don't cache failures — transient yfinance errors would stick until clear_cache().
         return None
     cache[cache_key] = df
     return _apply_backtest_cutoff(df)

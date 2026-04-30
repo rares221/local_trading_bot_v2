@@ -77,7 +77,7 @@ _DEFAULT_BLOCKLIST = frozenset({
     # Broker / exchange / regulatory acronyms (not Yahoo-resolvable tickers)
     "OANDA", "AMEX", "CFTC", "AFSL", "FINRA", "SIPC", "ESMA", "MIFID", "FSCA",
     # Financial metric acronyms (APY, APR etc. — not stock tickers)
-    "APY", "APR", "NAV", "AUM", "IRR", "EBIT", "EBITDA", "EBITA", "CAPEX", "OPEX",
+    "APY", "APR", "NAV", "AUM", "IRR", "EBIT", "EBITDA", "EBITA", "CAPEX", "OPEX", "TTM", "ROIC",
     # Currency codes missing from original list (caused $AUD/$FX spam)
     "AUD", "NZD", "CHF", "CNY", "CNH", "HKD", "SGD", "INR", "BRL", "RUB", "MXN",
     "ZAR", "KRW", "TRY", "SEK", "NOK", "DKK", "PLN", "HUF", "CZK", "ILS", "THB",
