@@ -14,6 +14,7 @@ historical sentiment into the confidence computation.
 """
 from __future__ import annotations
 
+import calendar
 import logging
 from datetime import date
 from typing import Any, Optional
@@ -338,6 +339,14 @@ def _build_signal(
     if snap.rsi is not None and snap.rsi_slope is not None:
         if direction == "long" and snap.rsi_slope > 0 and snap.rsi < 65:
             confidence = min(100, confidence + 4)
+    # Triple-confluence bonus (+5 pts): MACD histogram > 0 + RSI > 50 + volume above average — all three bullish.
+    if direction == "long" and snap.macd is not None and snap.rsi is not None and snap.volume_ratio is not None:
+        if snap.macd[2] > 0 and snap.rsi > 50 and snap.volume_ratio > 1.0:
+            confidence = min(100, confidence + 5)
+    # Turn-of-month bonus (+2 pts): first 3 / last 2 calendar days — institutional inflows / window dressing.
+    _last_dom = calendar.monthrange(sim_date.year, sim_date.month)[1]
+    if sim_date.day <= 3 or sim_date.day >= _last_dom - 1:
+        confidence = min(100, confidence + 2)
     if direction == "long" and snap.pct_from_52w_high is not None:
         vol_ok = snap.volume_ratio is None or snap.volume_ratio >= 1.0
         if snap.pct_from_52w_high <= 0.03 and vol_ok:

@@ -13,6 +13,7 @@ Skip reasons include ``exclude_taken`` (``status=taken`` for that category+asset
 ``phase`` ideas|backfill), ``skip_backfill_already_in_ideas``, ``risk_tier_above_preference``,
 ``batch_duplicate_asset``, plus existing gates (confidence, R:R, correlation, etc.).
 """
+import calendar
 import json
 import logging
 from contextvars import ContextVar
@@ -1455,6 +1456,19 @@ def _build_candidate(
         if direction == "long" and snap.rsi_slope > 0 and snap.rsi < 65:
             confidence = min(100, confidence + 4)
             _bonus_parts.append(f"rsi_momentum=+4 (slope={snap.rsi_slope:+.1f})")
+
+    # Item 5b — Triple-confluence bonus (+5 pts): MACD histogram > 0 + RSI > 50 + volume above average.
+    if direction == "long" and snap and snap.macd is not None and snap.rsi is not None and snap.volume_ratio is not None:
+        if snap.macd[2] > 0 and snap.rsi > 50 and snap.volume_ratio > 1.0:
+            confidence = min(100, confidence + 5)
+            _bonus_parts.append("triple_confluence=+5")
+
+    # Turn-of-month bonus (+2 pts): first 3 / last 2 calendar days — institutional inflows / window dressing.
+    _today = date.today()
+    _last_dom = calendar.monthrange(_today.year, _today.month)[1]
+    if _today.day <= 3 or _today.day >= _last_dom - 1:
+        confidence = min(100, confidence + 2)
+        _bonus_parts.append("turn_of_month=+2")
 
     # Item 6 — 52-week high proximity bonus (+8 pts):
     # Research: stocks within 5% of 52-week high with volume >1.5× show 72% WR over ~28 days.
