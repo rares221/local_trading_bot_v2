@@ -115,6 +115,7 @@ def run_backtest(
     # Step 2b: Build regime calendar for all trading days (vectorized, efficient)
     regime_calendar: dict = build_regime_calendar(trading_days, ohlcv_data)
 
+
     # Sort sentiment_history ascending by datetime for bisect lookups.
     # Normalize all timestamps to UTC-aware to avoid naive/aware comparison crashes.
     _sent_hist: list[tuple[pd.Timestamp, dict]] = []
@@ -343,6 +344,12 @@ def _build_signal(
     if direction == "long" and snap.macd is not None and snap.rsi is not None and snap.volume_ratio is not None:
         if snap.macd[2] > 0 and snap.rsi > 50 and snap.volume_ratio > 1.0:
             confidence = min(100, confidence + 5)
+    # ATR percentile regime: high-vol (>75th pct) = elevated risk, penalize longs; low-vol (<25th pct) = reward.
+    if snap.atr_percentile is not None:
+        if snap.atr_percentile > 0.75:
+            confidence = max(0, confidence - 3)
+        elif snap.atr_percentile < 0.25:
+            confidence = min(100, confidence + 3)
     # Turn-of-month bonus (+2 pts): first 3 / last 2 calendar days — institutional inflows / window dressing.
     _last_dom = calendar.monthrange(sim_date.year, sim_date.month)[1]
     if sim_date.day <= 3 or sim_date.day >= _last_dom - 1:
@@ -376,6 +383,7 @@ def _build_signal(
         if (direction == "long" and snap.vp_bias == "below_vpoc") or \
            (direction == "short" and snap.vp_bias == "above_vpoc"):
             confidence = min(100, confidence + 4)
+
 
     # Relative Strength walk-forward (fetch_ohlcv respects _backtest_cutoff)
     rs_20d = None

@@ -1463,6 +1463,15 @@ def _build_candidate(
             confidence = min(100, confidence + 5)
             _bonus_parts.append("triple_confluence=+5")
 
+    # Item 5c — ATR percentile regime: high-vol (>75th pct) penalizes longs; low-vol (<25th pct) rewards.
+    if snap and snap.atr_percentile is not None:
+        if snap.atr_percentile > 0.75:
+            confidence = max(0, confidence - 3)
+            _bonus_parts.append(f"atr_regime=-3 (high_vol pct={snap.atr_percentile:.2f})")
+        elif snap.atr_percentile < 0.25:
+            confidence = min(100, confidence + 3)
+            _bonus_parts.append(f"atr_regime=+3 (low_vol pct={snap.atr_percentile:.2f})")
+
     # Turn-of-month bonus (+2 pts): first 3 / last 2 calendar days — institutional inflows / window dressing.
     _today = date.today()
     _last_dom = calendar.monthrange(_today.year, _today.month)[1]
