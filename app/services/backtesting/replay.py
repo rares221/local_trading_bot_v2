@@ -385,6 +385,35 @@ def _build_signal(
             confidence = min(100, confidence + 4)
 
 
+    # Multi-timeframe alignment bonus: mirrors engine.py check_trend_alignment().
+    # Uses already-filtered `available` df (walk-forward safe). 4H component skipped —
+    # no intraday data in replay; daily+weekly agreement is the meaningful signal.
+    # --- MIRRORED FROM engine.py ---
+    _mtf_aligned = False
+    if df is not None and len(available) >= 50:
+        _close = available["Close"]
+        _current = float(_close.iloc[-1])
+        _e20 = float(_close.ewm(span=20, adjust=False).mean().iloc[-1])
+        _e50 = float(_close.ewm(span=50, adjust=False).mean().iloc[-1])
+        if _current > _e20 > _e50:
+            _daily_trend = "bullish"
+        elif _current < _e20 < _e50:
+            _daily_trend = "bearish"
+        else:
+            _daily_trend = "neutral"
+        _weekly_trend = "neutral"
+        if len(_close) >= 200:
+            _sma200 = _close.rolling(200).mean()
+            _s200_now = float(_sma200.iloc[-1])
+            _s200_20ago = float(_sma200.iloc[-20]) if len(_sma200) >= 20 else _s200_now
+            if _s200_now > _s200_20ago * 1.005:
+                _weekly_trend = "bullish"
+            elif _s200_now < _s200_20ago * 0.995:
+                _weekly_trend = "bearish"
+        _mtf_aligned = _daily_trend == _weekly_trend and _daily_trend != "neutral"
+    if _mtf_aligned:
+        confidence = min(100, confidence + pol.mtf_aligned_confidence_bonus)
+
     # Relative Strength walk-forward (fetch_ohlcv respects _backtest_cutoff)
     rs_20d = None
     if category in _STOCK_CATEGORIES:
