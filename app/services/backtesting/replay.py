@@ -289,10 +289,16 @@ def _build_signal(
     # --- MIRRORED FROM engine.py ---
     category = _guess_category(symbol)
     pol = get_asset_class_policy(category, symbol)
-    _obv_penalty = 5 if (direction == "long" and snap.obv_confirming_down) else 0
+    _obv_penalty = 0
+    if direction == "long" and snap.obv_confirming_down:
+        _obv_penalty = 5
+    elif direction == "short" and snap.obv_confirming_up:
+        _obv_penalty = 5
     _macd_decay_penalty = 0
-    if direction == "long" and snap.macd is not None and snap.macd_hist_slope is not None:
-        if snap.macd[2] > 0 and snap.macd_hist_slope < 0:
+    if snap.macd is not None and snap.macd_hist_slope is not None:
+        if direction == "long" and snap.macd[2] > 0 and snap.macd_hist_slope < 0:
+            _macd_decay_penalty = 5
+        elif direction == "short" and snap.macd[2] < 0 and snap.macd_hist_slope > 0:
             _macd_decay_penalty = 5
     _rsi_slope_penalty = 0
     if snap.rsi is not None and snap.rsi_slope is not None:
@@ -331,18 +337,24 @@ def _build_signal(
         confidence = max(0, confidence - _new_filter_penalty)
 
     # Signal bonuses (mirrors engine.py)
-    if direction == "long" and snap.macd is not None and snap.rsi is not None:
-        if snap.macd[2] > 0 and 45 <= snap.rsi <= 65:
+    if snap.macd is not None and snap.rsi is not None:
+        if direction == "long" and snap.macd[2] > 0 and 45 <= snap.rsi <= 65:
+            confidence = min(100, confidence + 6)
+        elif direction == "short" and snap.macd[2] < 0 and 35 <= snap.rsi <= 55:
             confidence = min(100, confidence + 6)
     if snap.volume_ratio is not None and snap.volume_ratio > 1.5:
         confidence = min(100, confidence + 5)
-    # RSI momentum bonus (+4 pts): positive slope + non-overbought. Penalties pooled above.
+    # RSI momentum bonus (+4 pts): slope in trade direction + RSI not at extreme.
     if snap.rsi is not None and snap.rsi_slope is not None:
         if direction == "long" and snap.rsi_slope > 0 and snap.rsi < 65:
             confidence = min(100, confidence + 4)
-    # Triple-confluence bonus (+5 pts): MACD histogram > 0 + RSI > 50 + volume above average — all three bullish.
-    if direction == "long" and snap.macd is not None and snap.rsi is not None and snap.volume_ratio is not None:
-        if snap.macd[2] > 0 and snap.rsi > 50 and snap.volume_ratio > 1.0:
+        elif direction == "short" and snap.rsi_slope < 0 and snap.rsi > 35:
+            confidence = min(100, confidence + 4)
+    # Triple-confluence bonus (+5 pts): all three indicators aligned with direction.
+    if snap.macd is not None and snap.rsi is not None and snap.volume_ratio is not None:
+        if direction == "long" and snap.macd[2] > 0 and snap.rsi > 50 and snap.volume_ratio > 1.0:
+            confidence = min(100, confidence + 5)
+        elif direction == "short" and snap.macd[2] < 0 and snap.rsi < 50 and snap.volume_ratio > 1.0:
             confidence = min(100, confidence + 5)
     # ATR percentile regime: high-vol (>75th pct) = elevated risk, penalize longs; low-vol (<25th pct) = reward.
     if snap.atr_percentile is not None:
@@ -360,12 +372,19 @@ def _build_signal(
             confidence = min(100, confidence + 8)
         elif snap.pct_from_52w_high <= 0.08 and vol_ok:
             confidence = min(100, confidence + 4)
-    if direction == "long" and snap.ema200 is not None and snap.ema200 > 0:
-        ema_dist = (snap.price - snap.ema200) / snap.ema200
-        if 0.02 <= ema_dist <= 0.10:
-            confidence = min(100, confidence + 3)
-        elif ema_dist > 0.15:
-            confidence = max(0, confidence - 3)
+    if snap.ema200 is not None and snap.ema200 > 0:
+        if direction == "long":
+            ema_dist = (snap.price - snap.ema200) / snap.ema200
+            if 0.02 <= ema_dist <= 0.10:
+                confidence = min(100, confidence + 3)
+            elif ema_dist > 0.15:
+                confidence = max(0, confidence - 3)
+        elif direction == "short":
+            ema_dist = (snap.ema200 - snap.price) / snap.ema200
+            if 0.02 <= ema_dist <= 0.10:
+                confidence = min(100, confidence + 3)
+            elif ema_dist > 0.15:
+                confidence = max(0, confidence - 3)
 
     # Volume Profile walk-forward adjustments (same logic as live engine)
     # snap.vpoc is computed from OHLCV sliced to sim_date — fully walk-forward.

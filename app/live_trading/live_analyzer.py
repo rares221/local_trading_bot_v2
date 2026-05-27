@@ -340,6 +340,30 @@ def _compute_signal_sync(
     except Exception:
         direction = "long"
 
+    # ── Short gates (mirrors engine.py / replay.py) ───────────────────────────
+    if direction == "short":
+        from app.services.recommendations.engine import (
+            SHORTS_ENABLED,
+            SHORTS_BEAR_REGIME_ENABLED,
+            BEAR_REGIME_SHORT_MIN_CONFIDENCE,
+        )
+        # Gate 1: EMA200 hard gate — do not short above EMA200
+        if snap.ema200 is not None and snap.price > snap.ema200:
+            return None
+        # Gate 2: Regime hard gate — block in crisis / high_vol
+        if regime in ("crisis", "high_vol"):
+            return None
+        # Gate 3: SHORTS_ENABLED flag / bear-regime exception
+        shorts_ok = SHORTS_ENABLED or (SHORTS_BEAR_REGIME_ENABLED and regime == "bear")
+        if not shorts_ok:
+            return None
+        # Gate 4: Bear-regime confidence floor (evaluated after confidence is computed below)
+        # — stored here so we can check it once confidence is available
+        _bear_short_min_conf = BEAR_REGIME_SHORT_MIN_CONFIDENCE
+    else:
+        _bear_short_min_conf = None
+    # ─────────────────────────────────────────────────────────────────────────
+
     try:
         math_sl, math_tp = compute_atr_levels(
             price=snap.price,
@@ -395,6 +419,10 @@ def _compute_signal_sync(
             confidence = min(100, confidence + 5)
         elif sentiment_conviction < 0.3:
             confidence = max(0, confidence - 8)
+
+    # Gate 4: Bear-regime confidence floor for shorts (checked after final confidence)
+    if _bear_short_min_conf is not None and confidence < _bear_short_min_conf:
+        return None
 
     return {
         "asset_id":        asset_id,

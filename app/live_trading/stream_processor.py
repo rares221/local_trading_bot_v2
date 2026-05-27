@@ -374,10 +374,24 @@ class StreamProcessor:
                 # Priority: watched tickers first, then confidence >= 40%, sorted desc
                 # Hard cap at _MAX_LLM_TICKERS to bound per-run cost
                 watchlist = set(self._engine.watchlist if self._engine else [])
+                # Regime-aware short confidence floor: only allow shorts in regimes
+                # where the engine permits them; block in all others.
+                _regime_label = regime_summary.split(" | ")[0].strip().lower()
+                from app.services.recommendations.engine import (
+                    SHORTS_ENABLED,
+                    SHORTS_BEAR_REGIME_ENABLED,
+                )
+                _shorts_regime_ok = SHORTS_ENABLED or (SHORTS_BEAR_REGIME_ENABLED and _regime_label == "bear")
+
                 eligible = [
                     s for s in signals
-                    if (s.get("confidence") or 0) >= (
-                        _MIN_CONFIDENCE_SHORT if s.get("direction") == "short" else _MIN_CONFIDENCE_LONG
+                    if (
+                        s.get("direction") != "short"
+                        and (s.get("confidence") or 0) >= _MIN_CONFIDENCE_LONG
+                    ) or (
+                        s.get("direction") == "short"
+                        and _shorts_regime_ok
+                        and (s.get("confidence") or 0) >= _MIN_CONFIDENCE_SHORT
                     )
                 ]
                 llm_signals = sorted(

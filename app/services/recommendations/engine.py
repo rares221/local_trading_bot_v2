@@ -93,17 +93,16 @@ CORRELATION_THRESHOLD = 0.75
 
 # Minimum Risk:Reward ratio to include a recommendation (skip trades where reward doesn't justify risk).
 MIN_RISK_REWARD = 2.0  # raised 1.6→2.0: breakeven WR drops from 38.5% to 33.3%, giving our 35% WR positive EV
-# Short trades disabled: backtest shows 24.7% WR for shorts vs 35.8% for longs — shorts are net -EV.
-# Re-enable once short signal quality improves (e.g. dedicated short scoring, bear-regime-only filter).
+# Short trades disabled. Bear-regime shorts remain off pending a backtest run that covers a real
+# sustained bear market (e.g. 2022 drawdown). Phase 4 run on the 2020-2024 period produced only
+# 10-19 short trades (bear regime is rare) with ~10% WR — statistically meaningless and not a
+# valid gate signal. All gate infrastructure is in place; re-enable when a bear-market window is available.
 SHORTS_ENABLED = False
-# Bear-regime exception: re-enable shorts when market_regime == "bear".
-# Backtest aggregate short WR was 22.8% — but bear-regime-only shorts are expected to perform better.
-# Confidence floor of BEAR_REGIME_SHORT_MIN_CONFIDENCE enforced further below in _build_candidate().
-# Note: when SHORTS_ENABLED=True, this floor only applies in bear regime; non-bear shorts bypass it.
 SHORTS_BEAR_REGIME_ENABLED = False
 
 # Minimum confidence required for a bear-regime short to pass (vs ~35-40 for longs).
-BEAR_REGIME_SHORT_MIN_CONFIDENCE = 50
+# Tested at 50 and 60 — confidence floor is not the lever; WR was ~10% at both thresholds.
+BEAR_REGIME_SHORT_MIN_CONFIDENCE = 60
 
 # Macro-day confidence penalty: see `MACRO_DAY_CONFIDENCE_PENALTY` in `app.services.macro_calendar`.
 
@@ -1365,19 +1364,23 @@ def _build_candidate(
         "[ENGINE] %s (%s): base_conf=%d, sent_avg=%s, sent_cnt=%d, dir=%s",
         asset_id, symbol, base_confidence, sentiment_avg, sentiment_count, direction,
     )
-    # OBV distribution penalty (longs only): -5 pts when OBV slope is negative.
+    # OBV distribution penalty: -5 pts when OBV slope opposes trade direction.
     # OBV already contributes +10 pts in compute_confidence when confirming direction;
     # explicit -5 for disagreement keeps total OBV swing at 15 pts — proportionate for one indicator.
     _obv_penalty = 0
-    if direction == "long" and snap and snap.obv_confirming_down:
-        _obv_penalty = 5
+    if snap:
+        if direction == "long" and snap.obv_confirming_down:
+            _obv_penalty = 5
+        elif direction == "short" and snap.obv_confirming_up:
+            _obv_penalty = 5
 
-    # MACD histogram momentum decay penalty: histogram positive but slope negative = momentum fading.
-    # Research shows decelerating entries fail ~60% of the time even when MACD is still technically bullish.
-    # Only applies to longs where we rely on upward momentum continuation.
+    # MACD histogram momentum decay penalty: histogram fading = momentum losing steam.
+    # Research shows decelerating entries fail ~60% of the time even when MACD is still directional.
     _macd_decay_penalty = 0
-    if direction == "long" and snap and snap.macd is not None and snap.macd_hist_slope is not None:
-        if snap.macd[2] > 0 and snap.macd_hist_slope < 0:
+    if snap and snap.macd is not None and snap.macd_hist_slope is not None:
+        if direction == "long" and snap.macd[2] > 0 and snap.macd_hist_slope < 0:
+            _macd_decay_penalty = 5
+        elif direction == "short" and snap.macd[2] < 0 and snap.macd_hist_slope > 0:
             _macd_decay_penalty = 5
 
     # RSI slope penalty: fading momentum — pooled below. Bonus (+4) stays outside the cap.
@@ -1436,12 +1439,15 @@ def _build_candidate(
     _bonus_parts: list[str] = []
 
     # Item 3 — MACD + RSI dual alignment bonus (+6 pts):
-    # When MACD histogram > 0 (bullish momentum) AND RSI is in the 45-65 sweet spot (not overbought),
-    # both indicators explicitly agree — research shows 73-84% WR for this combined setup.
-    if direction == "long" and snap and snap.macd is not None and snap.rsi is not None:
-        if snap.macd[2] > 0 and 45 <= snap.rsi <= 65:
+    # Both indicators agree on direction with RSI in a healthy (non-extreme) zone.
+    # Long: histogram > 0 + RSI 45-65 (not overbought). Short: histogram < 0 + RSI 35-55 (not oversold).
+    if snap and snap.macd is not None and snap.rsi is not None:
+        if direction == "long" and snap.macd[2] > 0 and 45 <= snap.rsi <= 65:
             confidence = min(100, confidence + 6)
             _bonus_parts.append("macd_rsi_aligned=+6")
+        elif direction == "short" and snap.macd[2] < 0 and 35 <= snap.rsi <= 55:
+            confidence = min(100, confidence + 6)
+            _bonus_parts.append("macd_rsi_aligned_short=+6")
 
     # Item 4 — Volume surge bonus (+5 pts):
     # volume_ratio > 1.5 = genuine buying pressure (not just above the gate floor).
@@ -1451,17 +1457,25 @@ def _build_candidate(
         _bonus_parts.append(f"volume_surge=+5 ({snap.volume_ratio:.2f}x)")
 
     # Item 5 — RSI directional momentum bonus (+4 pts):
-    # Positive slope + non-overbought = momentum continuation. Penalties pooled in _new_filter_penalty.
+    # Slope in trade direction + RSI not at extreme = momentum continuation.
     if snap and snap.rsi is not None and snap.rsi_slope is not None:
         if direction == "long" and snap.rsi_slope > 0 and snap.rsi < 65:
             confidence = min(100, confidence + 4)
             _bonus_parts.append(f"rsi_momentum=+4 (slope={snap.rsi_slope:+.1f})")
+        elif direction == "short" and snap.rsi_slope < 0 and snap.rsi > 35:
+            confidence = min(100, confidence + 4)
+            _bonus_parts.append(f"rsi_momentum_short=+4 (slope={snap.rsi_slope:+.1f})")
 
-    # Item 5b — Triple-confluence bonus (+5 pts): MACD histogram > 0 + RSI > 50 + volume above average.
-    if direction == "long" and snap and snap.macd is not None and snap.rsi is not None and snap.volume_ratio is not None:
-        if snap.macd[2] > 0 and snap.rsi > 50 and snap.volume_ratio > 1.0:
+    # Item 5b — Triple-confluence bonus (+5 pts): all three indicators aligned with direction.
+    # Long: histogram > 0 + RSI > 50 + volume above average.
+    # Short: histogram < 0 + RSI < 50 + volume above average.
+    if snap and snap.macd is not None and snap.rsi is not None and snap.volume_ratio is not None:
+        if direction == "long" and snap.macd[2] > 0 and snap.rsi > 50 and snap.volume_ratio > 1.0:
             confidence = min(100, confidence + 5)
             _bonus_parts.append("triple_confluence=+5")
+        elif direction == "short" and snap.macd[2] < 0 and snap.rsi < 50 and snap.volume_ratio > 1.0:
+            confidence = min(100, confidence + 5)
+            _bonus_parts.append("triple_confluence_short=+5")
 
     # Item 5c — ATR percentile regime: high-vol (>75th pct) penalizes longs; low-vol (<25th pct) rewards.
     if snap and snap.atr_percentile is not None:
@@ -1492,16 +1506,25 @@ def _build_candidate(
             _bonus_parts.append(f"near_52w_high=+4 ({snap.pct_from_52w_high*100:.1f}% below)")
 
     # Item 7 — EMA200 distance sweet spot (+3 pts / -3 pts):
-    # Price 2-10% above EMA200 = momentum trend intact. <1% = borderline (fragile), >15% = overextended.
-    # EMA200 already gates direction; this adds nuance within the passing zone.
-    if direction == "long" and snap and snap.ema200 is not None and snap.ema200 > 0:
-        ema_dist = (snap.price - snap.ema200) / snap.ema200
-        if 0.02 <= ema_dist <= 0.10:
-            confidence = min(100, confidence + 3)
-            _bonus_parts.append(f"ema200_sweet_spot=+3 ({ema_dist*100:.1f}% above)")
-        elif ema_dist > 0.15:
-            confidence = max(0, confidence - 3)
-            _bonus_parts.append(f"ema200_overextended=-3 ({ema_dist*100:.1f}% above)")
+    # Price 2-10% from EMA200 in trade direction = trend intact. >15% = overextended (mean-reversion risk).
+    # EMA200 already gates shorts above it; this adds nuance within the passing zone.
+    if snap and snap.ema200 is not None and snap.ema200 > 0:
+        if direction == "long":
+            ema_dist = (snap.price - snap.ema200) / snap.ema200
+            if 0.02 <= ema_dist <= 0.10:
+                confidence = min(100, confidence + 3)
+                _bonus_parts.append(f"ema200_sweet_spot=+3 ({ema_dist*100:.1f}% above)")
+            elif ema_dist > 0.15:
+                confidence = max(0, confidence - 3)
+                _bonus_parts.append(f"ema200_overextended=-3 ({ema_dist*100:.1f}% above)")
+        elif direction == "short":
+            ema_dist = (snap.ema200 - snap.price) / snap.ema200
+            if 0.02 <= ema_dist <= 0.10:
+                confidence = min(100, confidence + 3)
+                _bonus_parts.append(f"ema200_sweet_spot_short=+3 ({ema_dist*100:.1f}% below)")
+            elif ema_dist > 0.15:
+                confidence = max(0, confidence - 3)
+                _bonus_parts.append(f"ema200_overextended_short=-3 ({ema_dist*100:.1f}% below)")
 
     if _bonus_parts:
         logger.debug("[ENGINE] %s: signal_bonuses %s → conf=%d", asset_id, ", ".join(_bonus_parts), confidence)

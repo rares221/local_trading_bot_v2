@@ -144,6 +144,78 @@ class TestComputeMetrics:
         assert "long" in result["by_direction"]
         assert "short" in result["by_direction"]
 
+    def test_by_direction_full_quality_fields(self):
+        """All new short-diagnostic fields must be present and correct."""
+        trades = [
+            self._make_trade("hit_tp", 2.0, direction="short"),
+            self._make_trade("hit_tp", 3.0, direction="short"),
+            self._make_trade("hit_sl", -1.0, direction="short"),
+        ]
+        result = compute_metrics(trades)
+        sd = result["by_direction"]["short"]
+        assert sd["total"] == 3
+        assert sd["wins"] == 2
+        assert sd["losses"] == 1
+        assert sd["win_rate"] == pytest.approx(2 / 3, abs=0.001)
+        assert sd["resolved_win_rate"] == pytest.approx(2 / 3, abs=0.001)
+        assert sd["hit_tp_rate"] == pytest.approx(2 / 3, abs=0.001)
+        assert sd["hit_sl_rate"] == pytest.approx(1 / 3, abs=0.001)
+        assert sd["avg_pnl_r"] == pytest.approx((2.0 + 3.0 - 1.0) / 3, abs=0.001)
+        assert sd["avg_win_r"] == pytest.approx((2.0 + 3.0) / 2, abs=0.001)
+        assert sd["avg_loss_r"] == pytest.approx(-1.0, abs=0.001)
+
+    def test_by_direction_sl_heavy_short_cohort(self):
+        """SL-heavy short cohort: 70% SL rate, negative expectancy flagged correctly."""
+        trades = [
+            self._make_trade("hit_sl", -1.0, direction="short"),
+            self._make_trade("hit_sl", -1.0, direction="short"),
+            self._make_trade("hit_sl", -1.0, direction="short"),
+            self._make_trade("hit_sl", -1.0, direction="short"),
+            self._make_trade("hit_sl", -1.0, direction="short"),
+            self._make_trade("hit_sl", -1.0, direction="short"),
+            self._make_trade("hit_sl", -1.0, direction="short"),
+            self._make_trade("hit_tp", 2.0, direction="short"),
+            self._make_trade("hit_tp", 2.0, direction="short"),
+            self._make_trade("hit_tp", 2.0, direction="short"),
+        ]
+        result = compute_metrics(trades)
+        sd = result["by_direction"]["short"]
+        assert sd["hit_sl_rate"] == pytest.approx(0.7, abs=0.001)
+        assert sd["hit_tp_rate"] == pytest.approx(0.3, abs=0.001)
+        assert sd["avg_pnl_r"] < 0  # negative expectancy
+
+    def test_by_direction_internal_accumulators_not_in_output(self):
+        """Accumulator keys must be stripped from the output dict."""
+        trades = [self._make_trade("hit_tp", 2.0, direction="short")]
+        result = compute_metrics(trades)
+        sd = result["by_direction"]["short"]
+        for k in ("pnl_r_sum", "win_pnl_r_sum", "loss_pnl_r_sum", "pnl_r_count"):
+            assert k not in sd, f"accumulator key '{k}' leaked into output"
+
+    def test_by_direction_avg_win_loss_none_when_no_trades(self):
+        """avg_win_r is None when there are no wins; avg_loss_r is None when no losses."""
+        trades = [self._make_trade("hit_sl", -1.0, direction="short")]
+        result = compute_metrics(trades)
+        sd = result["by_direction"]["short"]
+        assert sd["avg_win_r"] is None
+        assert sd["avg_loss_r"] == pytest.approx(-1.0, abs=0.001)
+
+    def test_by_direction_long_and_short_independent(self):
+        """Long and short stats must not bleed into each other."""
+        trades = [
+            self._make_trade("hit_tp", 3.0, direction="long"),
+            self._make_trade("hit_tp", 3.0, direction="long"),
+            self._make_trade("hit_sl", -1.0, direction="short"),
+            self._make_trade("hit_sl", -1.0, direction="short"),
+        ]
+        result = compute_metrics(trades)
+        ld = result["by_direction"]["long"]
+        sd = result["by_direction"]["short"]
+        assert ld["win_rate"] == pytest.approx(1.0)
+        assert sd["win_rate"] == pytest.approx(0.0)
+        assert ld["avg_pnl_r"] == pytest.approx(3.0, abs=0.001)
+        assert sd["avg_pnl_r"] == pytest.approx(-1.0, abs=0.001)
+
     def test_by_symbol_populated(self):
         trades = [
             self._make_trade("hit_tp", 2.0, symbol="AAPL"),
