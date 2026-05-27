@@ -25,7 +25,7 @@ def _infer_instrument_type(asset_category: str) -> str:
     cat = (asset_category or "").lower()
     if cat in ("indices", "index", "forex", "commodities", "oil", "commodity"):
         return "cfd"
-    if cat == "stocks":
+    if cat in ("stocks_large", "stocks_mid", "stocks_small", "stocks"):
         return "invest"
     return "cfd"
 from app.services.ingestion import fetch_all_feeds, save_feed_items
@@ -371,6 +371,14 @@ async def job_update_active_trades() -> None:
                 continue
             snap = build_snapshot(symbol)
             if not snap or snap.price <= 0:
+                # Even without a live price, close trades that are past their expiry date.
+                _phase = getattr(trade, "trade_phase", "open") or "open"
+                if _phase == "open" and getattr(rec, "expiry_date", None) and rec.expiry_date < date.today():
+                    trade.trade_phase = "closed_expired"
+                    if getattr(trade, "outcome", None) is None:
+                        trade.outcome = "expired"
+                        trade.outcome_at = now
+                        trade.closing_price = None
                 trade.last_updated = now
                 continue
 

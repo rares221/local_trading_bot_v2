@@ -25,12 +25,54 @@ logger = logging.getLogger(__name__)
 # (asset_id, yf_symbol, risk_tier, live_category)
 
 _BASE_UNIVERSE: list[tuple[str, str, str, str]] = [
-    # Stocks — energy + mining (same as engine hardcoded)
-    ("XOM",   "XOM",     "conservative", "stocks"),
-    ("CVX",   "CVX",     "conservative", "stocks"),
-    ("BP",    "BP",      "conservative", "stocks"),
-    ("SHEL",  "SHEL",    "moderate",     "stocks"),
-    ("NEM",   "NEM",     "moderate",     "stocks"),
+    # Large cap stocks
+    ("AAPL",  "AAPL",  "moderate",     "stocks_large"),
+    ("MSFT",  "MSFT",  "moderate",     "stocks_large"),
+    ("GOOGL", "GOOGL", "moderate",     "stocks_large"),
+    ("NVDA",  "NVDA",  "moderate",     "stocks_large"),
+    ("META",  "META",  "moderate",     "stocks_large"),
+    ("AMZN",  "AMZN",  "moderate",     "stocks_large"),
+    ("TSLA",  "TSLA",  "aggressive",   "stocks_large"),
+    ("AVGO",  "AVGO",  "moderate",     "stocks_large"),
+    ("JPM",   "JPM",   "moderate",     "stocks_large"),
+    ("BAC",   "BAC",   "moderate",     "stocks_large"),
+    ("GS",    "GS",    "moderate",     "stocks_large"),
+    ("JNJ",   "JNJ",   "conservative", "stocks_large"),
+    ("UNH",   "UNH",   "moderate",     "stocks_large"),
+    ("XOM",   "XOM",   "conservative", "stocks_large"),
+    ("CVX",   "CVX",   "conservative", "stocks_large"),
+    ("BP",    "BP",    "conservative", "stocks_large"),
+    ("SHEL",  "SHEL",  "moderate",     "stocks_large"),
+    ("NEM",   "NEM",   "moderate",     "stocks_large"),
+    ("PG",    "PG",    "conservative", "stocks_large"),
+    ("WMT",   "WMT",   "conservative", "stocks_large"),
+    ("V",     "V",     "conservative", "stocks_large"),
+    # Mid cap stocks
+    ("PLTR",  "PLTR",  "moderate",     "stocks_mid"),
+    ("SMCI",  "SMCI",  "aggressive",   "stocks_mid"),
+    ("IONQ",  "IONQ",  "aggressive",   "stocks_mid"),
+    ("RIVN",  "RIVN",  "aggressive",   "stocks_mid"),
+    ("ENPH",  "ENPH",  "moderate",     "stocks_mid"),
+    ("FSLR",  "FSLR",  "moderate",     "stocks_mid"),
+    ("CCJ",   "CCJ",   "moderate",     "stocks_mid"),
+    ("MP",    "MP",    "aggressive",   "stocks_mid"),
+    ("SOFI",  "SOFI",  "aggressive",   "stocks_mid"),
+    ("HOOD",  "HOOD",  "aggressive",   "stocks_mid"),
+    ("RIG",   "RIG",   "aggressive",   "stocks_mid"),
+    ("HP",    "HP",    "moderate",     "stocks_mid"),
+    ("HIMS",  "HIMS",  "aggressive",   "stocks_mid"),
+    ("RKLB",  "RKLB",  "aggressive",   "stocks_mid"),
+    # Small cap stocks
+    ("BBAI",  "BBAI",  "aggressive",   "stocks_small"),
+    ("SOUN",  "SOUN",  "aggressive",   "stocks_small"),
+    ("LUNR",  "LUNR",  "aggressive",   "stocks_small"),
+    ("ACHR",  "ACHR",  "aggressive",   "stocks_small"),
+    ("ASTS",  "ASTS",  "aggressive",   "stocks_small"),
+    ("JOBY",  "JOBY",  "aggressive",   "stocks_small"),
+    ("ACMR",  "ACMR",  "aggressive",   "stocks_small"),
+    ("ARRY",  "ARRY",  "aggressive",   "stocks_small"),
+    ("RXRX",  "RXRX",  "aggressive",   "stocks_small"),
+    ("OPEN",  "OPEN",  "aggressive",   "stocks_small"),
     # Commodities
     ("WTI",       "CL=F",    "conservative", "commodities"),
     ("Brent",     "BZ=F",    "conservative", "commodities"),
@@ -80,12 +122,15 @@ _MAX_DISCOVERY_STOCKS       = 25
 
 # direction style per category
 _DIRECTION_STYLE: dict[str, str | None] = {
-    "commodities": "macro_linked",
-    "fx":          "macro_linked",
-    "stocks":      None,
-    "crypto":      None,
-    "etfs":        None,
-    "indices":     None,
+    "commodities":  "macro_linked",
+    "fx":           "macro_linked",
+    "stocks_large": None,
+    "stocks_mid":   None,
+    "stocks_small": None,
+    "stocks":       None,  # backward compat for discovered tickers
+    "crypto":       None,
+    "etfs":         None,
+    "indices":      None,
 }
 
 _snap_executor = ThreadPoolExecutor(max_workers=10, thread_name_prefix="live_snap")
@@ -224,7 +269,7 @@ def _discover_tickers(sentiment_data: dict[str, dict]) -> list[tuple[str, str, s
     candidates.sort(key=lambda x: -x[1])
     result = []
     for tag, _ in candidates[:_MAX_DISCOVERY_STOCKS]:
-        result.append((tag, tag, "moderate", "stocks"))
+        result.append((tag, tag, "moderate", "stocks_large"))
     return result
 
 

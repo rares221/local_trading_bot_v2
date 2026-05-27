@@ -76,6 +76,14 @@
 
     #status-msg { font-size: 13px; color: var(--muted); padding: 8px 0; min-height: 24px; }
     #status-msg.error { color: var(--danger); }
+    #backtest-progress-wrap { display: none; margin: 2px 0 6px; }
+    #backtest-progress { width: 100%; height: 6px; border-radius: 3px; accent-color: var(--accent); }
+    #backtest-progress-label { font-size: 11px; color: var(--muted); margin-top: 3px; }
+    #wf-progress-wrap { display: none; margin: 4px 0 8px; }
+    #wf-progress { width: 100%; height: 6px; border-radius: 3px; accent-color: var(--accent); }
+    #wf-progress-label { font-size: 11px; color: var(--muted); margin-top: 3px; }
+    .wf-run-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: 6px; padding: 7px 12px; cursor: pointer; font-size: 12px; margin-bottom: 5px; transition: border-color 0.15s; }
+    .wf-run-row:hover { border-color: var(--accent); }
 
     .runs-list { display: flex; flex-direction: column; gap: 10px; }
     .run-row { display: flex; align-items: center; gap: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; cursor: pointer; transition: border-color 0.15s; flex-wrap: wrap; }
@@ -174,6 +182,10 @@
         </select>
       </div>
       <div id="status-msg"></div>
+      <div id="backtest-progress-wrap">
+        <progress id="backtest-progress" max="100"></progress>
+        <div id="backtest-progress-label"></div>
+      </div>
       <button class="btn btn-primary" id="run-btn" onclick="startBacktest()">
         ▶ Run Backtest
       </button>
@@ -219,6 +231,7 @@
         <div class="tab" onclick="showTab('symbol-stats')">By Symbol</div>
         <div class="tab" onclick="showTab('direction-stats')">By Direction</div>
         <div class="tab" onclick="showTab('regime-stats')" title="" data-tooltip="Market regime at signal date: bull (SPX>200SMA, VIX&lt;20), bear, high_vol (VIX≥30), crisis (VIX≥40). Shows whether your strategy holds up across different market conditions.">By Regime</div>
+        <div class="tab" onclick="showTab('category-stats')" data-tooltip="Win rate and average P&amp;L broken down by asset category (large-cap stocks, indices, commodities, etc.). Identifies which asset classes the strategy performs best on.">By Category</div>
       </div>
 
       <div id="tab-trades">
@@ -248,6 +261,9 @@
       <div id="tab-regime-stats" class="hidden">
         <div id="regime-stats-wrap"></div>
       </div>
+      <div id="tab-category-stats" class="hidden">
+        <div id="category-stats-wrap"></div>
+      </div>
     </div>
 
     <!-- Walk-Forward Analysis -->
@@ -269,7 +285,15 @@
         <button class="btn btn-primary btn-sm" id="wf-btn" onclick="runWalkForward()">Run Walk-Forward</button>
         <span id="wf-status" style="font-size:12px;color:var(--muted);"></span>
       </div>
+      <div id="wf-progress-wrap">
+        <progress id="wf-progress" max="100"></progress>
+        <div id="wf-progress-label"></div>
+      </div>
       <div id="wf-results"></div>
+      <div id="wf-past-runs" style="margin-top:16px;display:none;">
+        <div style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:6px;">Past Runs</div>
+        <div id="wf-runs-list"></div>
+      </div>
     </div>
 
     <div class="disclaimer" id="disclaimer-box"></div>
@@ -280,6 +304,8 @@
 let _currentRunId = null;
 let _tradesOffset = 0;
 const _tradesLimit = 50;
+let _activeProgressRunId = null;
+let _activeWfRunId = null;
 let _allSymbols = [];
 
 // Read ?ticker= param from Live Trading card backtest button
@@ -322,12 +348,51 @@ async function startBacktest() {
     if (!res.ok) throw new Error(data.detail || 'Unknown error');
     msg.textContent = `✓ Run started (${data.run_id.slice(0, 8)}…). Pre-fetching historical data and replaying — this may take a few minutes.`;
     loadRuns();
+    _activeProgressRunId = data.run_id;
+    showProgressBar();
+    pollProgress(data.run_id);
     pollRun(data.run_id);
   } catch (e) {
     msg.textContent = `Error: ${e.message}`;
     msg.className = 'error';
     btn.disabled = false;
   }
+}
+
+function showProgressBar() {
+  const wrap = document.getElementById('backtest-progress-wrap');
+  wrap.style.display = 'block';
+  const bar = document.getElementById('backtest-progress');
+  bar.removeAttribute('value'); // indeterminate until first callback
+  document.getElementById('backtest-progress-label').textContent = 'Starting…';
+}
+
+async function pollProgress(runId) {
+  if (_activeProgressRunId !== runId) return;
+  try {
+    const res = await fetch(`/api/backtest/status/${runId}`);
+    const d = await res.json();
+    const bar = document.getElementById('backtest-progress');
+    const label = document.getElementById('backtest-progress-label');
+    if (d.phase === 'prefetch') {
+      bar.removeAttribute('value');
+      label.textContent = 'Fetching market data…';
+    } else if (d.phase === 'replay') {
+      if (d.total > 0 && d.current >= d.total) {
+        bar.value = 95;
+        label.textContent = 'Simulating trade outcomes…';
+      } else {
+        const p = d.total > 0 ? Math.round((d.current / d.total) * 90) + 5 : 5;
+        bar.value = p;
+        label.textContent = `Replaying day ${d.current} of ${d.total}`;
+      }
+    } else if (d.phase === 'done') {
+      bar.value = 100;
+      label.textContent = 'Complete';
+      return;
+    }
+  } catch {}
+  if (_activeProgressRunId === runId) setTimeout(() => pollProgress(runId), 2000);
 }
 
 function pollRun(runId, attempts = 0) {
@@ -340,6 +405,8 @@ function pollRun(runId, attempts = 0) {
       if (data.status === 'running') {
         pollRun(runId, attempts + 1);
       } else {
+        _activeProgressRunId = null;
+        document.getElementById('backtest-progress-wrap').style.display = 'none';
         const msg = document.getElementById('status-msg');
         if (data.status === 'completed') {
           msg.textContent = `✓ Completed: ${data.total_trades ?? 0} trades, win rate ${pct(data.win_rate)}`;
@@ -410,18 +477,31 @@ function showResults(data) {
   sec.classList.remove('hidden');
 
   const m = data.metrics || {};
+  const breakeven = m.breakeven_wr ?? null;
+  const wr = data.win_rate ?? 0;
+  const wrAboveBreakeven = breakeven !== null && wr > breakeven;
+  const breakevenLabel = breakeven !== null
+    ? `Breakeven: ${pct(breakeven)}${wrAboveBreakeven ? ' ✓' : ' ✗'}`
+    : 'Breakeven: —';
+  const breakevenCls = breakeven === null ? 'neutral' : (wrAboveBreakeven ? 'win' : 'loss');
+
   const cards = [
-    { label: 'Win Rate', value: pct(data.win_rate), cls: winCls(data.win_rate, 0.5) },
+    {
+      label: 'Win Rate',
+      value: pct(wr),
+      cls: winCls(wr, 0.5),
+      sub: `<span class="${breakevenCls}" style="font-size:11px;margin-top:4px;display:block;">${breakevenLabel}</span>`
+    },
     { label: 'Sharpe Ratio', value: fmt(data.sharpe_ratio), cls: winCls(data.sharpe_ratio, 0) },
     { label: 'Max Drawdown (R)', value: fmt(data.max_drawdown), cls: data.max_drawdown > 5 ? 'loss' : 'neutral' },
     { label: 'Avg P&L (R)', value: fmt(data.avg_rr_realized), cls: winCls(data.avg_rr_realized, 0) },
     { label: 'Total Signals', value: (data.total_signals ?? '—').toString(), cls: 'neutral' },
     { label: 'Total Trades', value: (data.total_trades ?? '—').toString(), cls: 'neutral' },
-    { label: 'Wins', value: (m.wins ?? '—').toString(), cls: 'win' },
-    { label: 'Losses', value: (m.losses ?? '—').toString(), cls: 'loss' },
+    { label: 'Avg Win (R)', value: m.avg_win_r != null ? fmt(m.avg_win_r) : '—', cls: 'win' },
+    { label: 'Avg Loss (R)', value: m.avg_loss_r != null ? fmt(m.avg_loss_r) : '—', cls: 'loss' },
   ];
   document.getElementById('metric-cards').innerHTML = cards.map(c =>
-    `<div class="stat-card"><div class="stat-label">${c.label}</div><div class="stat-value ${c.cls}">${c.value}</div></div>`
+    `<div class="stat-card"><div class="stat-label">${c.label}</div><div class="stat-value ${c.cls}">${c.value}</div>${c.sub || ''}</div>`
   ).join('');
 
   // Confidence bucket chart
@@ -489,6 +569,27 @@ function showResults(data) {
     }).join('')}
     </tbody></table>`
     : '<div class="no-data">No regime data. Run a new backtest to see regime breakdown.</div>';
+
+  // By category
+  const catStats = m.by_category || {};
+  const catOrder = ['stocks_large', 'stocks_mid', 'stocks_small', 'indices', 'commodities', 'other', 'unknown'];
+  const catLabels = { stocks_large: 'Large-Cap Stocks', stocks_mid: 'Mid-Cap Stocks', stocks_small: 'Small-Cap Stocks', indices: 'Indices (ETF)', commodities: 'Commodities', other: 'Other', unknown: '— Unknown' };
+  const sortedCats = catOrder.filter(c => catStats[c]).concat(Object.keys(catStats).filter(c => !catOrder.includes(c)));
+  document.getElementById('category-stats-wrap').innerHTML = sortedCats.length
+    ? `<div style="font-size:12px;color:var(--muted);margin-bottom:10px;">Performance broken down by asset category. Identifies which asset classes the strategy performs best on.</div>
+    <table><thead><tr><th>Category</th><th>Trades</th><th>Win Rate</th><th>Avg P&L (R)</th><th>Bar</th></tr></thead><tbody>
+    ${sortedCats.map(c => {
+      const cs = catStats[c];
+      return `<tr>
+        <td style="white-space:nowrap">${catLabels[c] || c}</td>
+        <td>${cs.total}</td>
+        <td class="${winCls(cs.win_rate,0.5)}">${pct(cs.win_rate)}</td>
+        <td class="${winCls(cs.avg_pnl_r,0)}">${fmt(cs.avg_pnl_r)}</td>
+        <td style="width:140px"><div class="bucket-bar"><div class="bucket-fill" style="width:${Math.round((cs.win_rate||0)*100)}%"></div></div></td>
+      </tr>`;
+    }).join('')}
+    </tbody></table>`
+    : '<div class="no-data">No category data. Run a new backtest to see category breakdown.</div>';
 
   document.getElementById('disclaimer-box').textContent = data.disclaimer || '';
   initBacktestHorizonChart(data);
@@ -576,7 +677,7 @@ async function deleteRun(e, runId) {
 }
 
 function showTab(name) {
-  const tabs = ['trades','symbol-stats','direction-stats','regime-stats'];
+  const tabs = ['trades','symbol-stats','direction-stats','regime-stats','category-stats'];
   document.querySelectorAll('.tabs .tab').forEach((t, i) => {
     t.classList.toggle('active', tabs[i] === name);
   });
@@ -786,8 +887,9 @@ async function runWalkForward() {
   if (!start || !end) { status.textContent = 'Set start/end dates first.'; return; }
 
   btn.disabled = true;
-  status.textContent = '⏳ Running walk-forward… (this may take several minutes)';
+  status.textContent = '';
   results.innerHTML = '';
+  showWfProgress();
 
   try {
     const res = await fetch('/api/backtest/walkforward', {
@@ -806,13 +908,102 @@ async function runWalkForward() {
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || 'Unknown error');
 
-    status.textContent = `✓ Done — ${data.total_windows} windows`;
-    renderWalkForward(data);
+    _activeWfRunId = data.run_id;
+    status.textContent = `Started (${data.run_id.slice(0, 8)}…)`;
+    pollWalkForward(data.run_id);
+    loadWfRuns();
   } catch (e) {
     status.textContent = `Error: ${e.message}`;
-  } finally {
+    hideWfProgress();
     btn.disabled = false;
   }
+}
+
+function showWfProgress() {
+  const wrap = document.getElementById('wf-progress-wrap');
+  wrap.style.display = 'block';
+  const bar = document.getElementById('wf-progress');
+  bar.removeAttribute('value');
+  document.getElementById('wf-progress-label').textContent = 'Starting…';
+}
+
+function hideWfProgress() {
+  document.getElementById('wf-progress-wrap').style.display = 'none';
+}
+
+async function pollWalkForward(runId) {
+  if (_activeWfRunId !== runId) return;
+  try {
+    const res = await fetch(`/api/backtest/walkforward/status/${runId}`);
+    const d = await res.json();
+    const bar = document.getElementById('wf-progress');
+    const label = document.getElementById('wf-progress-label');
+
+    if (d.phase === 'prefetch') {
+      bar.removeAttribute('value');
+      label.textContent = 'Fetching market data…';
+    } else if (d.phase === 'windows') {
+      if (d.total > 0 && d.current >= d.total) {
+        bar.value = 95;
+        label.textContent = 'Aggregating results…';
+      } else {
+        const p = d.total > 0 ? Math.round((d.current / d.total) * 90) + 5 : 5;
+        bar.value = p;
+        label.textContent = `Window ${d.current} of ${d.total}`;
+      }
+    } else if (d.phase === 'done') {
+      bar.value = 100;
+      label.textContent = 'Complete';
+    }
+
+    if (d.status === 'completed') {
+      _activeWfRunId = null;
+      document.getElementById('wf-btn').disabled = false;
+      document.getElementById('wf-status').textContent = `✓ Done — ${d.total_windows} windows`;
+      setTimeout(hideWfProgress, 1500);
+      if (d.result && Object.keys(d.result).length > 0) renderWalkForward(d.result);
+      loadWfRuns();
+      return;
+    }
+    if (d.status === 'failed') {
+      _activeWfRunId = null;
+      document.getElementById('wf-btn').disabled = false;
+      document.getElementById('wf-status').textContent = `✗ Failed: ${d.error_message || 'unknown error'}`;
+      hideWfProgress();
+      return;
+    }
+  } catch {}
+  if (_activeWfRunId === runId) setTimeout(() => pollWalkForward(runId), 2000);
+}
+
+async function loadWfRuns() {
+  const res = await fetch('/api/backtest/walkforward/runs');
+  if (!res.ok) return;
+  const data = await res.json();
+  const runs = data.runs || [];
+  const section = document.getElementById('wf-past-runs');
+  const list = document.getElementById('wf-runs-list');
+  if (!runs.length) { section.style.display = 'none'; return; }
+  section.style.display = 'block';
+  const rl = { robust: '✓ Robust', acceptable: '~ Accept.', likely_overfit: '✗ Overfit', insufficient_data: '—' };
+  const rc = { robust: 'var(--win)', acceptable: 'var(--warn)', likely_overfit: 'var(--loss)', insufficient_data: 'var(--muted)' };
+  list.innerHTML = runs.map(r => `
+    <div class="wf-run-row" onclick="selectWfRun('${r.id}')">
+      <span style="color:var(--muted)">${r.created_at ? r.created_at.slice(0,10) : ''}</span>
+      <span>${r.start_date} → ${r.end_date}</span>
+      <span class="badge badge-${r.status}">${r.status}</span>
+      <span style="color:${rc[r.robustness]||'var(--muted)'};">${rl[r.robustness]||'—'}</span>
+      <span>Ratio: ${r.degradation_ratio != null ? r.degradation_ratio.toFixed(3) : '—'}</span>
+      <span style="color:var(--muted)">${r.total_windows ?? '?'} windows · IS ${r.in_sample_days}d / OOS ${r.out_sample_days}d</span>
+    </div>
+  `).join('');
+}
+
+async function selectWfRun(runId) {
+  const res = await fetch(`/api/backtest/walkforward/runs/${runId}`);
+  if (!res.ok) return;
+  const data = await res.json();
+  if (data.result && Object.keys(data.result).length > 0) renderWalkForward(data.result);
 }
 
 function renderWalkForward(data) {
@@ -905,6 +1096,7 @@ function renderWalkForward(data) {
 
 // Init
 loadRuns();
+loadWfRuns();
 </script>
 </body>
 </html>

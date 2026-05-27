@@ -72,6 +72,16 @@ def compute_metrics(trades: list[dict], total_trading_days: int = 0) -> dict[str
     avg_pnl_r = sum(pnl_rs) / len(pnl_rs) if pnl_rs else 0.0
     avg_rr_projected = _safe_avg([t.get("risk_reward") for t in closed])
 
+    # Avg P&L per outcome type — used to compute actual breakeven win rate
+    win_pnl_rs = [t["pnl_r"] for t in wins if t.get("pnl_r") is not None and not math.isnan(t["pnl_r"])]
+    loss_pnl_rs = [t["pnl_r"] for t in losses if t.get("pnl_r") is not None and not math.isnan(t["pnl_r"])]
+    avg_win_r = sum(win_pnl_rs) / len(win_pnl_rs) if win_pnl_rs else None
+    avg_loss_r = sum(loss_pnl_rs) / len(loss_pnl_rs) if loss_pnl_rs else None
+    # breakeven_wr = |avg_loss_r| / (avg_win_r + |avg_loss_r|): the WR needed for zero expectancy
+    breakeven_wr: float | None = None
+    if avg_win_r and avg_loss_r and avg_win_r > 0:
+        breakeven_wr = round(abs(avg_loss_r) / (avg_win_r + abs(avg_loss_r)), 4)
+
     # Sharpe ratio: per-trade annualized Sharpe.
     # Correct formula: (mean/std) * sqrt(trades_per_year)
     # where trades_per_year = N / T_years, T_years = total_trading_days / 252.
@@ -187,6 +197,22 @@ def compute_metrics(trades: list[dict], total_trading_days: int = 0) -> dict[str
         rs["win_rate"] = round(w / n, 4) if n > 0 else 0.0
         rs["avg_pnl_r"] = round(rs["pnl_r_sum"] / n, 4) if n > 0 else 0.0
 
+    # Asset category breakdown — win rate per category (stocks_large/mid/small, indices, commodities, other)
+    category_stats: dict[str, dict] = {}
+    for t in all_outcomes:
+        cat = t.get("asset_category") or "unknown"
+        if cat not in category_stats:
+            category_stats[cat] = {"total": 0, "wins": 0, "pnl_r_sum": 0.0}
+        category_stats[cat]["total"] += 1
+        if t.get("outcome") == "hit_tp":
+            category_stats[cat]["wins"] += 1
+        category_stats[cat]["pnl_r_sum"] += t.get("pnl_r") or 0.0
+    for cat, cs in category_stats.items():
+        n = cs["total"]
+        w = cs["wins"]
+        cs["win_rate"] = round(w / n, 4) if n > 0 else 0.0
+        cs["avg_pnl_r"] = round(cs["pnl_r_sum"] / n, 4) if n > 0 else 0.0
+
     return {
         "total_signals": len(trades),
         "total_trades": total,
@@ -198,6 +224,9 @@ def compute_metrics(trades: list[dict], total_trading_days: int = 0) -> dict[str
         "expired_positive": expired_positive,               # expired trades that were in profit at expiry
         "avg_pnl_r_expired": round(avg_pnl_r_expired, 4),  # positive = timing issue; negative = weak signals
         "avg_pnl_r": round(avg_pnl_r, 4),
+        "avg_win_r": round(avg_win_r, 4) if avg_win_r is not None else None,
+        "avg_loss_r": round(avg_loss_r, 4) if avg_loss_r is not None else None,
+        "breakeven_wr": breakeven_wr,
         "avg_rr_projected": round(avg_rr_projected, 4) if avg_rr_projected else None,
         "sharpe_ratio": round(sharpe, 4) if sharpe is not None else None,
         "max_drawdown_r": round(max_dd, 4),
@@ -208,6 +237,7 @@ def compute_metrics(trades: list[dict], total_trading_days: int = 0) -> dict[str
         "volume_profile": vp_metrics,
         "relative_strength": rs_metrics,
         "by_regime": regime_stats,
+        "by_category": category_stats,
     }
 
 

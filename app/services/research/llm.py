@@ -582,7 +582,7 @@ async def _capture_metrics_at_entry_async(
         from sqlalchemy import select
 
         symbol = get_yf_symbol(asset_category, asset_id)
-        if not symbol and asset_category.lower() in ("stocks", "etfs", "etf", "stock"):
+        if not symbol and asset_category.lower() in ("stocks_large", "stocks_mid", "stocks_small", "stocks", "etfs", "etf", "stock"):
             symbol = asset_id.upper()
 
         snap = None

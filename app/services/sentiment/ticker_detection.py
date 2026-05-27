@@ -27,6 +27,9 @@ _DEFAULT_BLOCKLIST = frozenset({
     "FTSE", "NYSE", "VIX", "SPX", "NDX", "DAX", "DJI", "DXY", "CPI", "XAU", "FOMC",
     # Geopolitical / org acronyms / news noise
     "IRGC", "ISI", "COVID", "STAT", "GMT", "TFA", "FXCM",
+    # Company abbreviations / false positives
+    "TSMC", "BOS", "CEIX", "OIL", "AACR", "USOIL", "MAHA", "BTIG",
+    "ABC", "CATL", "IQVIA", "KRAS", "OCBC", "SCMP", "WATCH", "GPT", "UAE", "MACRO",
     "FVG", "ICT", "VWAP", "PIPS", "IFVG", "VASP",
     "USDT", "HBAR", "DOT",
     "IRA", "JONES", "LIKE", "LL", "LOVES", "NGM", "PCE", "PDL", "PGIM", "PIXEL",
@@ -74,13 +77,19 @@ _DEFAULT_BLOCKLIST = frozenset({
     # Broker / exchange / regulatory acronyms (not Yahoo-resolvable tickers)
     "OANDA", "AMEX", "CFTC", "AFSL", "FINRA", "SIPC", "ESMA", "MIFID", "FSCA",
     # Financial metric acronyms (APY, APR etc. — not stock tickers)
-    "APY", "APR", "NAV", "AUM", "IRR", "EBIT", "EBITDA", "EBITA", "CAPEX", "OPEX",
+    "APY", "APR", "NAV", "AUM", "IRR", "EBIT", "EBITDA", "EBITA", "CAPEX", "OPEX", "TTM", "ROIC",
     # Currency codes missing from original list (caused $AUD/$FX spam)
     "AUD", "NZD", "CHF", "CNY", "CNH", "HKD", "SGD", "INR", "BRL", "RUB", "MXN",
     "ZAR", "KRW", "TRY", "SEK", "NOK", "DKK", "PLN", "HUF", "CZK", "ILS", "THB",
     "PHP", "IDR", "TWD", "SAR", "AED", "QAR", "KWD",
     # Region / exchange abbreviations that yfinance can't resolve
     "HK", "SS", "AT", "FX", "EM", "DM", "AP", "APAC", "EMEA", "LATAM",
+    # Month names (appear as tags/dates in headlines, not tickers)
+    "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC",
+    "JANUARY", "FEBRUARY", "MARCH", "APRIL", "JUNE", "JULY", "AUGUST",
+    "SEPTEMBER", "OCTOBER", "NOVEMBER", "DECEMBER",
+    # Investment platform / product noise
+    "IDEAS",
 })
 
 
