@@ -371,6 +371,46 @@
     .bt-stat-value--white { color: #f8fafc; }
     .bt-stat-value--amber { color: #fbbf24; }
 
+    /* ── Global 3s hover tooltip ────────────────────────────────────────── */
+    .tt-popup { position:fixed; z-index:9999; background:rgba(15,17,30,0.97); border:1px solid rgba(108,99,255,0.4);
+      border-radius:8px; padding:10px 14px; font-size:12px; line-height:1.5; color:rgba(226,232,240,0.9);
+      max-width:300px; pointer-events:none; box-shadow:0 4px 20px rgba(0,0,0,0.6); display:none; }
+
+    /* ── Close Manually modal ───────────────────────────────────────────── */
+    .cm-modal {
+      width: 100%; max-width: 400px;
+      background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 55%, #312e81 100%);
+      border: 1px solid rgba(99,102,241,.35);
+      border-radius: 14px;
+      box-shadow: 0 24px 60px rgba(0,0,0,.6);
+      padding: 24px;
+      display: flex; flex-direction: column; gap: 18px;
+    }
+    .cm-title { font-size: 1rem; font-weight: 700; color: #f8fafc; margin: 0; }
+    .cm-field { display: flex; flex-direction: column; gap: 6px; }
+    .cm-label {
+      font-size: 11px; text-transform: uppercase; letter-spacing: .07em;
+      color: rgba(248,250,252,.45);
+    }
+    .cm-input {
+      background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.12);
+      border-radius: 7px; color: #f8fafc; font-size: 14px;
+      padding: 8px 12px; outline: none; width: 100%; box-sizing: border-box;
+    }
+    .cm-input:focus { border-color: rgba(99,102,241,.6); }
+    .cm-warn {
+      font-size: 11px; color: #fbbf24;
+      background: rgba(251,191,36,.08); border: 1px solid rgba(251,191,36,.2);
+      border-radius: 5px; padding: 6px 10px;
+    }
+    .cm-radios { display: flex; flex-direction: column; gap: 8px; }
+    .cm-radio-row {
+      display: flex; align-items: center; gap: 10px;
+      cursor: pointer; font-size: 13px; color: rgba(248,250,252,.8);
+    }
+    .cm-radio-row input[type=radio] { accent-color: #6366f1; cursor: pointer; }
+    .cm-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 2px; }
+
     .bt-verdict {
       background: rgba(99,102,241,.12); border: 1px solid rgba(99,102,241,.25);
       border-radius: 8px; padding: 12px 14px;
@@ -1386,7 +1426,7 @@
       /* Footer */
       h += `<div class="trade-footer">`;
       if (!t.outcome) {
-        h += `<button type="button" class="btn btn-sm btn--danger btn-close-manual" data-trade-id="${esc(t.id)}">${icon('square-x', 13)} Close manually</button>`;
+        h += `<button type="button" class="btn btn-sm btn--danger btn-close-manual" data-trade-id="${esc(t.id)}" data-asset-id="${esc(t.asset_id||'')}" data-idx="${idx}">${icon('square-x', 13)} Close manually</button>`;
       }
       if (levels.length > 0) {
         h += `<button class="btn btn-sm btn--secondary" data-idx="${idx}">${icon('history', 13)} Level history (${levels.length})</button>`;
@@ -1428,11 +1468,56 @@
       return h;
     }
 
-    async function closeManually(tradeId) {
+    // live price cache populated by pollPrices() — keyed by asset_id
+    const _livePrices = {};
+
+    function openCloseManuallyModal(tradeId, assetId, idx) {
+      const livePrice = _livePrices[assetId];
+      const preFilled = livePrice != null ? livePrice.toFixed(4) : '';
+      const warn = livePrice == null
+        ? `<div class="cm-warn">Could not fetch live price — please enter the closing price manually.</div>`
+        : '';
+      document.getElementById('cm-overlay').innerHTML = `
+        <div class="cm-modal" onclick="event.stopPropagation()">
+          <div style="display:flex;align-items:center;justify-content:space-between;">
+            <p class="cm-title">${icon('square-x', 14)} Close Trade Manually</p>
+            <button class="bt-close" onclick="document.getElementById('cm-overlay').style.display='none'">×</button>
+          </div>
+          ${warn}
+          <div class="cm-field">
+            <label class="cm-label" title="Current market price. Pre-filled from live feed — edit if incorrect." data-tooltip="Current market price. Pre-filled from live feed — edit if the fetch failed or you know the exact closing price.">Closing price</label>
+            <input id="cm-price" type="number" step="0.0001" min="0" class="cm-input" placeholder="e.g. 182.50" value="${esc(preFilled)}">
+          </div>
+          <div class="cm-field">
+            <label class="cm-label" title="Outcome to record in the journal." data-tooltip="Select the actual trade outcome to correctly record it in the journal.">Outcome</label>
+            <div class="cm-radios">
+              <label class="cm-radio-row"><input type="radio" name="cm-outcome" value="hit_tp"> Hit Take Profit</label>
+              <label class="cm-radio-row"><input type="radio" name="cm-outcome" value="hit_sl"> Hit Stop Loss</label>
+              <label class="cm-radio-row"><input type="radio" name="cm-outcome" value="manual" checked> Manual close</label>
+            </div>
+          </div>
+          <div class="cm-actions">
+            <button class="btn btn-sm btn--secondary" onclick="document.getElementById('cm-overlay').style.display='none'">Cancel</button>
+            <button class="btn btn-sm btn--danger" onclick="submitCloseManually('${esc(tradeId)}')">${icon('square-x', 13)} Confirm close</button>
+          </div>
+        </div>`;
+      document.getElementById('cm-overlay').style.display = 'flex';
+    }
+
+    async function submitCloseManually(tradeId) {
+      const priceVal = parseFloat(document.getElementById('cm-price').value);
+      const outcome = document.querySelector('input[name="cm-outcome"]:checked')?.value || 'manual';
+      const body = { outcome };
+      if (!isNaN(priceVal) && priceVal > 0) body.closing_price = priceVal;
       try {
-        const r = await fetch('/api/active-trades/' + encodeURIComponent(tradeId) + '/close-manually', { method: 'POST' });
+        const r = await fetch('/api/active-trades/' + encodeURIComponent(tradeId) + '/close-manually', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
         const data = await r.json();
         if (!r.ok) throw new Error(data.detail || 'Failed');
+        document.getElementById('cm-overlay').style.display = 'none';
         load(false);
       } catch (e) {
         alert('Failed to close: ' + (e.message || e));
@@ -1593,7 +1678,9 @@
           });
         });
         content.querySelectorAll('.btn-close-manual').forEach(b => {
-          b.addEventListener('click', function() { closeManually(this.dataset.tradeId); });
+          b.addEventListener('click', function() {
+            openCloseManuallyModal(this.dataset.tradeId, this.dataset.assetId, parseInt(this.dataset.idx));
+          });
         });
         content.querySelectorAll('.btn-backtest-quick').forEach(b => {
           b.addEventListener('click', function() {
@@ -1701,6 +1788,9 @@
           if (valEl) { valEl.textContent = '$' + price.toFixed(2); valEl.style.color = color; }
           if (pctEl) { pctEl.textContent = pctText; pctEl.style.color = color; }
         });
+
+        // Keep _livePrices in sync so the close-manually modal can pre-fill the price
+        Object.assign(_livePrices, prices);
 
         const ts = document.getElementById('at-price-ts');
         if (ts) ts.textContent = 'Prices as of ' + new Date().toLocaleTimeString();
@@ -1955,7 +2045,40 @@
         document.getElementById('bt-overlay').style.display = 'none';
       }
     }
+
+    // Global 3s hover tooltip — wires [data-tooltip] attributes across the page
+    (function() {
+      const popup = document.createElement('div');
+      popup.className = 'tt-popup';
+      document.body.appendChild(popup);
+      let _timer = null;
+      document.addEventListener('mouseover', e => {
+        const el = e.target.closest('[data-tooltip]');
+        if (!el) return;
+        clearTimeout(_timer);
+        _timer = setTimeout(() => {
+          popup.textContent = el.dataset.tooltip;
+          popup.style.display = 'block';
+        }, 3000);
+      });
+      document.addEventListener('mousemove', e => {
+        if (popup.style.display === 'block') {
+          popup.style.left = (e.clientX + 14) + 'px';
+          popup.style.top  = (e.clientY + 14) + 'px';
+        }
+      });
+      document.addEventListener('mouseout', e => {
+        const el = e.target.closest('[data-tooltip]');
+        if (!el) return;
+        clearTimeout(_timer);
+        popup.style.display = 'none';
+      });
+    })();
   </script>
+
+  <!-- Close Manually Modal -->
+  <div id="cm-overlay" class="bt-overlay" style="display:none;" onclick="document.getElementById('cm-overlay').style.display='none'">
+  </div>
 
   <!-- Backtest Quick Modal -->
   <div id="bt-overlay" class="bt-overlay" style="display:none;" onclick="closeBtModal(event)">

@@ -5,7 +5,7 @@ All user-facing responses include disclaimer per TRADING_APP_PLAN.
 import asyncio
 import logging
 from datetime import datetime, timezone, date
-from typing import Any
+from typing import Any, Optional
 from uuid import uuid4
 
 from fastapi import APIRouter, Body, Depends, HTTPException
@@ -1063,38 +1063,50 @@ async def get_gap_advice(
     return {"advice": advice}
 
 
+class CloseManuallyRequest(BaseModel):
+    closing_price: Optional[float] = None
+    outcome: Optional[str] = "manual"
+
+
 @router.post("/active-trades/{trade_id}/close-manually")
 async def close_trade_manually(
     trade_id: str,
+    body: CloseManuallyRequest = Body(default_factory=CloseManuallyRequest),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    """Mark an active trade as closed manually (outcome=manual). Captures current price at close time."""
+    """Close a trade manually. Accepts optional closing_price and outcome (hit_tp|hit_sl|manual)."""
     from sqlalchemy.orm import selectinload
     from app.services.technicals import get_cached_price
     from app.services.recommendations.engine import get_yf_symbol
-    
+    from app.services.market_data import fetch_last_price
+
+    _VALID_OUTCOMES = {"hit_tp", "hit_sl", "manual"}
+    outcome = body.outcome if body.outcome in _VALID_OUTCOMES else "manual"
+
     q = select(ActiveTrade).options(selectinload(ActiveTrade.recommendation)).where(ActiveTrade.id == trade_id)
     result = await db.execute(q)
     trade = result.scalar_one_or_none()
-    
+
     if not trade:
         raise HTTPException(status_code=404, detail="Active trade not found")
     if getattr(trade, "outcome", None) is not None:
         return _with_disclaimer({"ok": True, "message": "Trade already has an outcome.", "trade_id": trade_id})
-    
+
     now = datetime.now(timezone.utc)
-    
-    # Capture closing price
-    rec = trade.recommendation
-    if rec:
-        symbol = get_yf_symbol(rec.asset_category, rec.asset_id)
-        if symbol:
-            closing_price = get_cached_price(symbol)
-            if closing_price:
-                trade.closing_price = closing_price
-    
+
+    # Closing price: user-supplied > cached > live fetch fallback
+    closing_price = body.closing_price
+    if not closing_price:
+        rec = trade.recommendation
+        if rec:
+            symbol = get_yf_symbol(rec.asset_category, rec.asset_id)
+            if symbol:
+                closing_price = get_cached_price(symbol) or fetch_last_price(symbol)
+    if closing_price:
+        trade.closing_price = closing_price
+
     trade.trade_phase = "closed_manual"
-    trade.outcome = "manual"
+    trade.outcome = outcome
     trade.outcome_at = now
     trade.last_updated = now
     await db.commit()
