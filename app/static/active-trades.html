@@ -161,6 +161,30 @@
     <p class="disclaimer">Educational and research purposes only. Not financial advice.</p>
   </main>
 
+  <!-- Custom close-price modal -->
+  <div id="custom-close-modal" class="modal-overlay" role="dialog" aria-modal="true" aria-hidden="true" hidden>
+    <div class="modal" style="max-width:400px;">
+      <div class="modal__header">
+        <h2 class="modal__title">Close at custom price</h2>
+        <button type="button" class="modal__close" id="custom-close-modal-close" aria-label="Close">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="modal__body">
+        <p class="text-sm text-muted mb-2">Enter the price you actually closed this trade at. This overrides the market price normally pulled from Yahoo Finance.</p>
+        <div class="form-group">
+          <label for="custom-close-price">Closing price</label>
+          <input type="number" id="custom-close-price" class="input" min="0" step="0.01" placeholder="0.00">
+        </div>
+        <div id="custom-close-error" class="alert alert--error" style="display:none;"></div>
+        <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:var(--space-2);">
+          <button type="button" class="btn btn-sm btn--secondary" id="custom-close-cancel">Cancel</button>
+          <button type="button" class="btn btn-sm btn--danger" id="custom-close-confirm">Close trade</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script>
     function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
     function fmtNum(v) { return v != null ? Number(v).toFixed(2) : '—'; }
@@ -338,6 +362,7 @@
       h += `<div class="trade-footer">`;
       if (!t.outcome) {
         h += `<button type="button" class="btn btn-sm btn--danger btn-close-manual" data-trade-id="${esc(t.id)}">${icon('square-x', 13)} Close manually</button>`;
+        h += `<button type="button" class="btn btn-sm btn--secondary btn-close-custom" data-trade-id="${esc(t.id)}">${icon('edit-3', 13)} Close at custom price</button>`;
       }
       if (levels.length > 0) {
         h += `<button class="btn btn-sm btn--secondary" data-idx="${idx}">${icon('history', 13)} Level history (${levels.length})</button>`;
@@ -365,16 +390,60 @@
       return h;
     }
 
-    async function closeManually(tradeId) {
-      try {
-        const r = await fetch('/api/active-trades/' + encodeURIComponent(tradeId) + '/close-manually', { method: 'POST' });
-        const data = await r.json();
-        if (!r.ok) throw new Error(data.detail || 'Failed');
-        load(false);
-      } catch (e) {
-        alert('Failed to close: ' + (e.message || e));
+    async function closeManually(tradeId, closingPrice) {
+      const opts = { method: 'POST' };
+      if (closingPrice != null) {
+        opts.headers = { 'Content-Type': 'application/json' };
+        opts.body = JSON.stringify({ closing_price: closingPrice });
       }
+      const r = await fetch('/api/active-trades/' + encodeURIComponent(tradeId) + '/close-manually', opts);
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.detail || 'Failed');
+      load(false);
     }
+
+    /* ── Custom close-price modal ── */
+    const customCloseModal      = document.getElementById('custom-close-modal');
+    const customClosePriceInput = document.getElementById('custom-close-price');
+    const customCloseError      = document.getElementById('custom-close-error');
+    const customCloseConfirmBtn = document.getElementById('custom-close-confirm');
+    let customCloseTradeId = null;
+
+    function openCustomCloseModal(tradeId) {
+      customCloseTradeId = tradeId;
+      customClosePriceInput.value = '';
+      customCloseError.style.display = 'none';
+      customCloseModal.hidden = false;
+      customClosePriceInput.focus();
+    }
+    function closeCustomCloseModal() {
+      customCloseModal.hidden = true;
+      customCloseTradeId = null;
+    }
+    document.getElementById('custom-close-modal-close').addEventListener('click', closeCustomCloseModal);
+    document.getElementById('custom-close-cancel').addEventListener('click', closeCustomCloseModal);
+    customCloseModal.addEventListener('click', function(e) { if (e.target === customCloseModal) closeCustomCloseModal(); });
+    document.addEventListener('keydown', function(e) { if (e.key === 'Escape' && !customCloseModal.hidden) closeCustomCloseModal(); });
+
+    customCloseConfirmBtn.addEventListener('click', async function() {
+      const value = parseFloat(customClosePriceInput.value);
+      if (!isFinite(value) || value <= 0) {
+        customCloseError.textContent = 'Enter a valid positive price.';
+        customCloseError.style.display = 'block';
+        return;
+      }
+      customCloseError.style.display = 'none';
+      customCloseConfirmBtn.disabled = true;
+      try {
+        await closeManually(customCloseTradeId, value);
+        closeCustomCloseModal();
+      } catch (e) {
+        customCloseError.textContent = e.message || 'Failed to close trade.';
+        customCloseError.style.display = 'block';
+      } finally {
+        customCloseConfirmBtn.disabled = false;
+      }
+    });
 
     async function loadRegimeAlerts() {
       try {
@@ -433,7 +502,13 @@
           });
         });
         content.querySelectorAll('.btn-close-manual').forEach(b => {
-          b.addEventListener('click', function() { closeManually(this.dataset.tradeId); });
+          b.addEventListener('click', async function() {
+            try { await closeManually(this.dataset.tradeId); }
+            catch (e) { alert('Failed to close: ' + (e.message || e)); }
+          });
+        });
+        content.querySelectorAll('.btn-close-custom').forEach(b => {
+          b.addEventListener('click', function() { openCustomCloseModal(this.dataset.tradeId); });
         });
       } catch (e) {
         content.innerHTML = `<div class="alert alert--error">Failed: ${esc(e.message)}</div>`;

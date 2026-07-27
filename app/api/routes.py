@@ -445,36 +445,48 @@ async def list_active_trades(
     return _with_disclaimer({"items": items})
 
 
+class ManualCloseBody(BaseModel):
+    closing_price: float | None = None
+
+
 @router.post("/active-trades/{trade_id}/close-manually")
 async def close_trade_manually(
     trade_id: str,
+    body: ManualCloseBody | None = None,
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    """Mark an active trade as closed manually (outcome=manual). Captures current price at close time."""
+    """Mark an active trade as closed manually (outcome=manual). Uses a caller-supplied closing price if given, otherwise captures current market price."""
+    import math
     from sqlalchemy.orm import selectinload
     from app.services.technicals import get_cached_price
     from app.services.recommendations.engine import get_yf_symbol
-    
+
     q = select(ActiveTrade).options(selectinload(ActiveTrade.recommendation)).where(ActiveTrade.id == trade_id)
     result = await db.execute(q)
     trade = result.scalar_one_or_none()
-    
+
     if not trade:
         raise HTTPException(status_code=404, detail="Active trade not found")
     if getattr(trade, "outcome", None) is not None:
         return _with_disclaimer({"ok": True, "message": "Trade already has an outcome.", "trade_id": trade_id})
-    
+
     now = datetime.now(timezone.utc)
-    
-    # Capture closing price
-    rec = trade.recommendation
-    if rec:
-        symbol = get_yf_symbol(rec.asset_category, rec.asset_id)
-        if symbol:
-            closing_price = get_cached_price(symbol)
-            if closing_price:
-                trade.closing_price = closing_price
-    
+
+    manual_price = body.closing_price if body else None
+    if manual_price is not None:
+        if math.isnan(manual_price) or manual_price <= 0:
+            raise HTTPException(status_code=400, detail="Closing price must be a positive number.")
+        trade.closing_price = manual_price
+    else:
+        # Capture closing price from market data
+        rec = trade.recommendation
+        if rec:
+            symbol = get_yf_symbol(rec.asset_category, rec.asset_id)
+            if symbol:
+                closing_price = get_cached_price(symbol)
+                if closing_price:
+                    trade.closing_price = closing_price
+
     trade.trade_phase = "closed_manual"
     trade.outcome = "manual"
     trade.outcome_at = now
