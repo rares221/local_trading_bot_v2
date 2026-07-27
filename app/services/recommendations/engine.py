@@ -6,6 +6,7 @@ confidence gating, cross-asset correlation. Best N per category (regime-dependen
 import logging
 from dataclasses import dataclass
 from datetime import date, timedelta
+import math
 from typing import Any, Optional, Sequence
 
 logger = logging.getLogger(__name__)
@@ -683,7 +684,7 @@ def _build_candidate(
 ) -> Optional[Candidate]:
     """Build a single Candidate with ATR-based levels, direction, expiry, score, trend alignment."""
     snap = build_snapshot(symbol)
-    if not snap or snap.price <= 0:
+    if not snap or snap.price <= 0 or math.isnan(snap.price):
         return None
 
     price = round(snap.price, 2)
@@ -726,6 +727,9 @@ def _build_candidate(
 
     # ATR-based stop loss / take profit
     sl, tp = compute_atr_levels(price, risk_tier, snapshot=snap, direction=direction)
+    if math.isnan(sl) or math.isnan(tp):
+        logger.warning("[ENGINE] Skip %s (%s): NaN SL/TP from compute_atr_levels", asset_id, symbol)
+        return None
 
     # Expiry estimation
     expiry_days = estimate_expiry_days(price, tp, snapshot=snap)
