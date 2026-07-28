@@ -19,6 +19,7 @@ Trading insight app: **market analysis** (RSS + sentiment + technicals), **regim
 - **Optional:** [Docker](https://docs.docker.com/get-docker/) / Docker Compose
 - **Optional (local LLM):** [Ollama](https://ollama.ai/) if you use provider `ollama`
 - **Optional (FinBERT sentiment blend):** `pip install -r requirements-optional.txt` (PyTorch + transformers; see file for notes)
+- **Optional (macOS):** [uv](https://github.com/astral-sh/uv) as a faster drop-in replacement for `pip`/`venv`
 
 ---
 
@@ -29,6 +30,12 @@ From the **project root** (`local_trading_bot_v2`):
 ```bash
 cd local_trading_bot_v2
 python -m venv .venv
+```
+
+**macOS (using [uv](https://github.com/astral-sh/uv), optional but faster):**
+
+```bash
+uv venv
 ```
 
 ### Activate the virtual environment (pick your shell)
@@ -47,12 +54,25 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
+**macOS (using uv):**
+
+```bash
+uv pip install --upgrade pip
+uv pip install -r requirements.txt
+```
+
 **Note:** On Windows Git Bash, always use **forward slashes** in paths (e.g. `.venv/Scripts/activate`), not backslashes.
 
 **Optional FinBERT:** after the base install:
 
 ```bash
 python -m pip install -r requirements-optional.txt
+```
+
+**macOS (using uv):**
+
+```bash
+uv pip install -r requirements-optional.txt
 ```
 
 ### Environment (optional)
