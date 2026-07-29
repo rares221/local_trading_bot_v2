@@ -1075,6 +1075,7 @@ async def close_trade_manually(
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """Close a trade manually. Accepts optional closing_price and outcome (hit_tp|hit_sl|manual)."""
+    import math
     from sqlalchemy.orm import selectinload
     from app.services.technicals import get_cached_price
     from app.services.recommendations.engine import get_yf_symbol
@@ -1094,8 +1095,10 @@ async def close_trade_manually(
 
     now = datetime.now(timezone.utc)
 
-    # Closing price: user-supplied > cached > live fetch fallback
+    # Closing price: user-supplied (validated) > cached > live fetch fallback
     closing_price = body.closing_price
+    if closing_price is not None and (math.isnan(closing_price) or closing_price <= 0):
+        raise HTTPException(status_code=400, detail="Closing price must be a positive number.")
     if not closing_price:
         rec = trade.recommendation
         if rec:

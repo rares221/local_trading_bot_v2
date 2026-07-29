@@ -19,6 +19,7 @@ import logging
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import date, timedelta
+import math
 from typing import Any, Optional, Sequence
 from uuid import uuid4
 
@@ -1161,7 +1162,7 @@ def _build_candidate(
     """Build a single Candidate with ATR-based levels, direction, expiry, score, trend alignment."""
     pol = policy or get_asset_class_policy(category, asset_id)
     snap = build_snapshot(symbol)
-    if not snap or snap.price <= 0:
+    if not snap or snap.price <= 0 or math.isnan(snap.price):
         _log_engine_skip(
             "no_snapshot",
             category=category,
@@ -1307,6 +1308,10 @@ def _build_candidate(
 
     # ATR-based stop loss / take profit
     sl, tp = compute_atr_levels(price, risk_tier, snapshot=snap, direction=direction)
+    if math.isnan(sl) or math.isnan(tp):
+        logger.warning("[ENGINE] Skip %s (%s): NaN SL/TP from compute_atr_levels", asset_id, symbol)
+        return None
+
     eff_min_rr = max(1.0, min_rr_floor * 0.85) if ad_hoc else min_rr_floor
     if ad_hoc:
         sl, tp = _stretch_levels_for_min_rr(price, sl, tp, direction, eff_min_rr)
