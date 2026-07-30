@@ -37,3 +37,5 @@ sse-starlette>=1.6.5
 pytest>=8.0.0
 pytest-asyncio>=0.23.0
 pytest-mock>=3.12.0
+# Others
+greenlet>=3.0.2
