@@ -423,6 +423,7 @@ async def export_recommendations_csv(
 class TakeTradeRequest(BaseModel):
     """Optional body for POST took-it (trade builder). Default strategy = follow recommendation as-is."""
     strategy: str = "vanilla"  # see app.services.trade_strategies.VALID_STRATEGIES
+    entry_price: float | None = None  # manual override of the auto-filled buy_in_price, if user edited it
 
 
 @router.get("/recommendations/item/{recommendation_id}")
@@ -449,6 +450,7 @@ async def mark_took_it(
     body: TakeTradeRequest | None = Body(default=None),
 ) -> dict[str, Any]:
     """Mark recommendation as taken; create one or more active trades (vanilla or split TP)."""
+    import math
     from app.services.trade_strategies import legs_for_strategy, normalize_strategy
 
     rec = await db.get(Recommendation, recommendation_id)
@@ -460,6 +462,12 @@ async def mark_took_it(
         strategy = normalize_strategy((body or TakeTradeRequest()).strategy)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+
+    entry_price = body.entry_price if body else None
+    if entry_price is not None:
+        if math.isnan(entry_price) or entry_price <= 0:
+            raise HTTPException(status_code=400, detail="Entry price must be a positive number.")
+        rec.buy_in_price = entry_price
 
     legs = legs_for_strategy(
         strategy,
@@ -522,6 +530,7 @@ async def mark_took_it(
 class TradeBuilderExplainRequest(BaseModel):
     recommendation_id: str
     strategy: str = "vanilla"
+    entry_price: float | None = None
 
 
 class TradeBuilderFromAssetRequest(BaseModel):
@@ -657,9 +666,11 @@ async def list_trade_builder_strategies() -> dict[str, Any]:
 async def trade_builder_static_explanation(
     recommendation_id: str,
     strategy: str = "vanilla",
+    entry_price: float | None = None,
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """Instant strategy summary (no LLM). Use with POST explain-strategy for optional AI detail."""
+    import math
     from app.services.trade_strategies import (
         leg_count_for_strategy,
         normalize_strategy,
@@ -674,13 +685,17 @@ async def trade_builder_static_explanation(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
+    entry = rec.buy_in_price
+    if entry_price is not None and not math.isnan(entry_price) and entry_price > 0:
+        entry = entry_price
+
     direction = getattr(rec, "direction", "long") or "long"
     text = strategy_static_explanation(
-        strat, rec.buy_in_price, rec.stop_loss, rec.take_profit, direction
+        strat, entry, rec.stop_loss, rec.take_profit, direction
     )
     n_legs = leg_count_for_strategy(
         strat,
-        rec.buy_in_price,
+        entry,
         rec.stop_loss,
         rec.take_profit,
         direction,
@@ -703,6 +718,7 @@ async def explain_trade_builder_strategy(
     Optional richer explanation via the Dashboard research LLM.
     Client should show GET /trade-builder/static-explanation first; this may return null if LLM is off or fails.
     """
+    import math
     from app.services.research.llm import generate_strategy_explanation
     from app.services.trade_strategies import (
         build_strategy_explanation_user_message,
@@ -717,13 +733,17 @@ async def explain_trade_builder_strategy(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
+    entry = rec.buy_in_price
+    if body.entry_price is not None and not math.isnan(body.entry_price) and body.entry_price > 0:
+        entry = body.entry_price
+
     direction = getattr(rec, "direction", "long") or "long"
     user_msg = build_strategy_explanation_user_message(
         strat,
         rec.asset_id,
         rec.asset_category or "",
         direction,
-        rec.buy_in_price,
+        entry,
         rec.stop_loss,
         rec.take_profit,
         getattr(rec, "risk_reward", None),
