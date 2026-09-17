@@ -208,10 +208,56 @@ therefore one the batch engine would also produce. The historical-win-rate blend
 display overlay (see Phase 2), never a silent replacement of the engine score. Option B (a deliberately
 reduced live model) was rejected: it leaves live and batch showing different numbers for the same asset.
 
+**Progress (2026-09-17): Step 1 DONE — engine golden safety net (both paths).**
+`tests/unit/services/test_engine_build_candidate_golden.py` (10 tests) pins current `_build_candidate`
+output before extraction:
+- market_ctx=None path (5): emit (ad_hoc long → conf 83, sl 95.0, tp 108.53, rr 1.71, score 1.15)
+  + four skip paths (low-R:R, RSI exhaustion, OFI distribution, shorts-disabled).
+- market_ctx path (5): stub MarketContext over "indices" — bull emit (conf 83), bull RSI68 emit
+  (conf 73, ceiling widened to 70), bear RSI63/68 skip (ceiling capped 60), crisis hard-block.
+Harness uses frozen mid-month date + monkeypatched build_snapshot/check_trend_alignment/
+get_preferred_risk/velocity/get_sector_for_asset. Full unit suite **273 green**.
+
+**Phase 0 FOLLOW-UP FIX (2026-09-17): RSI-exhaustion ceiling now 5-label.** engine.py:1275/1281
+compared `regime_id` (switched to 5-label in Phase 0) against the dead 3-label `"risk_on"`/`"risk_off"`
+→ the ceiling's regime-awareness was silently disabled. Fixed: `"risk_on"→"bull"` widens ceiling to 70,
+`"risk_off"→("bear","high_vol","crisis")` caps it at 60. This lives in the **live/batch engine path only**;
+replay has NO RSI-exhaustion gate (see Phase 1/3 gap table), so the walk-forward does NOT exercise it —
+a WF re-run would be a null test. Validated by the market_ctx golden tests above instead. The Phase 0
+re-baseline (OOS Sharpe 2.845) is unaffected and stands.
+
 **Tasks:**
 1. Extract the Arc 5 bonus + soft-penalty + hard-gate logic from `engine._build_candidate` into a new
    `app/services/recommendations/scoring.py` with no DB/IO dependencies. Define `ScoreResult`
    (final confidence, the gate decision + reason, and the itemized adjustments for debugging/UI).
+   — IN PROGRESS via incremental byte-identical slices (each verified against the 10 engine goldens):
+   - ✅ Slice 1 (2026-09-17): `apply_signal_bonuses(confidence, snap, direction, today)` — the Arc-5
+     bonus block (macd_rsi, volume surge, rsi momentum, triple confluence, atr pct, turn-of-month,
+     52w high, ema200 sweet spot). This is exactly what live_analyzer was missing.
+   - ✅ Slice 2 (2026-09-17): `compute_soft_penalties(snap, direction, category, preferred_risk,
+     vel_confidence_penalty)` — the pooled soft-penalty cap (adx, macd-alignment, volume, obv,
+     macd-decay, rsi-slope, cap-tier), consolidating 3 scattered pre-scoring snippets + the pool.
+   Both live in NEW `app/services/recommendations/scoring.py` (pure, IO-free) with direct unit tests
+   `tests/unit/services/test_scoring.py` (8). Full suite **281 green**.
+   - ✅ Slice 3 (2026-09-17): hard gates for live parity — `is_rsi_exhausted(snap, direction,
+     regime_id, preferred_risk)` (+ `rsi_exhaustion_ceiling`) and `apply_ofi_gate(confidence, snap,
+     direction) -> (confidence, skip)`. These are the two gates the Phase 1 table lists as missing in
+     live. Engine re-pointed; direct unit tests added (scoring tests now 23). Full suite **296 green**.
+   - ⏳ Remaining slices: market_ctx adjustment block (regime/sector/dxy/correlation — IO-coupled) +
+     other inline gates (crisis already regime-checked, earnings, indicator-conflict); then compose
+     into a single `score_candidate(ScoringInputs) -> ScoreResult`.
+   - ✅ Task 4 PARTIAL (2026-09-17): WIRED the two hard gates into `live_analyzer._compute_signal_sync`
+     — `is_rsi_exhausted` (after the short-gate block) + `apply_ofi_gate` (after conviction, before the
+     bear-short floor). `preferred_risk` (= `get_preferred_risk()`) threaded through `build_all_signals`.
+     Before/after on fixed fixtures (regime=bull/bear, moderate): overbought long RSI90 28→SKIP,
+     distribution long OFI0.30 42→SKIP, bear RSI63 28→SKIP, mild-dist OFI0.38 42→37 (nudge), healthy
+     42→42, bull RSI68 42→42 (regime-aware ceiling). Regression test `test_live_analyzer_gates.py` (5).
+     Full suite **301 green**. STILL PENDING for full live parity (Option A): route live confidence
+     through the shared bonuses + soft-penalties too (live still uses the compute_live_confidence blend,
+     not the engine bonus pipeline) — larger confidence-parity change, separate step.
+   - ⏳ Then re-point `replay._build_signal` at the shared fns (Task 3).
+   Seam confirmed: engine keeps all IO, passes materialized values to pure scoring fns; risk_off
+   long→short flip stays in engine (needs SHORTS_ENABLED + policy).
 2. Re-point `_build_candidate` at it (behavior-preserving refactor; lock with a golden test on a few
    fixed snapshots so output is byte-identical before/after).
 3. Re-point `replay._build_signal` at the shared function; delete the mirrored copy.

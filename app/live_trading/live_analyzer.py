@@ -301,6 +301,7 @@ def _compute_signal_sync(
     backtest_stats: dict | None = None,
     sentiment_velocity: float | None = None,
     sentiment_conviction: float | None = None,
+    preferred_risk: str = "moderate",
 ) -> dict | None:
     """
     Blocking computation of a full math signal for one asset.
@@ -364,6 +365,15 @@ def _compute_signal_sync(
         _bear_short_min_conf = None
     # ─────────────────────────────────────────────────────────────────────────
 
+    # ── Parity gates: shared with the batch engine (app/services/recommendations/scoring.py) ──
+    from app.services.recommendations.scoring import is_rsi_exhausted, apply_ofi_gate
+
+    # RSI exhaustion hard gate (regime + preference aware) — engine gates this, live previously
+    # did not, so live could emit overbought longs / oversold shorts the batch engine rejects.
+    if is_rsi_exhausted(snap, direction, regime, preferred_risk):
+        return None
+    # ──────────────────────────────────────────────────────────────────────────────────────────
+
     try:
         math_sl, math_tp = compute_atr_levels(
             price=snap.price,
@@ -420,6 +430,12 @@ def _compute_signal_sync(
         elif sentiment_conviction < 0.3:
             confidence = max(0, confidence - 8)
 
+    # OFI hard gate + confidence nudge (parity with engine): strong distribution on a long /
+    # accumulation on a short hard-skips; milder imbalance nudges confidence ±.
+    confidence, _ofi_skip = apply_ofi_gate(confidence, snap, direction)
+    if _ofi_skip:
+        return None
+
     # Gate 4: Bear-regime confidence floor for shorts (checked after final confidence)
     if _bear_short_min_conf is not None and confidence < _bear_short_min_conf:
         return None
@@ -473,7 +489,15 @@ async def build_all_signals(min_confidence: int = 10) -> list[dict]:
         loop.run_in_executor(_snap_executor, get_auto_universe),
     )
 
-    logger.info("[LIVE_ANALYZER] Universe: %d assets, regime=%s", len(universe), regime)
+    # Global risk preference — feeds the shared RSI-exhaustion ceiling (parity with engine).
+    try:
+        from app.core.preferences import get_preferred_risk
+        preferred_risk = get_preferred_risk()
+    except Exception:
+        preferred_risk = "moderate"
+
+    logger.info("[LIVE_ANALYZER] Universe: %d assets, regime=%s, preferred_risk=%s",
+                len(universe), regime, preferred_risk)
 
     # Pre-fetch backtest win rates for all symbols (async, before threads)
     from app.live_trading.live_confidence import fetch_backtest_stats
@@ -503,6 +527,7 @@ async def build_all_signals(min_confidence: int = 10) -> list[dict]:
                 sentiment_avg, sentiment_count, regime,
                 stats,
                 sentiment_velocity, sentiment_conviction,
+                preferred_risk,
             ),
         ))
 
