@@ -243,19 +243,45 @@ re-baseline (OOS Sharpe 2.845) is unaffected and stands.
      regime_id, preferred_risk)` (+ `rsi_exhaustion_ceiling`) and `apply_ofi_gate(confidence, snap,
      direction) -> (confidence, skip)`. These are the two gates the Phase 1 table lists as missing in
      live. Engine re-pointed; direct unit tests added (scoring tests now 23). Full suite **296 green**.
-   - ⏳ Remaining slices: market_ctx adjustment block (regime/sector/dxy/correlation — IO-coupled) +
-     other inline gates (crisis already regime-checked, earnings, indicator-conflict); then compose
-     into a single `score_candidate(ScoringInputs) -> ScoreResult`.
+   - ✅ COMPOSED (2026-09-17): `ScoreResult` + `score_candidate(...)` in scoring.py compose the canonical
+     confidence pipeline (base `compute_confidence` → pooled soft-penalties → signal bonuses). ENGINE and
+     LIVE both re-pointed to it — byte-identical (engine 10 goldens + live 6 gate tests green; unused
+     `compute_confidence` imports removed). Direct unit tests (scoring suite now 26). Full suite **305 green**.
+     REPLAY intentionally NOT re-pointed to score_candidate: its base confidence is consumed mid-pipeline
+     by the short-filter (bear-regime floor on base), so it keeps calling `compute_soft_penalties` +
+     `apply_signal_bonuses` directly (already shared). Hard gates (RSI-exhaustion/OFI) + path-specific
+     adjustments (market_ctx, earnings, conviction) stay caller-side by design — placement differs per path.
+   - ⏳ Remaining (optional cleanup): extract the engine's market_ctx/earnings/conflict adjustment blocks
+     too if a single monolithic scorer is wanted; not required for parity (behavior already shared).
    - ✅ Task 4 PARTIAL (2026-09-17): WIRED the two hard gates into `live_analyzer._compute_signal_sync`
      — `is_rsi_exhausted` (after the short-gate block) + `apply_ofi_gate` (after conviction, before the
      bear-short floor). `preferred_risk` (= `get_preferred_risk()`) threaded through `build_all_signals`.
      Before/after on fixed fixtures (regime=bull/bear, moderate): overbought long RSI90 28→SKIP,
      distribution long OFI0.30 42→SKIP, bear RSI63 28→SKIP, mild-dist OFI0.38 42→37 (nudge), healthy
      42→42, bull RSI68 42→42 (regime-aware ceiling). Regression test `test_live_analyzer_gates.py` (5).
-     Full suite **301 green**. STILL PENDING for full live parity (Option A): route live confidence
-     through the shared bonuses + soft-penalties too (live still uses the compute_live_confidence blend,
-     not the engine bonus pipeline) — larger confidence-parity change, separate step.
-   - ⏳ Then re-point `replay._build_signal` at the shared fns (Task 3).
+     Full suite **301 green**.
+   - ✅ Task 4 — LIVE CONFIDENCE PARITY (Option A, 2026-09-17): `_compute_signal_sync` now gates on the
+     engine pipeline — base `compute_confidence` → pooled `compute_soft_penalties` (incl. sentiment-
+     velocity fade + strong-reversal hard-skip) → `apply_signal_bonuses`. The `compute_live_confidence`
+     backtest-winrate blend is DEMOTED to a display-only overlay (new signal field `historical_confidence`),
+     no longer gating. Before/after (fixed fixtures): healthy long 42→83 (== engine golden), and crucially
+     healthy-no-stats vs healthy-good-stats now BOTH 83 (were 42 vs 70) — gating confidence decoupled from
+     historical win rate, which now shows only in the overlay (42 vs 70). OFI-mild 37→78. Regression tests
+     updated (`test_live_analyzer_gates.py`, 6). Full suite **302 green**.
+     LLM-floor DECISION: real-universe scan (23 signals post-gates): min 6 / median 28 / max 72;
+     **7 clear the 40 floor** (10 clear 35, 5 clear 50). KEEP `_MIN_CONFIDENCE_LONG=40` — 7 LLM-eligible
+     signals is healthy (not starved/flooded); no re-tune needed. Precise reconciliation of 40 vs the
+     engine's per-category min-confidence + policy offsets stays Phase 1 Task 6. Aside: scan surfaced
+     delisted tickers still in the live universe (SWEEP/CFD/ZEC/PXD) — pre-existing universe staleness,
+     unrelated, worth a cleanup pass.
+   - ✅ Task 3 — RE-POINTED `replay._build_signal` (2026-09-17): replaced its inline soft-penalty pool
+     + signal-bonus blocks with `compute_soft_penalties(snap, direction, category, "moderate", 0)` and
+     `apply_signal_bonuses(confidence, snap, direction, sim_date)`. Replay's inline code was already
+     line-for-line identical to scoring.py (vol_floor 0.75 = moderate, no velocity → vel_pen 0,
+     sim_date = today), so this is BYTE-IDENTICAL — walk-forward baseline unchanged (verified: 7 fixed
+     fixtures 83/60/83/73/71/83/79 identical before/after; full suite 302 green incl. replay short tests).
+     Deliberately did NOT add RSI-exhaustion/OFI gates to replay (genuinely absent there; adding them
+     would move the baseline — that's a separate decision). No WF re-run needed (byte-identical proof).
    Seam confirmed: engine keeps all IO, passes materialized values to pure scoring fns; risk_off
    long→short flip stays in engine (needs SHORTS_ENABLED + policy).
 2. Re-point `_build_candidate` at it (behavior-preserving refactor; lock with a golden test on a few

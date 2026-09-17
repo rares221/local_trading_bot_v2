@@ -38,6 +38,7 @@ from app.services.recommendations.engine import (
     _min_rr_floor_for_build,
 )
 from app.services.recommendations.asset_class_policy import get_asset_class_policy
+from app.services.recommendations.scoring import apply_signal_bonuses, compute_soft_penalties
 from app.services.backtesting.data_provider import (
     get_future_bars,
     get_trading_days,
@@ -244,14 +245,6 @@ def _build_signal(
                 hist_count = entry.get("count", 0)
                 break
 
-    # ADX trend-strength soft penalty: ADX < 20 = weak/no trend — mirrors live engine.
-    # Soft penalty (-8) rather than hard gate preserves diversification.
-    _adx_penalty = 0
-    if snap.adx is not None:
-        _adx_val, *_ = snap.adx
-        if _adx_val < 20:
-            _adx_penalty = 8
-
     # Direction from sentiment + technicals, mirroring the live engine.
     # Pass hist_sentiment so macro-linked assets (oil, FX, gold) use the same
     # 30-50% sentiment weight the engine uses, not pure technicals.
@@ -284,107 +277,17 @@ def _build_signal(
         if confidence < BEAR_REGIME_SHORT_MIN_CONFIDENCE:
             return None
 
-    # Combined soft-penalty cap: all confidence-reducing signals pooled so no combination of weak
-    # signals can stack into an invisible hard gate. Cap 25 pts.
-    # --- MIRRORED FROM engine.py ---
     category = _guess_category(symbol)
     pol = get_asset_class_policy(category, symbol)
-    _obv_penalty = 0
-    if direction == "long" and snap.obv_confirming_down:
-        _obv_penalty = 5
-    elif direction == "short" and snap.obv_confirming_up:
-        _obv_penalty = 5
-    _macd_decay_penalty = 0
-    if snap.macd is not None and snap.macd_hist_slope is not None:
-        if direction == "long" and snap.macd[2] > 0 and snap.macd_hist_slope < 0:
-            _macd_decay_penalty = 5
-        elif direction == "short" and snap.macd[2] < 0 and snap.macd_hist_slope > 0:
-            _macd_decay_penalty = 5
-    _rsi_slope_penalty = 0
-    if snap.rsi is not None and snap.rsi_slope is not None:
-        if direction == "long":
-            if snap.rsi_slope < -4.0:
-                _rsi_slope_penalty = 8
-            elif snap.rsi_slope < -2.0:
-                _rsi_slope_penalty = 4
-        elif direction == "short":
-            if snap.rsi_slope > 2.0:
-                _rsi_slope_penalty = 4
-    _macd_alignment_penalty = 0
-    if snap.macd is not None:
-        if direction == "long" and snap.macd_bearish:
-            _macd_alignment_penalty = 8
-        elif direction == "short" and snap.macd_bullish:
-            _macd_alignment_penalty = 8
-    _vol_floor = 0.75  # moderate default; Step 4 will make this preference-aware
-    _volume_penalty = 0
-    if snap.volume_ratio is not None and category in _STOCK_CATEGORIES:
-        if snap.volume_ratio < _vol_floor:
-            _volume_penalty = 6
-    # --- MIRRORED FROM engine.py ---
-    # Step 6 confirmed sweet spot — mid -4 / small -6 / other ungated. See engine.py for rationale.
-    _cap_tier_penalty = 0
-    if category == "stocks_mid":
-        _cap_tier_penalty = 4
-    elif category == "stocks_small":
-        _cap_tier_penalty = 6
-    _new_filter_penalty = min(
-        _adx_penalty + _obv_penalty + _macd_decay_penalty
-        + _rsi_slope_penalty + _macd_alignment_penalty + _volume_penalty + _cap_tier_penalty,
-        25,
-    )
+    # Soft-penalty pool — shared with the batch engine (scoring.py). Replay has no sentiment
+    # velocity (vel_pen=0), and its vol floor is the moderate default, so preferred_risk="moderate".
+    # This preserves the previous inline behavior byte-for-byte.
+    _new_filter_penalty, _ = compute_soft_penalties(snap, direction, category, "moderate", 0)
     if _new_filter_penalty > 0:
         confidence = max(0, confidence - _new_filter_penalty)
 
-    # Signal bonuses (mirrors engine.py)
-    if snap.macd is not None and snap.rsi is not None:
-        if direction == "long" and snap.macd[2] > 0 and 45 <= snap.rsi <= 65:
-            confidence = min(100, confidence + 6)
-        elif direction == "short" and snap.macd[2] < 0 and 35 <= snap.rsi <= 55:
-            confidence = min(100, confidence + 6)
-    if snap.volume_ratio is not None and snap.volume_ratio > 1.5:
-        confidence = min(100, confidence + 5)
-    # RSI momentum bonus (+4 pts): slope in trade direction + RSI not at extreme.
-    if snap.rsi is not None and snap.rsi_slope is not None:
-        if direction == "long" and snap.rsi_slope > 0 and snap.rsi < 65:
-            confidence = min(100, confidence + 4)
-        elif direction == "short" and snap.rsi_slope < 0 and snap.rsi > 35:
-            confidence = min(100, confidence + 4)
-    # Triple-confluence bonus (+5 pts): all three indicators aligned with direction.
-    if snap.macd is not None and snap.rsi is not None and snap.volume_ratio is not None:
-        if direction == "long" and snap.macd[2] > 0 and snap.rsi > 50 and snap.volume_ratio > 1.0:
-            confidence = min(100, confidence + 5)
-        elif direction == "short" and snap.macd[2] < 0 and snap.rsi < 50 and snap.volume_ratio > 1.0:
-            confidence = min(100, confidence + 5)
-    # ATR percentile regime: high-vol (>75th pct) = elevated risk, penalize longs; low-vol (<25th pct) = reward.
-    if snap.atr_percentile is not None:
-        if snap.atr_percentile > 0.75:
-            confidence = max(0, confidence - 3)
-        elif snap.atr_percentile < 0.25:
-            confidence = min(100, confidence + 3)
-    # Turn-of-month bonus (+2 pts): first 3 / last 2 calendar days — institutional inflows / window dressing.
-    _last_dom = calendar.monthrange(sim_date.year, sim_date.month)[1]
-    if sim_date.day <= 3 or sim_date.day >= _last_dom - 1:
-        confidence = min(100, confidence + 2)
-    if direction == "long" and snap.pct_from_52w_high is not None:
-        vol_ok = snap.volume_ratio is None or snap.volume_ratio >= 1.0
-        if snap.pct_from_52w_high <= 0.03 and vol_ok:
-            confidence = min(100, confidence + 8)
-        elif snap.pct_from_52w_high <= 0.08 and vol_ok:
-            confidence = min(100, confidence + 4)
-    if snap.ema200 is not None and snap.ema200 > 0:
-        if direction == "long":
-            ema_dist = (snap.price - snap.ema200) / snap.ema200
-            if 0.02 <= ema_dist <= 0.10:
-                confidence = min(100, confidence + 3)
-            elif ema_dist > 0.15:
-                confidence = max(0, confidence - 3)
-        elif direction == "short":
-            ema_dist = (snap.ema200 - snap.price) / snap.ema200
-            if 0.02 <= ema_dist <= 0.10:
-                confidence = min(100, confidence + 3)
-            elif ema_dist > 0.15:
-                confidence = max(0, confidence - 3)
+    # Signal bonuses — shared with the batch engine (scoring.py). sim_date drives turn-of-month.
+    confidence, _ = apply_signal_bonuses(confidence, snap, direction, sim_date)
 
     # Volume Profile walk-forward adjustments (same logic as live engine)
     # snap.vpoc is computed from OHLCV sliced to sim_date — fully walk-forward.

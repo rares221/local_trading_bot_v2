@@ -58,7 +58,6 @@ from app.services.technicals import (
     calc_risk_reward,
     clear_cache,
     compute_atr_levels,
-    compute_confidence,
     compute_technical_score,
     compute_relative_strength,
     determine_direction,
@@ -83,10 +82,9 @@ from app.services.recommendations.asset_class_policy import (
     get_asset_class_policy,
 )
 from app.services.recommendations.scoring import (
-    apply_signal_bonuses,
     apply_ofi_gate,
-    compute_soft_penalties,
     is_rsi_exhausted,
+    score_candidate,
 )
 
 RISK_TIER_ORDER = {"conservative": 0, "moderate": 1, "aggressive": 2}
@@ -1322,39 +1320,24 @@ def _build_candidate(
         if aligned_dir != direction:
             score -= pol.mtf_misalign_score_penalty
 
-    # Confidence score (0–100) with market context adjustment; regime-specific thresholds
-    base_confidence = compute_confidence(
-        sentiment_avg,
-        sentiment_count,
-        snap,
-        direction,
-        regime=regime_id,
+    # Confidence score (0–100): the shared scorer composes base compute_confidence → pooled
+    # soft-penalties → signal bonuses (regime-specific thresholds; regime_id is the canonical
+    # 5-label). Identical composition to replay/live so the three paths cannot drift.
+    _score = score_candidate(
+        snap, direction, regime_id, category, _preferred_risk,
+        sentiment_avg, sentiment_count,
+        today=date.today(),
+        vel_confidence_penalty=vel_confidence_penalty,
         sentiment_signal_scale=pol.sentiment_signal_scale,
         indicator_conflict_multiplier=pol.indicator_conflict_multiplier,
     )
-    confidence = base_confidence
+    base_confidence = _score.base_confidence
+    confidence = _score.confidence
     logger.debug(
-        "[ENGINE] %s (%s): base_conf=%d, sent_avg=%s, sent_cnt=%d, dir=%s",
-        asset_id, symbol, base_confidence, sentiment_avg, sentiment_count, direction,
+        "[ENGINE] %s (%s): base_conf=%d soft_pen=%d (%s) bonuses=(%s) dir=%s → conf=%d",
+        asset_id, symbol, base_confidence, _score.soft_penalty,
+        ", ".join(_score.penalty_notes), ", ".join(_score.bonus_notes), direction, confidence,
     )
-    # Combined soft-penalty pool (extracted to the shared scorer). All confidence-reducing signals
-    # are pooled and capped at 25 so no combination of weak signals stacks into an invisible hard
-    # gate. vel_confidence_penalty is the only IO-derived input; the rest is pure on snap/direction.
-    _new_filter_penalty, _nfp_parts = compute_soft_penalties(
-        snap, direction, category, _preferred_risk, vel_confidence_penalty
-    )
-    if _new_filter_penalty > 0:
-        confidence = max(0, confidence - _new_filter_penalty)
-        logger.debug(
-            "[ENGINE] %s: new_filter_penalty=%d (%s) → conf=%d",
-            asset_id, _new_filter_penalty, ", ".join(_nfp_parts), confidence,
-        )
-
-    # ── Bonus signals: items 3-7 — reward high-conviction setups ─────────────────────
-    # Extracted to the shared pure scorer so replay/live apply the identical bonuses.
-    confidence, _bonus_parts = apply_signal_bonuses(confidence, snap, direction, date.today())
-    if _bonus_parts:
-        logger.debug("[ENGINE] %s: signal_bonuses %s → conf=%d", asset_id, ", ".join(_bonus_parts), confidence)
 
     # Order Flow Imbalance gate + adjustment (extracted to the shared scorer). Strong distribution
     # (OFI < 0.35 long) / accumulation (OFI > 0.65 short) hard-skips; milder OFI nudges confidence ±.

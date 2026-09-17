@@ -311,7 +311,6 @@ def _compute_signal_sync(
         from app.services.technicals import (
             build_snapshot,
             compute_atr_levels,
-            compute_confidence,
             compute_technical_score,
             determine_direction,
             calc_risk_reward,
@@ -365,8 +364,12 @@ def _compute_signal_sync(
         _bear_short_min_conf = None
     # ─────────────────────────────────────────────────────────────────────────
 
-    # ── Parity gates: shared with the batch engine (app/services/recommendations/scoring.py) ──
-    from app.services.recommendations.scoring import is_rsi_exhausted, apply_ofi_gate
+    # ── Parity gates + confidence pipeline: shared with the batch engine (scoring.py) ──
+    from app.services.recommendations.scoring import (
+        apply_ofi_gate,
+        is_rsi_exhausted,
+        score_candidate,
+    )
 
     # RSI exhaustion hard gate (regime + preference aware) — engine gates this, live previously
     # did not, so live could emit overbought longs / oversold shorts the batch engine rejects.
@@ -387,21 +390,43 @@ def _compute_signal_sync(
         math_sl = round(snap.price * (1 - 0.02 * mult), 4)
         math_tp = round(snap.price * (1 + 0.03 * mult), 4)
 
+    # ── Confidence: engine-parity pipeline (Option A) via the shared score_candidate ─────────
+    # Same composition as the batch engine: base compute_confidence → pooled soft-penalties →
+    # signal bonuses. The compute_live_confidence backtest-winrate blend no longer gates — it is
+    # demoted to a display-only overlay ("historical_confidence") below.
+    from datetime import date as _date
+
+    # Sentiment-velocity fade (engine parity): strong reversal against the trade hard-skips;
+    # a mild decline feeds the pooled soft penalty inside score_candidate.
+    _vel_pen = 0
+    if sentiment_velocity is not None:
+        _vel_for_dir = sentiment_velocity if direction == "long" else -sentiment_velocity
+        if _vel_for_dir < -0.15:
+            return None
+        elif _vel_for_dir < -0.05:
+            _vel_pen = int(abs(_vel_for_dir) * 40)
+
+    try:
+        _score = score_candidate(
+            snap, direction, regime, category, preferred_risk,
+            sentiment_avg if sentiment_count > 0 else None, sentiment_count,
+            today=_date.today(), vel_confidence_penalty=_vel_pen,
+        )
+        confidence = _score.confidence
+        indicator_score = _score.base_confidence
+    except Exception:
+        confidence = 50
+        indicator_score = 50
+
+    # Display-only overlay: historical backtest-winrate blend (NOT used for gating).
     try:
         from app.live_trading.live_confidence import compute_live_confidence
-        indicator_score = compute_confidence(
-            sentiment_avg=sentiment_avg if sentiment_count > 0 else None,
-            sentiment_count=sentiment_count,
-            snapshot=snap,
-            direction=direction,
-            regime=regime,
-        )
-        confidence = compute_live_confidence(
+        historical_confidence = compute_live_confidence(
             backtest_stats=backtest_stats,
             indicator_score=indicator_score,
         )
     except Exception:
-        confidence = 50
+        historical_confidence = None
 
     try:
         rr = calc_risk_reward(snap.price, math_sl, math_tp)
@@ -449,6 +474,7 @@ def _compute_signal_sync(
         "math_sl":         round(math_sl, 4),
         "math_tp":         round(math_tp, 4),
         "confidence":      confidence,
+        "historical_confidence": historical_confidence,  # display overlay (backtest hit-rate blend)
         "risk_reward":     rr,
         "tech_score":      tech_score,
         "regime":          regime,

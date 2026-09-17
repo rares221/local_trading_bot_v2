@@ -14,6 +14,7 @@ from app.services.recommendations.scoring import (
     compute_soft_penalties,
     is_rsi_exhausted,
     rsi_exhaustion_ceiling,
+    score_candidate,
 )
 from app.services.technicals import TechnicalSnapshot
 
@@ -88,6 +89,57 @@ class TestComputeSoftPenalties:
         total, notes = compute_soft_penalties(low_vol, "long", "stocks_large", "moderate", 0)
         assert total == 6
         assert notes == ["volume_low=-6"]
+
+
+def _full_bull_snap(**kw) -> TechnicalSnapshot:
+    base = dict(
+        price=100.0, atr=2.0, rsi=55.0, rsi_slope=1.0, macd=(1.0, 0.5, 0.5),
+        macd_hist_slope=0.5, adx=(30.0, 28.0, 12.0), stochastic=(60.0, 55.0),
+        bollinger=(105.0, 100.0, 95.0), obv=(1000.0, 5.0), ema200=95.0,
+        volume_ratio=1.6, ofi_ratio=0.55, atr_percentile=0.5, pct_from_52w_high=0.20,
+        volatility_regime="stable",
+    )
+    base.update(kw)
+    return _snap(**base)
+
+
+class TestScoreCandidate:
+    def test_composes_base_softpenalty_bonuses(self):
+        # Clean bullish long: base 60, no soft penalty, bonuses -> 83. This is the same 83 the
+        # engine golden, replay, and live all produce (single shared composition).
+        res = score_candidate(
+            _full_bull_snap(), "long", "bull", "other", "moderate", None, 0, today=_MID_MONTH,
+        )
+        assert res.base_confidence == 60
+        assert res.soft_penalty == 0
+        assert res.confidence == 83
+        assert "ema200_sweet_spot=+3 (5.3% above)" in res.bonus_notes
+
+    def test_soft_penalty_applied_and_reported(self):
+        # ADX < 20 (-8) + small-cap cap-tier (-6) = -14 off the base before bonuses.
+        res = score_candidate(
+            _full_bull_snap(adx=(15.0, 10.0, 12.0)), "long", "bull", "stocks_small",
+            "moderate", None, 0, today=_MID_MONTH,
+        )
+        assert res.soft_penalty == 14
+        assert "adx_weak_trend=-8" in res.penalty_notes
+        assert "cap_tier=-6" in res.penalty_notes
+        # Same setup without the ADX/cap-tier penalties scores higher.
+        clean = score_candidate(
+            _full_bull_snap(), "long", "bull", "other", "moderate", None, 0, today=_MID_MONTH,
+        )
+        assert res.confidence < clean.confidence
+
+    def test_velocity_penalty_feeds_pool(self):
+        res_none = score_candidate(
+            _full_bull_snap(), "long", "bull", "other", "moderate", None, 0, today=_MID_MONTH,
+        )
+        res_vel = score_candidate(
+            _full_bull_snap(), "long", "bull", "other", "moderate", None, 0,
+            today=_MID_MONTH, vel_confidence_penalty=8,
+        )
+        assert res_vel.confidence == res_none.confidence - 8
+        assert res_vel.soft_penalty == 8
 
 
 class TestRsiExhaustion:

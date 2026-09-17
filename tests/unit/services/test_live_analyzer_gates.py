@@ -32,8 +32,25 @@ def _signal(monkeypatch, snapshot, regime="bull", preferred_risk="moderate"):
 
 
 def test_healthy_long_emits(monkeypatch):
+    # Option A: live confidence == engine pipeline (compute_confidence base + soft-penalties +
+    # bonuses) = 83 for this setup, independent of backtest stats.
     r = _signal(monkeypatch, _snap(rsi=55.0))
-    assert r is not None and r["direction"] == "long" and r["confidence"] == 42
+    assert r is not None and r["direction"] == "long" and r["confidence"] == 83
+
+
+def test_confidence_independent_of_backtest_stats(monkeypatch):
+    # The gating confidence no longer depends on historical win rate — that moves to the
+    # display-only overlay. Same setup, wildly different stats → same confidence.
+    r_none = _signal(monkeypatch, _snap(rsi=55.0))
+    tech.build_snapshot = lambda symbol: _snap(rsi=55.0)
+    r_good = la._compute_signal_sync(
+        "TESTA", "TESTA", "moderate", "indices", 0.0, 0, "bull",
+        {"n": 50, "win_rate": 0.65}, None, None, "moderate",
+    )
+    assert r_none["confidence"] == r_good["confidence"] == 83
+    # ...but the overlay reflects the stats.
+    assert r_good["historical_confidence"] == 70
+    assert r_none["historical_confidence"] == 42
 
 
 def test_overbought_long_gated_by_rsi_exhaustion(monkeypatch):
@@ -47,9 +64,9 @@ def test_strong_distribution_long_gated_by_ofi(monkeypatch):
 
 
 def test_mild_distribution_applies_ofi_nudge(monkeypatch):
-    # OFI 0.38 (< 0.4) nudges confidence -5: 42 -> 37.
+    # OFI 0.38 (< 0.4) nudges the engine-pipeline confidence -5: 83 -> 78.
     r = _signal(monkeypatch, _snap(ofi_ratio=0.38))
-    assert r is not None and r["confidence"] == 37
+    assert r is not None and r["confidence"] == 78
 
 
 def test_rsi_ceiling_is_regime_aware(monkeypatch):

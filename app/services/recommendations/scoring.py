@@ -13,10 +13,11 @@ Behavior is preserved byte-for-byte from the original inline engine code; see
 from __future__ import annotations
 
 import calendar
+from dataclasses import dataclass, field
 from datetime import date
 from typing import Optional
 
-from app.services.technicals import TechnicalSnapshot
+from app.services.technicals import TechnicalSnapshot, compute_confidence
 
 # Stock cap-tier categories — mirrors engine._STOCK_CATEGORIES (kept local to stay IO-free).
 _STOCK_CATEGORIES: tuple[str, ...] = ("stocks_large", "stocks_mid", "stocks_small")
@@ -110,6 +111,64 @@ def compute_soft_penalties(
         notes.append(f"cap_tier=-{cap_tier_penalty}")
 
     return total, notes
+
+
+@dataclass
+class ScoreResult:
+    """Result of the shared confidence composition (base → soft-penalties → bonuses)."""
+    confidence: int
+    base_confidence: int
+    soft_penalty: int
+    penalty_notes: list[str] = field(default_factory=list)
+    bonus_notes: list[str] = field(default_factory=list)
+
+
+def score_candidate(
+    snap: Optional[TechnicalSnapshot],
+    direction: str,
+    regime_id: Optional[str],
+    category: str,
+    preferred_risk: str,
+    sentiment_avg: Optional[float],
+    sentiment_count: int,
+    *,
+    today: date,
+    vel_confidence_penalty: int = 0,
+    sentiment_signal_scale: float = 1.0,
+    indicator_conflict_multiplier: float = 1.0,
+) -> ScoreResult:
+    """
+    Canonical confidence composition shared by the batch engine, replay, and live:
+    base indicator score (`compute_confidence`) → pooled soft-penalties → signal bonuses.
+
+    This is the pipeline order all three paths use; extracting it here guarantees they cannot
+    drift. Hard gates (RSI-exhaustion, OFI) and path-specific adjustments (market context,
+    earnings, conviction, etc.) remain the caller's responsibility — their placement differs
+    per path — but the core confidence number is computed identically everywhere.
+    """
+    base = compute_confidence(
+        sentiment_avg,
+        sentiment_count,
+        snap,
+        direction,
+        regime=regime_id,
+        sentiment_signal_scale=sentiment_signal_scale,
+        indicator_conflict_multiplier=indicator_conflict_multiplier,
+    )
+    confidence = base
+    penalty, penalty_notes = compute_soft_penalties(
+        snap, direction, category, preferred_risk, vel_confidence_penalty
+    )
+    if penalty > 0:
+        confidence = max(0, confidence - penalty)
+    confidence, bonus_notes = apply_signal_bonuses(confidence, snap, direction, today)
+    return ScoreResult(
+        confidence=confidence,
+        base_confidence=base,
+        soft_penalty=penalty,
+        penalty_notes=penalty_notes,
+        bonus_notes=bonus_notes,
+    )
 
 
 def rsi_exhaustion_ceiling(
