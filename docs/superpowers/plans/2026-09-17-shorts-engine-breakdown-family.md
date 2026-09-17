@@ -707,3 +707,39 @@ git commit -m "feat(shorts): breakdown-family validation-gate harness"
 "failed_breakout", "failed_retest"), `SHORT_CONFIDENCE_FLOOR`, and the `score_candidate(...)` signature
 (matches `scoring.py`: positional snap/direction/regime_id/category/preferred_risk/sentiment_avg/
 sentiment_count, keyword `today`) are consistent across Tasks 1-7. ✓
+
+---
+
+## Execution notes (2026-09-17) — deviations from the draft, all TDD-driven
+
+Tasks 1–6 implemented and green (15 unit tests; full suite 320). Two corrections vs. the draft code,
+both surfaced by the tests:
+
+1. **`failed_retest` (Task 4)** — the draft's `retested` check (`window["High"] >= support*0.99` over
+   `.iloc[1:]`) misfired on a plain breakdown: pre-break bars sitting above support counted as a
+   "retest." Fixed to require the rally **after the first break** — find `first_break =
+   below.idxmax()` on `reset_index(drop=True)` window, then check `after = window.iloc[first_break+1:]`
+   for `High >= support*0.99`. Also resolves support against the **window high** (the rally peak), not
+   `prev_close` (which is already back under the level during a retest).
+
+2. **`generate_short_signal` (Task 6)** — base ATR R:R for a short is ~1.4 (moderate 3.5/2.5) and the
+   short SL snapping only *widens* the stop, so nothing could clear `_SHORT_MIN_RR=2.0` and every signal
+   returned `None`. Added an inline **short-TP stretch** to the floor (`tp = min(tp, entry -
+   _SHORT_MIN_RR * (sl - entry))`) — mirrors how the long engine stretches levels; keeps isolation (no
+   engine import). Full short R:R *redesign* (tighter stops / squeeze-exit) remains a Phase 6 item per
+   the spec.
+
+3. **Task 7 harness** — corrected vs. draft: sets `tech.set_backtest_mode(Timestamp(d))` per day so
+   `build_snapshot` is walk-forward-safe, and simulates outcomes on `get_future_bars(...)` (future
+   only), not the historical window. `simulate_outcome(entry, sl, tp, "short", future_bars, max_bars)`.
+   Also added **position de-dup** (one open position per symbol) and extended to `period="max"` +
+   pooled four bear windows (2015-16, Q4 2018, 2020, 2022) — the 5y/2-window draft only sampled 2022.
+
+### VALIDATION GATE RESULT (2026-09-17) — PASS
+De-duped, pooled across all four bear regimes: **signals=92, WR=44.4%, avg_pnl_r=+0.2846**
+(overlap_skipped=1414). Both gates PASS (n≥30 ✓; avg_r>0 & WR>0.33 ✓). Survives the 0.1R friction
+haircut (~+0.18R net). Edge softened realistically from 2022-only (50% / +0.37R) when pooling harder
+regimes — a real edge, not a single-year artifact. Caveats: `failed_retest` dominates (84/92; offset
+tie-break masks `support_breakdown`), NVDA dropped on a yfinance period=max quirk (14 symbols). This is
+a frequency+edge gate, NOT the full walk-forward-with-conflict cohort (shorts-recovery-plan Phase 7).
+**Breakdown-only signal generation is VALIDATED → ready for orchestrator integration (Phase 6/8).**
