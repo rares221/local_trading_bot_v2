@@ -93,10 +93,11 @@ CORRELATION_THRESHOLD = 0.75
 
 # Minimum Risk:Reward ratio to include a recommendation (skip trades where reward doesn't justify risk).
 MIN_RISK_REWARD = 2.0  # raised 1.6→2.0: breakeven WR drops from 38.5% to 33.3%, giving our 35% WR positive EV
-# Short trades disabled. Bear-regime shorts remain off pending a backtest run that covers a real
-# sustained bear market (e.g. 2022 drawdown). Phase 4 run on the 2020-2024 period produced only
-# 10-19 short trades (bear regime is rare) with ~10% WR — statistically meaningless and not a
-# valid gate signal. All gate infrastructure is in place; re-enable when a bear-market window is available.
+# Shorts are disabled. The exception path (bear-regime shorts via the existing long-biased engine)
+# was validated across 2020-2024 and the full 2022 bear window — only 7-19 short trades fired in
+# either period. The engine generates long-direction signals by design; shorts need a dedicated
+# signal generator with different entry logic (topping patterns, distribution volume, failed retests).
+# See shorts-recovery-plan for the separate-engine roadmap.
 SHORTS_ENABLED = False
 SHORTS_BEAR_REGIME_ENABLED = False
 
@@ -1181,7 +1182,10 @@ def _build_candidate(
     pair = get_sentiment_score_and_count(category, asset_id, by_asset_sentiment or {})
     sentiment_avg = pair[0] if pair else None
     sentiment_count = pair[1] if pair else 0
-    regime_id = market_ctx.regime.regime if market_ctx else None
+    # Canonical 5-label feeds the scorers (determine_direction / compute_confidence) so
+    # regime profiles match backtest. The 3-label market_ctx.regime.regime is kept only for
+    # the risk_off long→short flip and UI (see :356, :1237).
+    regime_id = market_ctx.regime.extended_regime if market_ctx else None
     direction = determine_direction(
         sentiment_avg,
         snap,
@@ -1248,7 +1252,7 @@ def _build_candidate(
         _bear_regime_short_allowed = (
             SHORTS_BEAR_REGIME_ENABLED
             and market_ctx is not None
-            and market_ctx.regime.regime == "bear"
+            and market_ctx.regime.extended_regime == "bear"
         )
         if not _bear_regime_short_allowed:
             return None
@@ -1794,7 +1798,7 @@ def _build_candidate(
 
     # Bear-regime short confidence floor: only high-conviction short signals are allowed.
     # Raised to 50 (vs ~35-40 for longs) to compensate for historically lower short WR.
-    if direction == "short" and market_ctx and market_ctx.regime.regime == "bear":
+    if direction == "short" and market_ctx and market_ctx.regime.extended_regime == "bear":
         _bear_short_min_conf = BEAR_REGIME_SHORT_MIN_CONFIDENCE
         if confidence < _bear_short_min_conf:
             _log_engine_skip(

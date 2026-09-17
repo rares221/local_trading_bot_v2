@@ -456,12 +456,14 @@ async def build_all_signals(min_confidence: int = 10) -> list[dict]:
     """
     loop = asyncio.get_event_loop()
 
-    # Get regime
-    regime = "cautious"
+    # Get regime — use the canonical 5-label (extended_regime) so the scorer's regime
+    # profiles and the short gates (crisis/high_vol/bear at :354,:357) actually match.
+    # Feeding the 3-label ctx.regime here left those gates permanently dead.
+    regime = "neutral"
     try:
         from app.services.market_context import detect_market_regime
         ctx = await loop.run_in_executor(_snap_executor, detect_market_regime)
-        regime = ctx.regime if hasattr(ctx, "regime") else str(ctx)
+        regime = ctx.extended_regime if hasattr(ctx, "extended_regime") else str(ctx)
     except Exception:
         pass
 

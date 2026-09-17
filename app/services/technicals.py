@@ -1192,52 +1192,32 @@ def classify_horizon(expiry_days: int) -> str:
 # Regime-dependent weights (dynamic indicator weights)
 # ---------------------------------------------------------------------------
 
+# These four helpers now delegate to the canonical regime taxonomy in regime_map.
+# They expect the canonical 5-label scheme (crisis|high_vol|bear|bull|neutral); callers
+# feed `extended_regime` / backtest `day_regime`. See app/services/regime_map.py.
+
 def _regime_direction_weights(regime: Optional[str] = None) -> tuple[float, float]:
-    """
-    Sentiment vs technical weight for direction. risk_on: trust trend more (less sentiment).
-    risk_off: slightly more sentiment; cautious: balanced.
-    """
-    if regime == "risk_on":
-        return (0.20, 0.80)
-    if regime == "risk_off":
-        return (0.25, 0.75)
-    # cautious or None
-    return (0.30, 0.70)
+    """(sentiment_w, technical_w) — delegates to regime_map.direction_weights."""
+    from app.services.regime_map import direction_weights
+    return direction_weights(regime)
 
 
 def _regime_tech_weights(regime: Optional[str] = None) -> tuple[float, float]:
-    """
-    Trend (MACD, ADX) vs mean-reversion (RSI, Stochastic, Bollinger) multiplier.
-    risk_on: favor trend; risk_off: favor mean reversion.
-    """
-    if regime == "risk_on":
-        return (1.2, 0.85)
-    if regime == "risk_off":
-        return (0.85, 1.2)
-    return (1.0, 1.0)
+    """(trend_mult, mean_reversion_mult) — delegates to regime_map.tech_weights."""
+    from app.services.regime_map import tech_weights
+    return tech_weights(regime)
 
 
 def _regime_rsi_thresholds(regime: Optional[str] = None) -> tuple[float, float, float, float]:
-    """
-    (bull_bar, bear_bar, overbought, oversold). risk_off: stricter (60/40, 65/35).
-    risk_on: more lenient (52/48, 72/28). cautious: default (55/45, 70/30).
-    """
-    if regime == "risk_off":
-        return (60.0, 40.0, 65.0, 35.0)
-    if regime == "risk_on":
-        return (52.0, 48.0, 72.0, 28.0)
-    return (55.0, 45.0, 70.0, 30.0)
+    """(bull_bar, bear_bar, overbought, oversold) — delegates to regime_map.rsi_thresholds."""
+    from app.services.regime_map import rsi_thresholds
+    return rsi_thresholds(regime)
 
 
 def _regime_stoch_thresholds(regime: Optional[str] = None) -> tuple[float, float, float, float]:
-    """
-    (bull_bar, bear_bar, overbought, oversold). risk_off: stricter; risk_on: lenient.
-    """
-    if regime == "risk_off":
-        return (60.0, 40.0, 75.0, 25.0)
-    if regime == "risk_on":
-        return (52.0, 48.0, 85.0, 15.0)
-    return (55.0, 45.0, 80.0, 20.0)
+    """(bull_bar, bear_bar, overbought, oversold) — delegates to regime_map.stoch_thresholds."""
+    from app.services.regime_map import stoch_thresholds
+    return stoch_thresholds(regime)
 
 
 def _style_adjust_direction_weights(
@@ -1246,13 +1226,16 @@ def _style_adjust_direction_weights(
     regime: Optional[str],
     asset_direction_style: Optional[str],
 ) -> tuple[float, float]:
-    """Shift weight toward headlines for macro-linked assets (oil, FX, crypto, indices)."""
+    """Shift weight toward headlines for macro-linked assets (oil, FX, crypto, indices).
+    `regime` is the canonical 5-label; the larger bump applies in defensive regimes
+    (bear/high_vol/crisis), the old `risk_off` equivalent."""
+    _defensive = regime in ("bear", "high_vol", "crisis")
     if asset_direction_style == "macro_linked":
-        bump = 0.15 if regime == "risk_off" else 0.10
+        bump = 0.15 if _defensive else 0.10
         sent_w = min(0.50, sent_w + bump)
         tech_w = 1.0 - sent_w
     elif asset_direction_style == "index_macro":
-        bump = 0.12 if regime == "risk_off" else 0.06
+        bump = 0.12 if _defensive else 0.06
         sent_w = min(0.44, sent_w + bump)
         tech_w = 1.0 - sent_w
     return sent_w, tech_w
@@ -1269,8 +1252,9 @@ def determine_direction(
     asset_direction_style: Optional[str] = None,
 ) -> str:
     """
-    Decide long vs short. Weights are regime-dependent: risk_on → more technical/trend;
-    risk_off → more mean-reversion weight; cautious → balanced (30% sentiment, 70% technical).
+    Decide long vs short. Weights are regime-dependent on the canonical 5-label scheme:
+    bull → more technical/trend; bear → more mean-reversion + sentiment weight;
+    neutral → balanced. Profiles live in app/services/regime_map.py.
     Technicals: RSI, MACD, Bollinger, ADX (+DI vs -DI), Stochastic, OBV.
     """
     sent_w, tech_w = _regime_direction_weights(regime)

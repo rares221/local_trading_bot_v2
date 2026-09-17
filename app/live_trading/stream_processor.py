@@ -959,7 +959,10 @@ class StreamProcessor:
         try:
             from app.services.market_context import detect_market_regime
             regime = detect_market_regime()
-            return f"{regime.regime} | SPX: {regime.spx_trend} | VIX: {regime.vix_level}"
+            # First token is the canonical 5-label so _regime_label parsing (:379) and the
+            # bear-regime short floor (:384) actually match. Was regime.regime (3-label) —
+            # which never equals "bear", leaving that exception dead.
+            return f"{regime.extended_regime} | SPX: {regime.spx_trend} | VIX: {regime.vix_level}"
         except Exception:
             return "unknown"
 

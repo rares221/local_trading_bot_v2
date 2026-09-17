@@ -25,12 +25,9 @@ from typing import Optional
 
 import pandas as pd
 
-logger = logging.getLogger(__name__)
+from app.services.regime_map import classify_canonical_regime
 
-# VIX thresholds (industry standard)
-_VIX_CRISIS = 40.0    # systemic fear (2020 COVID, 2008 GFC)
-_VIX_HIGH_VOL = 30.0  # elevated volatility
-_VIX_ELEVATED = 20.0  # start of risk-off
+logger = logging.getLogger(__name__)
 
 # SPX 200-day SMA window
 _SPX_SMA_WINDOW = 200
@@ -52,21 +49,7 @@ def classify_regime(
     """
     vix_level = _get_vix_level(sim_date, ohlcv_data)
     spx_vs_sma = _get_spx_vs_sma(sim_date, ohlcv_data)
-
-    # Priority: crisis > high_vol > bear > bull > neutral
-    if vix_level is not None:
-        if vix_level >= _VIX_CRISIS:
-            return "crisis"
-        if vix_level >= _VIX_HIGH_VOL:
-            return "high_vol"
-
-    if spx_vs_sma is not None and vix_level is not None:
-        if spx_vs_sma < 0 and vix_level >= _VIX_ELEVATED:
-            return "bear"
-        if spx_vs_sma > 0 and vix_level < _VIX_ELEVATED:
-            return "bull"
-
-    return "neutral"
+    return classify_canonical_regime(vix_level, spx_vs_sma)
 
 
 def _get_vix_level(sim_date: date, ohlcv_data: dict[str, pd.DataFrame]) -> Optional[float]:
@@ -145,16 +128,6 @@ def build_regime_calendar(
                 if sma_val != 0:
                     spx_vs_sma = (spx_val - sma_val) / sma_val
 
-        # Classify
-        if vix_level is not None and vix_level >= _VIX_CRISIS:
-            calendar[d] = "crisis"
-        elif vix_level is not None and vix_level >= _VIX_HIGH_VOL:
-            calendar[d] = "high_vol"
-        elif spx_vs_sma is not None and vix_level is not None and spx_vs_sma < 0 and vix_level >= _VIX_ELEVATED:
-            calendar[d] = "bear"
-        elif spx_vs_sma is not None and vix_level is not None and spx_vs_sma > 0 and vix_level < _VIX_ELEVATED:
-            calendar[d] = "bull"
-        else:
-            calendar[d] = "neutral"
+        calendar[d] = classify_canonical_regime(vix_level, spx_vs_sma)
 
     return calendar

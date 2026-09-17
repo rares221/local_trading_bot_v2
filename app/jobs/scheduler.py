@@ -136,9 +136,12 @@ async def job_daily_batch() -> None:
             # pre-ping in a non-greenlet context → MissingGreenlet error.
             analysis_id = analysis.id
             print(f"[BATCH] Analysis found (id={analysis_id})")
-            q_taken = select(Recommendation.asset_category, Recommendation.asset_id).where(
-                Recommendation.status == "taken"
-            ).distinct()
+            q_taken = (
+                select(Recommendation.asset_category, Recommendation.asset_id)
+                .join(ActiveTrade, ActiveTrade.recommendation_id == Recommendation.id)
+                .where(ActiveTrade.outcome.is_(None))
+                .distinct()
+            )
             result_taken = await session.execute(q_taken)
             exclude_taken = {(row[0], row[1]) for row in result_taken.all()}
             from app.core.preferences import get_preferred_risk, get_risk_budget_1r
