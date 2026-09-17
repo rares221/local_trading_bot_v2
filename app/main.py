@@ -59,6 +59,9 @@ async def lifespan(app: FastAPI):
             "For PostgreSQL: ensure DATABASE_URL is set and TimescaleDB is running."
         )
         raise
+    # Fail fast on missing required config (LLM provider / key) before serving.
+    from app.core.config import validate_startup_config
+    validate_startup_config()
     try:
         from app.services.calibration import load_platt_from_disk
         load_platt_from_disk()

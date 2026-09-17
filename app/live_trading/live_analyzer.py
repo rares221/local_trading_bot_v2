@@ -244,6 +244,16 @@ def _aggregate_live_sentiment_sync() -> dict[str, dict]:
         return {}
 
 
+# Ticker-shaped strings that news discovery must never promote: delisted, acquired, or
+# structurally unfetchable via yfinance (surface as "possibly delisted / no price data").
+_DISCOVERY_DENYLIST: frozenset[str] = frozenset({
+    "SWEEP",  # not a real equity ticker
+    "CFD",    # generic term ("contract for difference"), not a ticker
+    "ZEC",    # Zcash — crypto with persistent yfinance data gaps on this symbol form
+    "PXD",    # Pioneer Natural Resources — acquired by Exxon (2024), delisted
+})
+
+
 def _discover_tickers(sentiment_data: dict[str, dict]) -> list[tuple[str, str, str, str]]:
     """
     Find tickers from sentiment data that aren't in the base universe.
@@ -257,6 +267,8 @@ def _discover_tickers(sentiment_data: dict[str, dict]) -> list[tuple[str, str, s
     candidates: list[tuple[str, int]] = []
     for tag, info in sentiment_data.items():
         if tag in _BASE_ASSET_IDS:
+            continue
+        if tag in _DISCOVERY_DENYLIST:
             continue
         if not is_likely_ticker(tag):
             continue

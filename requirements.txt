@@ -17,7 +17,6 @@ pandas>=2.0.0
 
 # Phase 1: sentiment
 vaderSentiment>=3.3.2
-# Optional (for FinBERT blend): pip install -r requirements-optional.txt
 scikit-learn>=1.3.0  # For Platt calibration (LogisticRegression)
 
 # Jobs

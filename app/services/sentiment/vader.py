@@ -77,26 +77,14 @@ ASSET_KEYWORDS: dict[str, list[str]] = {
 
 def score_sentiment(text: str) -> Optional[float]:
     """
-    Return compound sentiment score in [-1, 1]. Uses VADER; when FinBERT is
-    available (optional: pip install transformers torch), blends 0.5*VADER + 0.5*FinBERT.
-    Returns None if VADER not installed.
+    Return compound sentiment score in [-1, 1] via VADER. Returns None if VADER not
+    installed or text is empty.
     """
     if not text:
         return None
-    vader_score: Optional[float] = None
     if _analyzer:
-        scores = _analyzer.polarity_scores(text)
-        vader_score = scores.get("compound")
-    try:
-        from app.services.sentiment.finbert import score_sentiment_finbert
-        finbert_score = score_sentiment_finbert(text)
-        if finbert_score is not None and vader_score is not None:
-            return round(0.5 * vader_score + 0.5 * finbert_score, 4)
-        if finbert_score is not None:
-            return round(finbert_score, 4)
-    except Exception:
-        pass
-    return vader_score
+        return _analyzer.polarity_scores(text).get("compound")
+    return None
 
 
 def tag_assets(text: str) -> list[str]:
