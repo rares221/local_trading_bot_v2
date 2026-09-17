@@ -172,6 +172,30 @@
       font-size: 1.2rem; font-weight: 700; font-variant-numeric: tabular-nums;
       font-family: var(--font-mono);
     }
+    .entry-price-row { display: flex; align-items: center; gap: 6px; }
+    .entry-price-input {
+      width: 110px; font-size: 1.2rem; font-weight: 700; font-variant-numeric: tabular-nums;
+      font-family: var(--font-mono); color: var(--foreground);
+      background: var(--secondary); border: 1px solid var(--border); border-radius: 6px;
+      padding: 2px 6px;
+    }
+    .entry-price-input:focus { outline: none; border-color: #6c63ff; }
+    .entry-price-input.is-manual { border-color: #f59e0b; color: #f59e0b; }
+    .entry-reset-btn {
+      background: none; border: none; cursor: pointer; color: var(--muted-foreground);
+      font-size: 15px; line-height: 1; padding: 2px 4px; border-radius: 4px;
+    }
+    .entry-reset-btn:hover { color: var(--foreground); background: var(--border); }
+    .entry-price-tag {
+      font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em;
+      padding: 1px 6px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted-foreground);
+    }
+    .entry-price-tag.is-manual { color: #f59e0b; border-color: rgba(245,158,11,.4); }
+    .tt-popup {
+      position: fixed; z-index: 9999; background: rgba(15,17,30,0.97); border: 1px solid rgba(108,99,255,0.4);
+      border-radius: 8px; padding: 10px 14px; font-size: 12px; line-height: 1.5; color: rgba(226,232,240,0.9);
+      max-width: 300px; pointer-events: none; box-shadow: 0 4px 20px rgba(0,0,0,0.6); display: none;
+    }
     .strategy-explain {
       margin-top: var(--space-2);
       font-size: 14px; line-height: 1.65; color: var(--foreground);
@@ -576,7 +600,11 @@
         <div class="trade-levels">
           <div class="level-cell">
             <span class="level-label">Entry</span>
-            <span class="level-main" id="v-entry">—</span>
+            <div class="entry-price-row" data-tooltip="Entry auto-fills from the latest market snapshot. Edit it to plan the trade at your own fill price — stop-loss and take-profit stay the same, and R-multiples/legs recalculate against your entry. Use the ↺ button to go back to the suggested price.">
+              <input type="number" step="any" class="entry-price-input" id="v-entry-input" inputmode="decimal">
+              <button type="button" class="entry-reset-btn" id="entry-reset-btn" title="Reset to suggested entry" style="display:none;">↺</button>
+              <span class="entry-price-tag" id="entry-price-tag">auto</span>
+            </div>
             <span class="text-sm text-muted" id="v-cur"></span>
           </div>
           <div class="level-cell">
@@ -1184,7 +1212,7 @@
       box.textContent = 'Loading summary…';
       meta.textContent = '';
 
-      const qs = new URLSearchParams({ recommendation_id: rec.id, strategy: strategy });
+      const qs = new URLSearchParams({ recommendation_id: rec.id, strategy: strategy, entry_price: rec.buy_in_price });
       try {
         const stat = await fetch('/api/trade-builder/static-explanation?' + qs.toString());
         const sd = await stat.json();
@@ -1217,7 +1245,7 @@
           const r = await fetch('/api/trade-builder/explain-strategy', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ recommendation_id: rec.id, strategy: strategy }),
+            body: JSON.stringify({ recommendation_id: rec.id, strategy: strategy, entry_price: rec.buy_in_price }),
             signal: ctrl.signal,
           });
           const data = await r.json();
@@ -1297,6 +1325,70 @@
     const params = new URLSearchParams(window.location.search);
     const recId = params.get('rec_id');
     let rec = null;
+    let systemEntryPrice = null;
+
+    const entryInput = document.getElementById('v-entry-input');
+    const entryResetBtn = document.getElementById('entry-reset-btn');
+    const entryTag = document.getElementById('entry-price-tag');
+
+    function setEntryManualUI(isManual) {
+      entryInput.classList.toggle('is-manual', isManual);
+      entryResetBtn.style.display = isManual ? 'inline-block' : 'none';
+      entryTag.textContent = isManual ? 'manual' : 'auto';
+      entryTag.classList.toggle('is-manual', isManual);
+    }
+
+    entryInput.addEventListener('input', () => {
+      const val = parseFloat(entryInput.value);
+      if (!rec || isNaN(val) || val <= 0) return;
+      rec.buy_in_price = val;
+      setEntryManualUI(val !== systemEntryPrice);
+      onStrategyChange(activeStrategy);
+    });
+
+    entryResetBtn.addEventListener('click', () => {
+      if (!rec || systemEntryPrice == null) return;
+      rec.buy_in_price = systemEntryPrice;
+      entryInput.value = systemEntryPrice;
+      setEntryManualUI(false);
+      onStrategyChange(activeStrategy);
+    });
+
+    // Global 3s hover tooltip — wires [data-tooltip] attributes across the page
+    (function() {
+      const popup = document.createElement('div');
+      popup.className = 'tt-popup';
+      document.body.appendChild(popup);
+      let _timer = null;
+      let _lastX = 0, _lastY = 0;
+      document.addEventListener('mouseover', e => {
+        const el = e.target.closest('[data-tooltip]');
+        if (!el) return;
+        _lastX = e.clientX;
+        _lastY = e.clientY;
+        clearTimeout(_timer);
+        _timer = setTimeout(() => {
+          popup.textContent = el.dataset.tooltip;
+          popup.style.left = (_lastX + 14) + 'px';
+          popup.style.top  = (_lastY + 14) + 'px';
+          popup.style.display = 'block';
+        }, 3000);
+      });
+      document.addEventListener('mousemove', e => {
+        _lastX = e.clientX;
+        _lastY = e.clientY;
+        if (popup.style.display === 'block') {
+          popup.style.left = (e.clientX + 14) + 'px';
+          popup.style.top  = (e.clientY + 14) + 'px';
+        }
+      });
+      document.addEventListener('mouseout', e => {
+        const el = e.target.closest('[data-tooltip]');
+        if (!el) return;
+        clearTimeout(_timer);
+        popup.style.display = 'none';
+      });
+    })();
 
     async function load() {
       if (!recId) {
@@ -1324,7 +1416,9 @@
           ' <span class="badge badge--gray">' + (rec.confidence_score != null ? rec.confidence_score + '% conf' : '—') + '</span>';
 
         const e = rec.buy_in_price, sl = rec.stop_loss, tp = rec.take_profit;
-        document.getElementById('v-entry').textContent = fmtNum(e);
+        systemEntryPrice = e;
+        entryInput.value = e;
+        setEntryManualUI(false);
         document.getElementById('v-sl').textContent = fmtNum(sl);
         document.getElementById('v-tp').textContent = fmtNum(tp);
         if (rec.current_price != null) {
@@ -1472,7 +1566,7 @@
         const r = await fetch('/api/recommendations/' + encodeURIComponent(rec.id) + '/took-it', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ strategy: strat }),
+          body: JSON.stringify({ strategy: strat, entry_price: rec.buy_in_price }),
         });
         const data = await r.json();
         if (!r.ok) throw new Error(data.detail || 'Failed');
