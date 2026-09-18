@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date, timedelta
+from app.core.market_time import market_date
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -118,7 +119,7 @@ def is_high_impact_day(d: date | None = None, window_days: int = 1) -> bool:
     Used to reduce recommendation confidence on FOMC/CPI/NFP days.
     """
     if d is None:
-        d = date.today()
+        d = market_date()
     dates = _get_dates()
     for offset in range(-window_days, window_days + 1):
         t = d + timedelta(days=offset)
@@ -133,7 +134,7 @@ def get_upcoming_events(d: date | None = None, days_ahead: int = 14) -> list[dic
     Returns list of dicts with 'date' and 'days_away' keys.
     """
     if d is None:
-        d = date.today()
+        d = market_date()
     dates = _get_dates()
     upcoming: list[dict[str, Any]] = []
 
@@ -158,7 +159,7 @@ def get_macro_overlay_info(d: date | None = None, window_days: int = 1) -> dict[
 
     return {
         "active": active,
-        "as_of": (d or date.today()).isoformat(),
+        "as_of": (d or market_date()).isoformat(),
         "window_days": window_days,
         "confidence_penalty_points": MACRO_DAY_CONFIDENCE_PENALTY,
         "total_dates_loaded": len(dates),

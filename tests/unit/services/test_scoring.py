@@ -61,6 +61,26 @@ class TestApplySignalBonuses:
         assert notes == []
 
 
+class TestStalePenalty:
+    """Phase 4: a stale-fallback snapshot is discounted uniformly inside score_candidate,
+    outside the soft-penalty pool cap, so batch and live apply it identically."""
+
+    _ARGS = ("long", "neutral", "stocks_large", "moderate", 0.3, 5)
+
+    def test_stale_discounts_by_constant(self):
+        from dataclasses import replace
+        from app.services.recommendations.scoring import STALE_CONFIDENCE_PENALTY
+
+        fresh = _snap(rsi=55.0, macd=(1.0, 0.5, 0.5))
+        stale = replace(fresh, is_stale=True)
+        r_fresh = score_candidate(fresh, *self._ARGS, today=_MID_MONTH)
+        r_stale = score_candidate(stale, *self._ARGS, today=_MID_MONTH)
+        assert r_stale.confidence == max(0, r_fresh.confidence - STALE_CONFIDENCE_PENALTY)
+        assert r_stale.soft_penalty == r_fresh.soft_penalty + STALE_CONFIDENCE_PENALTY
+        assert f"stale_snapshot=-{STALE_CONFIDENCE_PENALTY}" in r_stale.penalty_notes
+        assert not any("stale" in n for n in r_fresh.penalty_notes)
+
+
 class TestComputeSoftPenalties:
     def test_adx_and_cap_tier(self):
         snap = _snap(adx=(15.0, 10.0, 12.0))  # ADX < 20

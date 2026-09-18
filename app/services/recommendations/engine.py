@@ -86,6 +86,7 @@ from app.services.recommendations.scoring import (
     is_rsi_exhausted,
     score_candidate,
 )
+from app.core.market_time import market_date
 
 RISK_TIER_ORDER = {"conservative": 0, "moderate": 1, "aggressive": 2}
 
@@ -104,6 +105,15 @@ MIN_RISK_REWARD = 2.0  # raised 1.6→2.0: breakeven WR drops from 38.5% to 33.3
 # See shorts-recovery-plan for the separate-engine roadmap.
 SHORTS_ENABLED = False
 SHORTS_BEAR_REGIME_ENABLED = False
+
+# NEW separate shorts engine (app/services/recommendations/shorts_signals.py + shorts_engine_io.py).
+# Regime-gated at generation time (breakdown in `bear`, fade-top on deteriorating tape; both blocked
+# in crisis/high_vol). This master-enables the shorts second pass in the daily batch. Distinct from
+# the legacy SHORTS_ENABLED long-engine direction flip above.
+# DISABLED 2026-09-18: the full-universe walk-forward showed the shorts cohort net-negative
+# (-0.08R, 21.6% resolved WR over 2021-2024). Kept off pending the curated-universe re-validation.
+SHORTS_ENGINE_ENABLED = False
+MAX_SHORTS_PER_CLASS = 2
 
 # Minimum confidence required for a bear-regime short to pass (vs ~35-40 for longs).
 # Tested at 50 and 60 — confidence floor is not the lever; WR was ~10% at both thresholds.
@@ -1176,9 +1186,8 @@ def _build_candidate(
         )
         return None
 
-    # Stale snapshot: live fetch failed, using cached data from a previous run.
-    # Apply a confidence penalty so the signal is visibly discounted.
-    _stale_confidence_penalty = 8 if snap.is_stale else 0
+    # Stale snapshot (live fetch failed, cached data reused) is discounted inside the shared
+    # score_candidate() so batch and live apply it identically — see scoring.STALE_CONFIDENCE_PENALTY.
 
     price = round(snap.price, 2)
 
@@ -1287,7 +1296,7 @@ def _build_candidate(
 
     # Expiry estimation
     expiry_days = estimate_expiry_days(price, tp, snapshot=snap)
-    expiry = date.today() + timedelta(days=expiry_days)
+    expiry = market_date() + timedelta(days=expiry_days)
 
     # Ranking score
     score = compute_technical_score(sentiment_avg, sentiment_count, snap, direction=direction)
@@ -1326,7 +1335,7 @@ def _build_candidate(
     _score = score_candidate(
         snap, direction, regime_id, category, _preferred_risk,
         sentiment_avg, sentiment_count,
-        today=date.today(),
+        today=market_date(),
         vel_confidence_penalty=vel_confidence_penalty,
         sentiment_signal_scale=pol.sentiment_signal_scale,
         indicator_conflict_multiplier=pol.indicator_conflict_multiplier,
@@ -1697,7 +1706,7 @@ def _build_candidate(
             expiry_days=expiry_days,
             near_earnings=near_earnings,
             category=category,
-            today=date.today(),
+            today=market_date(),
             max_penalty=gap_cfg["gap_risk_max_penalty"],
         )
         if gap_risk_level != "low":
@@ -2040,7 +2049,7 @@ def build_daily_candidates(
 
     out: list[Candidate] = []
     batch_ctx: dict[str, Any] = {
-        "batch_date": date.today().isoformat(),
+        "batch_date": market_date().isoformat(),
         "pipeline_run_id": pipeline_run_id,
         "skips": {},
         "skips_by_cat": {},
@@ -2100,7 +2109,42 @@ def build_daily_candidates(
             total_risk_pct += candidate_risk
             return True
 
+        # Shorts second pass (Option 3): in short-active stock/index categories, take up to
+        # MAX_SHORTS_PER_CLASS highest-confidence shorts FIRST, then longs fill the remaining
+        # slots to `cap`. Quiet classes (no qualifying shorts) keep all `cap` slots for longs.
+        # Conflict-prevention (no long+short on the same asset) is free via _try_add's dedup.
+        from app.services.recommendations.shorts_engine_io import (
+            build_short_candidates_for_category as _build_shorts,
+            compute_tape_deteriorating as _compute_tape_det,
+        )
+        _short_regime = market_ctx.regime.extended_regime if market_ctx else None
+        _short_active = SHORTS_ENGINE_ENABLED and _short_regime not in ("crisis", "high_vol")
+        _tape_det = _compute_tape_det() if _short_active else False
+        _short_categories = (*_STOCK_CATEGORIES, "indices")
+
         for category in BATCH_CATEGORIES:
+            shorts_added = 0
+            if (_short_active and category in _short_categories
+                    and (_short_regime == "bear" or _tape_det)):
+                short_cands = _build_shorts(
+                    category,
+                    regime=_short_regime,
+                    tape_deteriorating=_tape_det,
+                    exclude_taken=exclude_taken,
+                    today=market_date(),
+                    preferred_risk=preferred_risk,
+                )
+                for sc in short_cands:
+                    if shorts_added >= MAX_SHORTS_PER_CLASS:
+                        break
+                    if _try_add(sc):
+                        shorts_added += 1
+                if shorts_added:
+                    logger.info(
+                        "[ENGINE][%s] shorts pass: added %d (regime=%s tape_det=%s)",
+                        category, shorts_added, _short_regime, _tape_det,
+                    )
+
             ranked = build_daily_candidates_for_category(
                 category,
                 max_count=max(pool_per_category, cap),
@@ -2111,15 +2155,18 @@ def build_daily_candidates(
                 market_ctx=market_ctx,
                 active_events=active_events,
             )
-            taken = 0
+            taken = shorts_added  # shorts already consumed slots toward `cap`
             for c in ranked:
                 if taken >= cap:
                     break
                 if _try_add(c):
                     taken += 1
-            logger.info("[ENGINE][%s] added %d / target %d to batch", category, taken, cap)
+            logger.info(
+                "[ENGINE][%s] added %d / target %d to batch (%d shorts)",
+                category, taken, cap, shorts_added,
+            )
 
-        if is_high_impact_day(date.today(), window_days=1):
+        if is_high_impact_day(market_date(), window_days=1):
             for c in out:
                 current = c.confidence_score or 0
                 c.confidence_score = max(0, current - MACRO_DAY_CONFIDENCE_PENALTY)

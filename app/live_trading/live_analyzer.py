@@ -17,6 +17,7 @@ import asyncio
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from app.core.market_time import market_date
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -422,7 +423,7 @@ def _compute_signal_sync(
         _score = score_candidate(
             snap, direction, regime, category, preferred_risk,
             sentiment_avg if sentiment_count > 0 else None, sentiment_count,
-            today=_date.today(), vel_confidence_penalty=_vel_pen,
+            today=market_date(), vel_confidence_penalty=_vel_pen,
         )
         confidence = _score.confidence
         indicator_score = _score.base_confidence

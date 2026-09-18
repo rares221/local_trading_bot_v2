@@ -494,6 +494,35 @@ def _guess_category(symbol: str) -> str:
     return _CATEGORY_MAP.get(symbol, "stocks_large")
 
 
+# Categories the shorts engine applies to (mirrors the live orchestrator integration).
+_SHORT_WF_CATEGORIES = ("stocks_large", "stocks_mid", "stocks_small", "indices")
+
+
+def _short_sig_to_replay_dict(ssig, sim_date: date, regime: str, category: str) -> dict:
+    """Convert a ShortSignal into the replay signal-dict shape (for outcome sim + metrics)."""
+    return {
+        "symbol": ssig.symbol,
+        "asset_category": category,
+        "direction": "short",
+        "risk_tier": "moderate",
+        "entry_date": sim_date.isoformat(),
+        "entry_price": round(ssig.entry, 4),
+        "stop_loss": round(ssig.stop_loss, 4),
+        "take_profit": round(ssig.take_profit, 4),
+        "confidence_score": ssig.confidence,
+        "risk_reward": round(ssig.risk_reward, 4) if ssig.risk_reward else None,
+        "trigger": ssig.trigger,
+        "volatility_regime": None,
+        "trend_bias": None,
+        "atr_pct": None,
+        "vpoc": None, "vah": None, "val": None, "vp_bias": "at_vpoc",
+        "vp_flag": "none", "in_value_area": False, "rs_20d": None,
+        "market_regime": regime,
+        "outcome": None, "closing_price": None, "outcome_date": None,
+        "bars_held": None, "pnl_r": None,
+    }
+
+
 def run_walkforward_backtest(
     start_date: date,
     end_date: date,
@@ -666,10 +695,33 @@ def _replay_window(
     trading_days = get_trading_days(ohlcv_data, start, end)
     signals: list[dict] = []
 
+    # Shorts engine (integrated cohort). Per-signal like the long path — no portfolio conflict/
+    # capacity here (those live only in the live orchestrator); this validates the shorts EDGE and
+    # its IS/OOS degradation within the walk-forward. by_direction in compute_metrics separates them.
+    from app.services.recommendations.shorts_signals import generate_short_signal, _tape_deteriorating
+    # Shorts are gated behind the same flag as live (SHORTS_ENGINE_ENABLED) so the walk-forward stays
+    # long-only by default — the shorts cohort was walk-forward-rejected (negative OOS). Read at runtime
+    # so the shorts diagnosis can flip the flag on for a one-off analysis without a code change.
+    from app.services.recommendations.engine import SHORTS_ENGINE_ENABLED as _SHORTS_ON
+    # Restrict backtest shorts to the CURATED short universe (matches the live orchestrator, which
+    # only shorts SHORT_UNIVERSE) — validating shorts on the full engine universe over-fires on
+    # low-quality names and is not the production config.
+    from app.services.recommendations.shorts_engine_io import SHORT_UNIVERSE as _SHORT_UNIV
+    _short_syms = {yf for (_c, _a, yf, _r) in _SHORT_UNIV}
+
     for sim_date in trading_days:
         cutoff_ts = pd.Timestamp(sim_date)
         tech.set_backtest_mode(cutoff_ts)
         day_regime = regime_calendar.get(sim_date, "neutral")
+
+        # Fade-top activation for this day (VIX rising + SPX below 20d MA). tech.fetch_ohlcv returns
+        # the cached ^VIX/^GSPC sliced to the cutoff just set — walk-forward safe.
+        tape_det = False
+        _vix = tech.fetch_ohlcv("^VIX")
+        _spx = tech.fetch_ohlcv("^GSPC")
+        if _vix is not None and _spx is not None and "Close" in _vix.columns and "Close" in _spx.columns:
+            tape_det = _tape_deteriorating(_vix["Close"], _spx["Close"])
+        shorts_active = _SHORTS_ON and day_regime not in ("crisis", "high_vol") and (day_regime == "bear" or tape_det)
 
         for symbol in symbols:
             try:
@@ -679,6 +731,32 @@ def _replay_window(
                     signals.append(sig)
             except Exception as e:
                 logger.debug("[WF] Error building signal %s @%s: %s", symbol, sim_date, e)
+
+            if not shorts_active or symbol not in _short_syms:
+                continue
+            cat = _guess_category(symbol)
+            if cat not in _SHORT_WF_CATEGORIES:
+                continue
+            try:
+                sdf = ohlcv_data.get(symbol)
+                if sdf is None or sdf.empty:
+                    continue
+                bars = sdf[sdf.index <= cutoff_ts]
+                if len(bars) < 60:
+                    continue
+                snap = build_snapshot(symbol)
+                if snap is None or snap.price <= 0:
+                    continue
+                ssig = generate_short_signal(
+                    symbol, snap, bars, regime_id=day_regime, category=cat,
+                    risk_tier=risk_tier, preferred_risk="moderate",
+                    sentiment_avg=None, sentiment_count=0, today=sim_date,
+                    tape_deteriorating=tape_det,
+                )
+                if ssig is not None:
+                    signals.append(_short_sig_to_replay_dict(ssig, sim_date, day_regime, cat))
+            except Exception as e:
+                logger.debug("[WF] Error building short %s @%s: %s", symbol, sim_date, e)
 
     tech.clear_backtest_mode()
 

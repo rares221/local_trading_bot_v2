@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timezone
+from app.core.market_time import market_date
 from typing import Any
 
 from app.services.research.providers import (
@@ -1215,7 +1216,7 @@ async def generate_brief_narrative(
     recs_str = f"{recs_count} ({', '.join(direction_str)})" if direction_str else str(recs_count)
 
     user_lines = [
-        f"Date: {date.today().isoformat()}",
+        f"Date: {market_date().isoformat()}",
         f"\nMarket data:",
         checklist_lines,
         f"\nActive recommendations today: {recs_str}",

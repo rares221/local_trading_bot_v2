@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import date, datetime, timezone
+from app.core.market_time import market_date
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -119,7 +120,7 @@ def _evaluate_item(item: dict[str, Any], session: AsyncSession | None) -> dict[s
 
 async def _evaluate_one(item: dict[str, Any], session: AsyncSession | None) -> dict[str, Any]:
     if item.get("type") == "recs_count" and session is not None:
-        batch_id = date.today().isoformat()
+        batch_id = market_date().isoformat()
         q = select(Recommendation).where(Recommendation.batch_id == batch_id)
         r = await session.execute(q)
         count = len(r.scalars().all())
@@ -154,7 +155,7 @@ async def run_briefing(session: AsyncSession) -> DailyBriefing:
     content = format_briefing(items)
 
     # Count today's recommendations by direction for narrative context
-    batch_id = date.today().isoformat()
+    batch_id = market_date().isoformat()
     recs_q = await session.execute(
         select(Recommendation).where(Recommendation.batch_id == batch_id)
     )

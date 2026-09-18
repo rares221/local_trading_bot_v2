@@ -595,7 +595,7 @@
       const calNum = Number(cal);
       const calTone = calNum >= 70 ? ' conf-cal--up' : calNum < 40 ? ' conf-cal--down' : '';
       return (
-        '<div class="conf-cell" title="Platt-calibrated score from closed-trade outcomes (0-100 scale)">' +
+        '<div class="conf-cell" title="Primary % is the engine confidence that gates the trade. cal = Platt-calibrated probability from closed-trade outcomes — display only, does not affect gating.">' +
         main +
         '<span class="conf-cal' + calTone + '">cal ' + calNum + '%</span>' +
         '</div>'
@@ -691,7 +691,7 @@
         metrics.splice(5, 0, {
           label: 'Calibrated',
           value: calNum + '%',
-          hint: 'Platt scaling from closed trades',
+          hint: 'Platt scaling from closed trades (display only — does not gate)',
           cls: calNum >= 70 ? 'up' : calNum >= 40 ? '' : 'down',
         });
       }
@@ -1107,7 +1107,7 @@
       },
       {
         title: 'Conf', field: 'confidence_score', minWidth: 100, sorter: 'number',
-        headerTooltip: 'Confidence score (0–100%) from the engine. The smaller "cal" number below is the calibrated probability after statistical adjustment.',
+        headerTooltip: 'Confidence score (0–100%) from the engine — this is the number that gates the trade. The smaller "cal" number below is the Platt-calibrated probability from closed-trade outcomes: display only, it does not affect gating.',
         formatter(cell) {
           const rec = cell.getRow().getData();
           const score = cell.getValue();

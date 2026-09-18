@@ -22,6 +22,11 @@ from app.services.technicals import TechnicalSnapshot, compute_confidence
 # Stock cap-tier categories — mirrors engine._STOCK_CATEGORIES (kept local to stay IO-free).
 _STOCK_CATEGORIES: tuple[str, ...] = ("stocks_large", "stocks_mid", "stocks_small")
 
+# Confidence discount applied when a snapshot is a stale fallback (live fetch failed, cached
+# data reused). Additive and always applied — kept OUT of the soft-penalty pool so it can never
+# be absorbed under the pool's cap; a stale signal must always be visibly discounted.
+STALE_CONFIDENCE_PENALTY = 8
+
 
 def compute_soft_penalties(
     snap: Optional[TechnicalSnapshot],
@@ -162,6 +167,10 @@ def score_candidate(
     if penalty > 0:
         confidence = max(0, confidence - penalty)
     confidence, bonus_notes = apply_signal_bonuses(confidence, snap, direction, today)
+    if snap is not None and getattr(snap, "is_stale", False):
+        confidence = max(0, confidence - STALE_CONFIDENCE_PENALTY)
+        penalty += STALE_CONFIDENCE_PENALTY
+        penalty_notes = [*penalty_notes, f"stale_snapshot=-{STALE_CONFIDENCE_PENALTY}"]
     return ScoreResult(
         confidence=confidence,
         base_confidence=base,

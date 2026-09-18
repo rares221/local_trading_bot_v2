@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import logging
 import math
+import os
+import time
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -22,6 +24,14 @@ logger = logging.getLogger(__name__)
 _ohlcv_cache: dict[str, pd.DataFrame] = {}
 # Separate cache for intraday (key = symbol) to avoid overwriting daily
 _ohlcv_intraday_cache: dict[str, pd.DataFrame] = {}
+# Monotonic insert time per cache key, for TTL expiry (LIVE mode only).
+_ohlcv_cache_ts: dict[str, float] = {}
+# TTL for cached OHLCV in LIVE mode: past this age a cached frame is a miss and is refetched,
+# so a signal is never emitted off hours-stale bars between scheduled clear_cache() calls.
+# Backtest mode ignores the TTL (correctness comes from _apply_backtest_cutoff slicing, and the
+# cached frame is the full fetched history regardless of wall-clock age).
+_OHLCV_TTL_SECONDS = float(os.getenv("OHLCV_CACHE_TTL_SECONDS", "900"))  # 15 min (daily)
+_OHLCV_INTRADAY_TTL_SECONDS = float(os.getenv("OHLCV_INTRADAY_CACHE_TTL_SECONDS", "300"))  # 5 min
 # Snapshot persistence cache: last successful TechnicalSnapshot per symbol.
 # Used as a fallback when a live fetch fails (e.g. yfinance rate limiting).
 # Keyed by the raw symbol string passed to build_snapshot.
@@ -60,6 +70,20 @@ def _apply_backtest_cutoff(df: pd.DataFrame) -> Optional[pd.DataFrame]:
 def clear_cache() -> None:
     _ohlcv_cache.clear()
     _ohlcv_intraday_cache.clear()
+    _ohlcv_cache_ts.clear()
+
+
+def _cache_expired(cache_key: str, use_interval: str) -> bool:
+    """True if a live-mode cached frame is older than its TTL. Backtest mode never expires."""
+    if _backtest_cutoff is not None:
+        return False
+    ttl = _OHLCV_TTL_SECONDS if use_interval == "1d" else _OHLCV_INTRADAY_TTL_SECONDS
+    if ttl <= 0:
+        return False
+    inserted = _ohlcv_cache_ts.get(cache_key)
+    if inserted is None:
+        return False
+    return (time.monotonic() - inserted) > ttl
 
 
 def fetch_ohlcv(symbol: str, period: str = "90d", interval: Optional[str] = None) -> Optional[pd.DataFrame]:
@@ -72,7 +96,7 @@ def fetch_ohlcv(symbol: str, period: str = "90d", interval: Optional[str] = None
     use_interval = interval or "1d"
     cache_key = symbol if use_interval == "1d" else f"{symbol}_{use_interval}"
     cache = _ohlcv_cache if use_interval == "1d" else _ohlcv_intraday_cache
-    if cache_key in cache:
+    if cache_key in cache and not _cache_expired(cache_key, use_interval):
         cached = cache[cache_key]
         if cached.empty:
             return None
@@ -84,6 +108,7 @@ def fetch_ohlcv(symbol: str, period: str = "90d", interval: Optional[str] = None
         # Don't cache failures — transient yfinance errors would stick until clear_cache().
         return None
     cache[cache_key] = df
+    _ohlcv_cache_ts[cache_key] = time.monotonic()
     return _apply_backtest_cutoff(df)
 
 
@@ -747,7 +772,11 @@ def build_snapshot(symbol: str) -> Optional["TechnicalSnapshot"]:
     On fetch failure (yfinance rate limiting, timeout) falls back to the last
     successfully built snapshot for the same symbol, marked with is_stale=True.
     """
-    df = fetch_ohlcv(symbol)
+    # 1y (~252 bars) so 200-bar indicators actually compute in live: EMA200 (needs >=200 bars)
+    # and a true 52-week high. The former default (90d ~63 bars) left ema200=None in every live
+    # snapshot — silently disabling the EMA200 gate/bonus in the long engine AND the shorts
+    # fade-top family, a live/backtest parity gap (backtest uses full prefetched history).
+    df = fetch_ohlcv(symbol, period="1y")
     if df is None or df.empty or len(df) < 5:
         cached = _snapshot_persist.get(symbol)
         if cached is not None:

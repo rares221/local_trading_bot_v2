@@ -5,6 +5,7 @@ All user-facing responses include disclaimer per TRADING_APP_PLAN.
 import asyncio
 import logging
 from datetime import datetime, timezone, date
+from app.core.market_time import market_date
 from typing import Any, Optional
 from uuid import uuid4
 
@@ -296,7 +297,7 @@ async def list_recommendations(
     macro_overlay = get_macro_overlay_info()
     # Default to today's batch so the Recommendations page shows one set of ideas
     if batch_id is None and group_by == "category":
-        batch_id = date.today().isoformat()
+        batch_id = market_date().isoformat()
     q = select(Recommendation).order_by(Recommendation.created_at.desc())
     if batch_id:
         q = q.where(Recommendation.batch_id == batch_id)
@@ -362,7 +363,7 @@ async def export_recommendations_csv(
 
     # Default to today's batch
     if batch_id is None:
-        batch_id = date.today().isoformat()
+        batch_id = market_date().isoformat()
 
     q = select(Recommendation).order_by(Recommendation.created_at.desc())
     if batch_id:
@@ -602,7 +603,7 @@ async def trade_builder_from_asset(
         ctx["buy_in_price"] = cand.buy_in_price
         ctx["direction"] = cand.direction
         if cand.expiry_date and "expiry_days" not in ctx:
-            _ed = max(1, (cand.expiry_date - _date.today()).days)
+            _ed = max(1, (cand.expiry_date - market_date()).days)
             ctx["expiry_days"] = _ed
             ctx["horizon"] = _classify_horizon(_ed)
         rationale_text = await generate_rationale(ctx)
@@ -610,7 +611,7 @@ async def trade_builder_from_asset(
         await db.rollback()
 
     now = datetime.now(timezone.utc)
-    batch_id = date.today().isoformat()
+    batch_id = market_date().isoformat()
     rec = Recommendation(
         id=str(uuid4()),
         created_at=now,
@@ -841,13 +842,13 @@ async def list_active_trades(
             gap_risk_note = _gap_cached["note"]
         elif rec and _gap_cfg.get("gap_risk_enabled", True):
             try:
-                _expiry_days = (t.expiry - date.today()).days if t.expiry else 7
+                _expiry_days = (t.expiry - market_date()).days if t.expiry else 7
                 gap_risk_level, _, gap_risk_note = _compute_gap_risk(
                     snap=None,  # no snap in route context; Factor 1 skipped
                     expiry_days=max(0, _expiry_days),
                     near_earnings=near_earnings,
                     category=rec.asset_category,
-                    today=date.today(),
+                    today=market_date(),
                     max_penalty=_gap_cfg.get("gap_risk_max_penalty", 0.50),
                 )
             except Exception:
@@ -1038,7 +1039,7 @@ async def get_gap_advice(
     except Exception:
         pass
 
-    today = date.today()
+    today = market_date()
     expiry_days = (trade.expiry - today).days if trade.expiry else 7
 
     context = {
@@ -1782,7 +1783,7 @@ async def action_refresh_todays_batch() -> dict[str, Any]:
     from app.jobs.scheduler import job_daily_batch, job_update_active_trades
     from sqlalchemy import select, delete
     from app.core.database import async_session_factory
-    batch_id = date.today().isoformat()
+    batch_id = market_date().isoformat()
     async with async_session_factory() as session:
         recs_to_remove = await session.execute(
             select(Recommendation.id).where(
@@ -1810,7 +1811,7 @@ async def action_clear_todays_batch() -> dict[str, Any]:
     """Clear today's pending/skipped recommendations only (no re-run). Taken trades and their recommendations are kept."""
     from sqlalchemy import select, delete
     from app.core.database import async_session_factory
-    batch_id = date.today().isoformat()
+    batch_id = market_date().isoformat()
     async with async_session_factory() as session:
         recs_to_remove = await session.execute(
             select(Recommendation.id).where(

@@ -310,7 +310,21 @@ match.
 
 ---
 
-## Phase 2: Confidence model & calibration coherence (HIGH)
+## Phase 2: Confidence model & calibration coherence (HIGH) — ✅ DONE (2026-09-18)
+
+**Resolution (2026-09-18):** verified the coherence already holds after Phase 1 and closed the labeling +
+documentation gaps.
+- **Task 1 (single gating number):** confirmed the raw engine `confidence_score` from the shared
+  `score_candidate()` is the only number any gate compares against, in all three paths.
+- **Task 2 (`compute_live_confidence`):** decision = **keep as a separately-labeled display overlay**
+  (`historical_confidence`); it was already demoted out of the gating path in Phase 1. Documented the
+  remove-if-it-stops-earning-space criterion.
+- **Task 3 (calibration coherence):** `_confidence_bucket()` already buckets the **raw** score (the same
+  number shown as the UI primary), and `confidence_calibrated` is a distinct `cal N%` subline — no
+  bucket-vs-calibrated mismatch. Strengthened all three `recommendations.html` tooltips to state
+  explicitly that the calibrated number is display-only and does not gate.
+- **Task 4 (docs):** wrote `docs/CONFIDENCE_MODEL.md` as the source of truth (gating number vs.
+  display-only overlays, the shared-scorer pipeline incl. the new stale discount, where each lives).
 
 **Problem:** at least three confidence numbers exist and none agree:
 - Batch gates on raw `confidence_score` + policy offsets (`engine.py:346-355, 2075+`).
@@ -336,24 +350,86 @@ the same view.
 
 ---
 
-## Phase 3: Close remaining replay↔engine gaps (MEDIUM)
+## Phase 3: Close remaining replay↔engine gaps (MEDIUM) — ✅ DONE (2026-09-18)
 
-After Phase 1, most gaps disappear via the shared scorer. The ones that need explicit decisions:
+After Phase 1 the confidence **core** (base → soft-penalties → bonuses) is byte-identical across paths via
+`score_candidate`/its component functions. The remaining differences are the caller-placed hard gates and
+context adjustments. Decision: **the walk-forward replay is the validation baseline — a gate is added to
+replay only when it is reconstructable walk-forward AND we deliberately re-baseline.** Everything below is
+an *intentional* difference; there are no unintentional ones.
 
-- RSI exhaustion hard gate (`engine.py:1267-1287`) — add to replay.
-- Sentiment velocity hard skip (`engine.py:1333-1340`) — replay only adjusts score.
-- OFI gates (`engine.py:1533-1553`), earnings/event penalties (`engine.py:1673-1715`), indicator
-  conflict **skip** (`engine.py:1773-1794`) — add to replay or document why backtest omits them.
-- Preference-aware volume floor: replay hardcodes 0.75 (`replay.py:319`, "Step 4 will make this
-  preference-aware") — wire to preference.
-- VP LVN +5 boost present in engine (`1730-1738`) but not in replay's partial VP block (`389-404`).
+**Diff table (engine/live vs. replay):**
 
-**Acceptance:** a documented diff table showing every intentional backtest/engine difference, with
-zero unintentional ones.
+| Adjustment | Engine (live/batch) | Replay | Decision & why |
+| --- | --- | --- | --- |
+| Confidence core (base+penalties+bonuses) | shared | **shared** (manual compose, `replay.py:261–290`) | Parity — identical. |
+| EMA200 short gate | yes | **yes** (`replay.py:258`) | Parity. |
+| Bear-regime short min-confidence | yes | **yes** (`replay.py:270–278`) | Parity. |
+| VP: value-area / overextension / bias | yes | **yes** (`replay.py:294–307`) | Parity. |
+| MTF (daily+weekly) alignment | yes | **yes** (`replay.py:310+`, 4H omitted) | Parity minus intraday (replay has no intraday bars). |
+| Stale-snapshot discount | yes (shared) | n/a | Replay snapshots are never stale (no persisted-fallback path) → no-op, not a gap. |
+| RSI-exhaustion hard **gate** (`engine.py:1279`) | yes | **no** | DEFER. Reconstructable (snapshot has RSI) but adding moves the OOS baseline. Validated separately by the `market_ctx`/technicals golden tests. Add only as an explicit re-baseline. |
+| Indicator-conflict **skip** (`engine.py:~1773`) | yes | **no** | DEFER. Reconstructable but baseline-moving; conflict is already partly captured by the `macd_alignment` soft-penalty in the shared pool. Candidate for a future re-baseline alongside RSI-exhaustion. |
+| Sentiment-velocity score-adj / skip (`engine.py:1304`) | yes | **no** (`vel_pen=0`) | CANNOT add faithfully. Velocity is recent-vs-older aggregated sentiment; replay only has a single `hist_sentiment` scalar per sim-day, not the intra-window series. Intentional omission. |
+| OFI gate (`apply_ofi_gate`) | yes | **no** | CANNOT add. Needs order-flow/microstructure not reconstructable from daily OHLCV walk-forward. Intentional. |
+| Earnings/event penalty (`engine.py:806`) | yes | **no** | OMIT. Needs a historical earnings+macro calendar aligned to each sim-date; the calendar modules are forward-looking, so a faithful historical version doesn't exist and a naive one biases the baseline. Intentional. |
+| Preference-aware volume floor | user preference | **hardcoded "moderate"/0.75** (`replay.py:285`) | INTENTIONAL. Walk-forward has no user; "moderate" is the neutral baseline. Live applies the actual preference. |
+| VP **LVN** +5 boost (`engine.py:~1730`) | yes | **no** | DEFER (minor). Replay's VP block covers VPOC/value-area/overextension/bias; the small LVN boost is left out to avoid a baseline shift. Low-value candidate for full parity. |
+
+**Net:** three DEFER items (RSI-exhaustion, indicator-conflict, VP-LVN) are add-with-re-baseline
+candidates; three (velocity, OFI, earnings) are structural — the data does not exist walk-forward; one
+(vol floor) is a deliberate baseline choice. No unintentional divergence remains.
+
+**Acceptance:** ✅ documented diff table above; every difference is intentional and justified.
 
 ---
 
-## Phase 4: Data layer reliability (MEDIUM)
+## Phase 4: Data layer reliability (MEDIUM) — ✅ DONE (2026-09-18)
+
+**Task 1 — OHLCV cache TTL (DONE 2026-09-18):** `technicals.py` now records a monotonic insert
+timestamp per cache key (`_ohlcv_cache_ts`) and `fetch_ohlcv` treats a cached frame older than its TTL
+as a miss (`_cache_expired`). TTLs: daily `OHLCV_CACHE_TTL_SECONDS`=900s (15 min), intraday
+`OHLCV_INTRADAY_CACHE_TTL_SECONDS`=300s (5 min), both env-overridable. **Backtest mode ignores the TTL**
+(`_backtest_cutoff` set → never expires; correctness there comes from `_apply_backtest_cutoff` slicing and
+the cached frame is the full fetched history regardless of wall-clock age). `clear_cache()` also clears the
+timestamp map. Cross-mode contamination is bounded in practice because every major op brackets its cache
+use with `clear_cache()` (replay.py:100/564, engine.py:1999/2283); the only residual risk is a live scan
+running concurrently with an API walk-forward in the same process — pre-existing, left as a known caveat.
+Tests: `tests/unit/services/test_ohlcv_cache_ttl.py` (4).
+
+**Task 2 — consume `is_stale` in live (DONE 2026-09-18):** the stale-fallback discount was previously a
+dead variable in the batch engine (`_stale_confidence_penalty` computed, never subtracted) and absent from
+the live path entirely. Moved into the **shared** `score_candidate()` as an additive
+`STALE_CONFIDENCE_PENALTY`=8 discount applied after bonuses and **outside** the soft-penalty pool cap (so a
+stale signal always visibly discounts, never absorbed under the cap). This gives batch + live parity in one
+place; replay composes the pipeline manually but its backtest snapshots are never stale (no persisted-
+fallback path), so no replay change and no baseline shift. Removed the dead engine var. Test:
+`test_scoring.py::TestStalePenalty`.
+
+**Task 3 — Finnhub coverage audit (DONE 2026-09-18).** Routing: `market_data.fetch_ohlcv/fetch_quote/
+fetch_last_price/*_metrics` try Finnhub first **only** for `is_finnhub_eligible` symbols (plain tickers with
+no `= ^ - :`), else fall to Yahoo; ineligible symbols are **Yahoo-only**. Against the 75-symbol base
+universe (`live_analyzer._BASE_UNIVERSE`):
+- **Finnhub-eligible (51):** stocks_large 21, stocks_mid 14, stocks_small 10, ETFs 6 (SPY/QQQ/GLD/TLT/
+  XLE/XLF). Sentiment-discovered tickers are also plain → eligible.
+- **Yahoo-only (24):** commodities 5 (`CL=F`,`BZ=F`,`GC=F`,`NG=F`,`SI=F`), fx 5 (`*=X`), crypto 4
+  (`*-USD`), indices 10 (`^GSPC`,`^DJI`,`^IXIC`,`^RUT`,`^FTSE`,`^GDAXI`,`^FCHI`,`^N225`,`^HSI`,`^VIX`).
+- **Latency budget:** the Yahoo path is serialized by `_yfinance_lock` at `_YFINANCE_MIN_INTERVAL`=0.8s
+  (`_YFINANCE_TIMEOUT`=15s, 1 retry). The 24 Yahoo-only symbols alone floor at ~24×0.8 ≈ **19s** of
+  serialized fetch per full scan; Finnhub-eligible symbols hit Finnhub off that lock and only fall back to
+  Yahoo on failure. With the ~80+ symbol universe over a 10-thread pool this lands at **~60–90s per scan**
+  (matches the observed figure). **Target: keep a full live scan under ~90s;** the TTL (Task 1) prevents
+  re-fetching fresh symbols within a scan window. Yahoo-only classes cannot be moved to Finnhub (unsupported
+  instrument types) — accepted.
+
+**RESOLVED (2026-09-18) — EMA200/52w lookback parity bug:** `build_snapshot` fetched `fetch_ohlcv(symbol)`
+at the default `period="90d"` (~63 bars), but EMA200 needs `len(df) >= 200` (technicals.py:808) → `ema200`
+was `None` in EVERY live snapshot, silently disabling the EMA200 gate + sweet-spot bonus in the long
+engine, `compute_confidence`'s EMA200 macro filter (±8-10 pts), and the shorts fade-top above-EMA200 gate
+— all live-only (backtest replay had full prefetched history, so backtest and live diverged). Fixed:
+`build_snapshot` now fetches `period="1y"` (technicals.py:750). `pct_from_52w_high` was computed over
+`min(252, len)` so it silently used a 90d window in live (a mislabeled "52w high") — now correct.
+Surfaced by the shorts orchestrator-integration diagnostic.
 
 **Problems:**
 - `_ohlcv_cache` (`technicals.py:22-87`) has no TTL and is **never invalidated by age** — once a symbol
@@ -384,7 +460,18 @@ latency documented with a target.
 
 ---
 
-## Phase 5: Timezone / market-calendar correctness (MEDIUM)
+## Phase 5: Timezone / market-calendar correctness (MEDIUM) — ✅ DONE (2026-09-18)
+
+**Resolution (2026-09-18):** added `app/core/market_time.py` (`market_now`/`market_date`/`to_market_date`,
+anchored to `America/New_York`). Replaced **every** `date.today()`/`_date.today()` call site across the
+app (engine.py ×6, earnings_calendar, macro_calendar ×3, macro_calendar_fetcher, simulator ×2,
+jobs/scheduler ×7, live_analyzer, briefing ×2, market_data ×2, routes ×9, backtest_routes,
+research/llm, research/__init__ ×2) with `market_date()` — not just the gating subset, since all sites
+anchor market-calendar logic (batch ids, expiry deltas, proximity gates), none were pure server-clock
+logging. Replaced the two deprecated `datetime.utcnow()` calls in `macro_calendar_fetcher.py` with
+`datetime.now(timezone.utc)` (cache timestamp is intentionally UTC, not ET) and made `_load_cache`
+tolerate legacy naive-UTC timestamps. Tests: `tests/unit/services/test_market_time.py` (6 tests incl.
+an evening-ET boundary flip through the full `market_date()` chain). Full suite 343 green.
 
 **Problem:** widespread `date.today()` without timezone. The surface is **much larger than first
 documented** — a full grep finds ~30 call sites across 9 modules, several of which directly affect
@@ -416,7 +503,22 @@ market calendar, not server TZ; a test pins behavior across a UTC-vs-Eastern dat
 
 ---
 
-## Phase 6: Test scaffolding for critical untested modules (LOW but enabling)
+## Phase 6: Test scaffolding for critical untested modules (LOW but enabling) — ✅ DONE (2026-09-18)
+
+**Resolution (2026-09-18):**
+- **Task 1** (technicals goldens) — already DONE 2026-09-17.
+- **Task 2** (engine filters) — covered by `test_scoring.py`: `TestRsiExhaustion`, `TestOfiGate`,
+  `TestScoreCandidate`, `TestComputeSoftPenalties`, plus the new `TestStalePenalty` (Phase 4). The
+  `_try_add` correlation/risk-budget path is exercised indirectly by the engine golden test; a dedicated
+  unit is a future nicety, not a parity risk.
+- **Task 3** (replay long path e2e) — `tests/unit/backtesting/test_replay_long_path.py` (3 tests): builds
+  a long via `_build_signal`, asserts long geometry (stop<entry<target) and the signal dict, then flows
+  build→`simulate_outcome`→`compute_metrics` to a resolved win.
+- **Task 4** (scheduler smoke) — `tests/unit/jobs/test_scheduler_daily_batch.py` (2 tests): asserts the
+  persistence contract of `job_daily_batch` (one `session.add` per candidate + single `commit`; no-op when
+  the builder returns nothing). Because the unit suite deliberately stubs SQLAlchemy/`app.core.database`
+  (conftest.py) and the scheduler needs the real ORM models, the test temporarily restores the real ORM
+  stack for its duration and restores the stubs after — verified not to leak (full suite 353 green).
 
 **Currently untested** (existing tests are under `tests/unit/{backtesting,services,sentiment}`):
 - `app/services/technicals.py` — snapshots, SL/TP, direction, confidence
@@ -439,7 +541,25 @@ market calendar, not server TZ; a test pins behavior across a UTC-vs-Eastern dat
 
 ---
 
-## Phase 7: Config & housekeeping (LOW)
+## Phase 7: Config & housekeeping (LOW) — ✅ DONE (verified 2026-09-18)
+
+**Resolution (2026-09-18):** all items were already addressed (mostly in the 2026-09-17 work); verified:
+- **`.env.example`** — exists (repo root, 2026-09-17). Task done.
+- **Startup validation** — `config.validate_startup_config()` exists and is wired into `main.py:63-64`
+  (missing provider is FATAL, missing key for the selected provider is a WARNING). Task done.
+- **FinBERT blend** — decided by **deletion**: no `transformers`/`torch`/FinBERT reference remains in
+  `app/` (`vader.py::score` is VADER-only). No heavy deps added to the image. Task done.
+- **Backtest-stats cadence** — the coupling that made cadence matter was removed in Phase 1:
+  `compute_live_confidence` is now a **display-only** overlay (`historical_confidence`), not a gating input.
+  With the stats no longer feeding any gate, the weekly `backtest_stats_weekly` cron (Sun 05:00 UTC) is
+  adequate; the startup auto-run stays disabled. Decision recorded.
+- **Duplicate `GC=F`** in `trade_watcher.DEFAULT_WATCHLIST` — already de-duplicated (single entry).
+- **Stale comments** — `test_simulator.py` short-`pnl_r` comment and `live_confidence.py` "0.70 factor"
+  comment both already corrected.
+
+---
+
+## Phase 7 (original notes): Config & housekeeping (LOW)
 
 - Add `.env.example` documenting required keys (no `.env.example` exists today; `config.py:36` requires
   an LLM provider but nothing validates it at startup).

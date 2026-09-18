@@ -5,6 +5,7 @@ active-trade updates (ATR-based trailing), daily briefing, feed cleanup.
 import asyncio
 from functools import partial
 from datetime import datetime, timezone, date, timedelta
+from app.core.market_time import market_date
 from typing import Optional
 from uuid import uuid4
 
@@ -113,7 +114,7 @@ async def job_daily_batch() -> None:
     i.e. up to ~20 total, with ATR SL/TP, direction, expiry, global correlation and risk-budget filters.
     """
     import app.services.pipeline_progress as progress
-    batch_id = date.today().isoformat()
+    batch_id = market_date().isoformat()
     print(f"[BATCH] Starting daily batch for {batch_id}")
     try:
         async with async_session_factory() as session:
@@ -209,7 +210,7 @@ async def job_daily_batch() -> None:
                     ctx["buy_in_price"] = c.buy_in_price
                     ctx["direction"] = c.direction
                     if c.expiry_date and "expiry_days" not in ctx:
-                        _ed = max(1, (c.expiry_date - _date.today()).days)
+                        _ed = max(1, (c.expiry_date - market_date()).days)
                         ctx["expiry_days"] = _ed
                         ctx["horizon"] = _classify_horizon(_ed)
                     rationale_text = await generate_rationale(ctx)
@@ -376,7 +377,7 @@ async def job_update_active_trades() -> None:
             if not snap or snap.price <= 0:
                 # Even without a live price, close trades that are past their expiry date.
                 _phase = getattr(trade, "trade_phase", "open") or "open"
-                if _phase == "open" and getattr(rec, "expiry_date", None) and rec.expiry_date < date.today():
+                if _phase == "open" and getattr(rec, "expiry_date", None) and rec.expiry_date < market_date():
                     trade.trade_phase = "closed_expired"
                     if getattr(trade, "outcome", None) is None:
                         trade.outcome = "expired"
@@ -405,13 +406,13 @@ async def job_update_active_trades() -> None:
                     from app.core.preferences import get_gap_risk_config
                     _gap_cfg = get_gap_risk_config()
                     if _gap_cfg["gap_risk_enabled"]:
-                        _expiry_days = (trade.expiry - date.today()).days if trade.expiry else 7
+                        _expiry_days = (trade.expiry - market_date()).days if trade.expiry else 7
                         _gap_lvl, _, _gap_note = _compute_gap_risk(
                             snap=snap,
                             expiry_days=max(0, _expiry_days),
                             near_earnings=False,
                             category=rec.asset_category,
-                            today=date.today(),
+                            today=market_date(),
                             max_penalty=_gap_cfg["gap_risk_max_penalty"],
                         )
                         _gap_risk_by_symbol[symbol] = {"level": _gap_lvl, "note": _gap_note}
@@ -426,7 +427,7 @@ async def job_update_active_trades() -> None:
             phase = getattr(trade, "trade_phase", "open") or "open"
 
             # Expired: if still open and past expiry_date, close and log outcome
-            today = date.today()
+            today = market_date()
             if phase == "open" and getattr(rec, "expiry_date", None) and rec.expiry_date < today:
                 trade.trade_phase = "closed_expired"
                 if getattr(trade, "outcome", None) is None:
@@ -737,7 +738,7 @@ async def job_refresh_backtest_stats() -> None:
     from app.models.backtest import BacktestRun
 
     base_symbols = [yf for _, yf, _, _ in _BASE_UNIVERSE]
-    end = date.today()
+    end = market_date()
     start = end - timedelta(days=3 * 365)
 
     try:
