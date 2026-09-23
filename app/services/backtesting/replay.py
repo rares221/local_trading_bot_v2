@@ -698,7 +698,10 @@ def _replay_window(
     # Shorts engine (integrated cohort). Per-signal like the long path — no portfolio conflict/
     # capacity here (those live only in the live orchestrator); this validates the shorts EDGE and
     # its IS/OOS degradation within the walk-forward. by_direction in compute_metrics separates them.
-    from app.services.recommendations.shorts_signals import generate_short_signal, _tape_deteriorating
+    from app.services.recommendations.shorts_signals import (
+        try_arm_short, check_confirmation, finalize_short_signal, family_of_trigger,
+        ArmedShort, _tape_deteriorating,
+    )
     # Shorts are gated behind the same flag as live (SHORTS_ENGINE_ENABLED) so the walk-forward stays
     # long-only by default — the shorts cohort was walk-forward-rejected (negative OOS). Read at runtime
     # so the shorts diagnosis can flip the flag on for a one-off analysis without a code change.
@@ -708,6 +711,11 @@ def _replay_window(
     # low-quality names and is not the production config.
     from app.services.recommendations.shorts_engine_io import SHORT_UNIVERSE as _SHORT_UNIV
     _short_syms = {yf for (_c, _a, yf, _r) in _SHORT_UNIV}
+    # Phase 2 two-stage entry: per-symbol "armed, waiting for confirmation" state, local to
+    # this window. Live persists the equivalent state in a DB table (armed_shorts, see
+    # shorts_engine_io.py) so it survives across daily batch runs; replay's day-loop already
+    # provides a natural scope for this and needs no cross-run persistence.
+    _armed: dict[str, dict] = {}
 
     for sim_date in trading_days:
         cutoff_ts = pd.Timestamp(sim_date)
@@ -747,14 +755,43 @@ def _replay_window(
                 snap = build_snapshot(symbol)
                 if snap is None or snap.price <= 0:
                     continue
-                ssig = generate_short_signal(
-                    symbol, snap, bars, regime_id=day_regime, category=cat,
-                    risk_tier=risk_tier, preferred_risk="moderate",
-                    sentiment_avg=None, sentiment_count=0, today=sim_date,
-                    tape_deteriorating=tape_det,
-                )
-                if ssig is not None:
-                    signals.append(_short_sig_to_replay_dict(ssig, sim_date, day_regime, cat))
+                # RS-vs-market gates (Phase 1 redesign, see shorts_signals.py): walk-forward
+                # safe via the same cutoff-respecting compute_relative_strength used above.
+                rs_vs_market = compute_relative_strength(symbol, "^GSPC", period=20)
+                rs_prior = compute_relative_strength(symbol, "^GSPC", period=60)
+
+                pending = _armed.get(symbol)
+                if pending is not None:
+                    armed = ArmedShort(
+                        symbol=symbol, category=cat, family=pending["family"],
+                        trigger=pending["trigger"], armed_date=pending["armed_date"],
+                    )
+                    status = check_confirmation(
+                        armed, snap, bars, day_regime, tape_det,
+                        rs_vs_market, rs_prior, pending["days_since_armed"],
+                    )
+                    if status == "confirmed":
+                        del _armed[symbol]
+                        ssig = finalize_short_signal(
+                            armed, snap, bars, regime_id=day_regime, risk_tier=risk_tier,
+                            preferred_risk="moderate", sentiment_avg=None, sentiment_count=0,
+                            today=sim_date,
+                        )
+                        if ssig is not None:
+                            signals.append(_short_sig_to_replay_dict(ssig, sim_date, day_regime, cat))
+                    elif status == "expired":
+                        del _armed[symbol]
+                    else:
+                        pending["days_since_armed"] += 1
+                    # Already armed this cycle either way — don't also scan for a new trigger.
+                    continue
+
+                trigger = try_arm_short(snap, bars, day_regime, tape_det, rs_vs_market, rs_prior)
+                if trigger is not None:
+                    _armed[symbol] = {
+                        "family": family_of_trigger(trigger), "trigger": trigger,
+                        "armed_date": sim_date, "days_since_armed": 0,
+                    }
             except Exception as e:
                 logger.debug("[WF] Error building short %s @%s: %s", symbol, sim_date, e)
 

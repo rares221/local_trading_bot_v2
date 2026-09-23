@@ -88,7 +88,12 @@ short_confidence = min(100, res.confidence + TRIGGER_BASE_OFFSET[trigger])
   (minus-DI dominant, bearish MACD, OBV confirming down); `compute_soft_penalties` /
   `apply_signal_bonuses` short branches apply too. No new scorer for 5a.
 - **`TRIGGER_BASE_OFFSET`** (calibration starting points, walk-forward-tunable scalars — NOT rubrics):
-  `failed_retest = +8`, `failed_breakout = +5`, `support_breakdown = +3` (ordered by precision).
+  originally `failed_retest = +8`, `failed_breakout = +5`, `support_breakdown = +3` ("ordered by
+  precision"). **SUPERSEDED (Phase 1 redesign, 2026-09-18):** a Tier-1 walk-forward diagnosis found
+  `failed_retest` — the highest-ranked trigger — was empirically the worst OOS performer (0% win rate,
+  n=67); the ranking was re-fitting to a spent/curated sample, not a real precision signal. All triggers
+  within each family are now flattened to an equal offset (`+5`); see `shorts_signals.py` and
+  `docs/superpowers/plans/2026-09-18-shorts-engine.md` for the current state.
 - **SL/TP:** `compute_atr_levels(price, risk_tier, snap, direction="short")` — SL above entry (snaps to
   resistance), TP below; R-multiple, no entry-normalization (P&L per plan: `short R = |stop − entry|`,
   `short P&L = (entry − exit) / short_R`).

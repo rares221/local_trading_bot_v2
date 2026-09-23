@@ -1098,12 +1098,23 @@ def compute_atr_levels(
                         break
 
             # TP: avoid placing TP inside an HVN (price stalls/reverses there)
+            # Guard: only snap if resulting R:R >= 1.0 — otherwise the HVN/VAH is too close
+            # to price (e.g. price sitting just under its own value area) and snapping would
+            # collapse the reward far below the risk (SL can be 2-3x ATR away).
             hvn_above = snapshot.nearest_hvn_above()
             if hvn_above and price < hvn_above < tp_base:
-                tp = hvn_above * 0.997  # just below the HVN — realistic exit
+                candidate = hvn_above * 0.997  # just below the HVN — realistic exit
+                sl_dist = abs(price - sl)
+                tp_dist = abs(candidate - price)
+                if sl_dist > 0 and tp_dist / sl_dist >= 1.0:
+                    tp = candidate
             # VAH as TP cap: strong resistance at value area boundary
             if snapshot.vah and price < snapshot.vah < tp_base:
-                tp = snapshot.vah * 0.998
+                candidate = snapshot.vah * 0.998
+                sl_dist = abs(price - sl)
+                tp_dist = abs(candidate - price)
+                if sl_dist > 0 and tp_dist / sl_dist >= 1.0:
+                    tp = candidate
 
         else:  # short
             # SL: only snap to HVN/VAH that is ABOVE sl_base (widens stop to natural resistance).
@@ -1115,16 +1126,24 @@ def compute_atr_levels(
 
             # TP: avoid placing TP inside an HVN below
             # Guard: snapped TP must remain BELOW entry (short target must be lower than price)
+            # AND only snap if resulting R:R >= 1.0 — otherwise the HVN/VAL is too close to
+            # price and snapping would collapse the reward far below the risk.
             hvn_below = snapshot.nearest_hvn_below()
             if hvn_below and tp_base < hvn_below < price:
                 candidate = hvn_below * 1.003  # just above the HVN
                 if candidate < price:           # only snap if still below entry
-                    tp = candidate
+                    sl_dist = abs(price - sl)
+                    tp_dist = abs(price - candidate)
+                    if sl_dist > 0 and tp_dist / sl_dist >= 1.0:
+                        tp = candidate
             # VAL as TP cap: strong support at value area boundary
             if snapshot.val and tp_base < snapshot.val < price:
                 candidate = snapshot.val * 1.002
                 if candidate < price:           # only snap if still below entry
-                    tp = candidate
+                    sl_dist = abs(price - sl)
+                    tp_dist = abs(price - candidate)
+                    if sl_dist > 0 and tp_dist / sl_dist >= 1.0:
+                        tp = candidate
 
     # ── Swing S/R fallback (when VP levels don't apply) ──────────────────────
     if snapshot:

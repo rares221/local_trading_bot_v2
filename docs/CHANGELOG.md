@@ -88,6 +88,66 @@ the active plan `superpowers/plans/2026-09-18-shorts-engine.md` and spec
 - **Decision:** `SHORTS_ENGINE_ENABLED = False`. Code retained. Next step is a Tier-1 diagnosis
   (regime × family × trigger × year breakdown of the OOS losses) before any rework or re-enable.
 
+### Shorts Phase 1 redesign — built, tested, validated across 3 configurations, all failed the bar (same day, evening session)
+
+Deep-research (3 parallel agents) + Tier-1 diagnosis found the dominant OOS failure mode: a fixed 2.0
+R:R floor forced short targets to a distance rarely reachable in 14 days (shorts fight the market's
+upward drift to get there) — 72%/55% (IS/OOS) of trades simply timed out rather than resolving.
+Redesigned and re-validated; still net negative. Full detail in
+`superpowers/plans/2026-09-18-shorts-engine.md` §4-6.
+
+- **Fixed and kept:** horizon-matched R:R sizing (cap the TP stretch at `avg_daily_move × 10 days`
+  reachable distance, floor lowered to 1.5, reject rather than force an unreachable target) — verified,
+  cuts the expiry rate roughly in half everywhere tested. Also added: RS-vs-market hard gate (breakdown
+  requires confirmed weakness `rs_20d<0.90`; fade-top requires confirmed prior leadership `rs_60d>1.10`,
+  reusing the existing `compute_relative_strength`), volume confirmation on all 3 breakdown triggers
+  (previously only `support_breakdown` had it), flattened `TRIGGER_BASE_OFFSET` (the old "precision
+  ranking" was empirically backwards — the highest-ranked trigger was the worst performer).
+- **Validated across 3 configurations, all failed the success bar** (OOS expectancy ≥+0.15R, n≥40
+  resolved, ≥2 blind-holdout episodes): Phase 1 with the RS-gate (thin sample, −0.22R); Phase 1 with the
+  RS-gate ablated to isolate that variable (larger sample n=21 resolved, still −0.19R, and a *worse*
+  IS→OOS collapse — 49.5%→14.3% WR — ruling out "the gate is the problem"). Blind holdout (2018 Q4 +
+  2020 COVID, never touched during design) produced only 1 signal total and **zero during the entire
+  COVID crash** — the RS-gate structurally suppresses activation in exactly the highest-conviction
+  systemic-crash case, since a synchronized crash compresses single-stock relative-strength dispersion
+  instead of widening it.
+- **Decision: `SHORTS_ENGINE_ENABLED` stays `False`.** Three configurations failing the same way is the
+  systematic-debugging "architectural, not parametric" signal — confirms rather than contradicts what
+  all three research agents flagged going in: pure daily-bar technical-analysis shorting may lack
+  robust edge at this fidelity without a different data class (short-interest, options flow, breadth).
+  Next steps if revisited: either the stateful confirmation-bar entry delay (Phase 2, unproven — the
+  problem looks like signal quality, not entry timing) or a different data class entirely (bigger,
+  separate project). New reusable diagnostic scripts in `scripts/`: `diagnose_shorts_tier1.py`,
+  `validate_shorts_blind_holdout.py`, `diagnose_shorts_rs_ablation.py`.
+
+### Production bug: zero-R:R Volume-Profile TP snap (found + fixed same evening, unrelated to shorts)
+
+Live symptom: today's first daily batch in ~3.5 months (the first real-data run since the whole
+engine-parity refactor landed) produced only 6 recommendations, none for stocks_mid/small/indices.
+Investigated via a spawned agent, independently re-verified.
+
+- **Root cause:** `compute_atr_levels()` in `app/services/technicals.py` — the Volume-Profile take-profit
+  snap (HVN/VAH for longs, HVN/VAL for shorts) had no R:R floor check, unlike the swing-S/R fallback
+  right below it which already has one. When price sits just under its own Value Area High (an ordinary,
+  common state), TP collapsed to within 1-5% of entry while SL stayed several ATR-widths away — R:R as
+  low as 0.09, failing the category floor and silently dropping the candidate. Confirmed live for RXRX
+  (0.09), ^IXIC/NDX (0.41-0.48), SMCI (~1.07). Pre-existing since May 27 — unrelated to the engine-parity
+  refactor, just never manifested until many non-mega-cap names traded near their VAH simultaneously.
+- **Fixed:** added the same R:R≥1.0 guard to all four VP-snap branches. New test
+  `tests/unit/services/test_technicals_atr_levels_vp_guard.py` (TDD, git-stash verified fail-before/
+  pass-after). Also added observability logging at 6 previously-silent skip sites in `engine.py`
+  (`regime_hard_block`, `short_disabled`, `short_above_ema200`, `rsi_exhausted`,
+  `sentiment_velocity_reversal`, `ofi_gate`) — pure logging, zero behavior change.
+- **Separately investigated and cleared (not a bug):** today's still-low count even after the fix is
+  dominated by `short_disabled` (91 candidates, nearly every global index plus many stocks_mid names
+  called "short" and dropped by the legacy long-only `SHORTS_ENABLED=False`). Verified live: a genuine
+  narrow-breadth, mega-cap-led bull market — the bull-regime profile deliberately weights technicals 4:1
+  over sentiment (`direction=(0.20, 0.80)` in `regime_map.py`), and SPX's own MACD/ADX/OBV are
+  short-term bearish even though the structural regime call is bullish. META/GOOGL (control) show
+  coherently bullish technicals+sentiment and passed fine. Left as a product decision, not fixed.
+- Today's batch (2026-09-18) was purged and regenerated via the existing
+  `POST /api/actions/refresh-todays-batch` endpoint after the fix: 6→8 recommendations.
+
 ### Archived April planning docs (outcomes live in the code)
 
 These `improvements_trade_builder`-era planning/design docs were deleted; their implemented outcomes are

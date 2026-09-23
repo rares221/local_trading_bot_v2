@@ -1222,6 +1222,15 @@ def _build_candidate(
     # Backtest: crisis=12.5% WR (-0.71R avg), high_vol=23.5% WR (-0.009R avg) — both net negative EV.
     # Uses extended_regime (5-label VIX-based) so live labels match backtest definitions.
     if market_ctx and market_ctx.regime.extended_regime in ("crisis", "high_vol"):
+        _log_engine_skip(
+            "regime_hard_block",
+            category=category,
+            asset_id=asset_id,
+            symbol=symbol,
+            policy=pol.key,
+            regime=market_ctx.regime.extended_regime,
+            ad_hoc=ad_hoc,
+        )
         return None
 
     # (ADX weak-trend soft penalty is computed in compute_soft_penalties below, pooled with the
@@ -1261,12 +1270,31 @@ def _build_candidate(
             and market_ctx.regime.extended_regime == "bear"
         )
         if not _bear_regime_short_allowed:
+            _log_engine_skip(
+                "short_disabled",
+                category=category,
+                asset_id=asset_id,
+                symbol=symbol,
+                policy=pol.key,
+                regime=market_ctx.regime.extended_regime if market_ctx else None,
+                ad_hoc=ad_hoc,
+            )
             return None
 
     # EMA200 hard gate for short trades: do not short an asset that is above its 200-day EMA.
     # Structural market upward bias means shorting above EMA200 fights the macro trend —
     # backtest confirmed 20% win rate for shorts overall; EMA200 is the strongest available filter.
     if direction == "short" and snap and snap.ema200 is not None and snap.price > snap.ema200:
+        _log_engine_skip(
+            "short_above_ema200",
+            category=category,
+            asset_id=asset_id,
+            symbol=symbol,
+            policy=pol.key,
+            price=snap.price,
+            ema200=snap.ema200,
+            ad_hoc=ad_hoc,
+        )
         return None
 
     # ── Load risk preference once — used by several gates below ─────────────────
@@ -1277,6 +1305,16 @@ def _build_candidate(
     # apply the identical ceiling. regime_id is the canonical 5-label (bull widens; bear/high_vol/crisis
     # cap the long ceiling at 60). Blocks chasing overbought longs / oversold shorts.
     if is_rsi_exhausted(snap, direction, regime_id, _preferred_risk):
+        _log_engine_skip(
+            "rsi_exhausted",
+            category=category,
+            asset_id=asset_id,
+            symbol=symbol,
+            policy=pol.key,
+            direction=direction,
+            rsi=snap.rsi if snap else None,
+            ad_hoc=ad_hoc,
+        )
         return None
         # RSI slope: soft penalty instead of hard gate (volatile markets punish hard skips)
         # Bonus for positive slope already handled in confidence scoring below.
@@ -1316,6 +1354,16 @@ def _build_candidate(
         vel_for_direction = vel if direction == "long" else -vel
         if vel_for_direction < -0.15:
             logger.debug("[ENGINE] %s: velocity=%.3f strongly against direction (%s) → skip", asset_id, vel, direction)
+            _log_engine_skip(
+                "sentiment_velocity_reversal",
+                category=category,
+                asset_id=asset_id,
+                symbol=symbol,
+                policy=pol.key,
+                direction=direction,
+                velocity=vel,
+                ad_hoc=ad_hoc,
+            )
             return None
         elif vel_for_direction < -0.05:
             # -0.1 vel → -4 pts; -0.149 vel → -5 pts. Threshold -0.05 avoids penalising flat/noise.
@@ -1352,6 +1400,16 @@ def _build_candidate(
     # (OFI < 0.35 long) / accumulation (OFI > 0.65 short) hard-skips; milder OFI nudges confidence ±.
     confidence, _ofi_skip = apply_ofi_gate(confidence, snap, direction)
     if _ofi_skip:
+        _log_engine_skip(
+            "ofi_gate",
+            category=category,
+            asset_id=asset_id,
+            symbol=symbol,
+            policy=pol.key,
+            direction=direction,
+            ofi_ratio=getattr(snap, "ofi_ratio", None) if snap else None,
+            ad_hoc=ad_hoc,
+        )
         return None
     if trend_aligned:
         confidence = min(100, confidence + pol.mtf_aligned_confidence_bonus)

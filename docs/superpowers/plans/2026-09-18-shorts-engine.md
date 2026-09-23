@@ -1,8 +1,11 @@
 # Shorts Engine — Consolidated Plan (breakdown + fade-top)
 
-> **Status (2026-09-18):** signal engine BUILT for both families and validated in isolation, wired
-> into the batch and the walk-forward — but **disabled** (`SHORTS_ENGINE_ENABLED = False`) because the
-> integrated out-of-sample edge is **negative**. Active work = **Tier-1 diagnosis** (below).
+> **Status (2026-09-18 evening):** Tier-1 diagnosis done; a Phase 1 redesign (RS-vs-market gate,
+> volume confirmation, horizon-matched R:R sizing, flattened trigger offsets) was built, tested (373
+> green), independently code-reviewed, and validated across 3 configurations — **all three fail the
+> success bar** (OOS expectancy ≥+0.15R, n≥40 resolved, ≥2 blind-holdout episodes). Verdict: **shorts
+> stay disabled** (`SHORTS_ENGINE_ENABLED = False`). Not a "retune and try again" situation — see
+> §6 below for the full evidence and what's actually left to try.
 > **Spec:** `docs/superpowers/specs/2026-09-17-shorts-signal-design.md` (the one spec for this effort).
 > **Commit rule (CLAUDE.md):** the user commits; "checkpoints" are review pauses, not commits.
 
@@ -66,25 +69,105 @@ The isolation numbers did **not** survive an honest walk-forward:
 The isolation harness's positive result came from three thumbs on the scale (bear/top-only windows +
 curated universe + de-dup); strip them and the edge is gone. **Shorts are DISABLED** pending diagnosis.
 
-## 4. NEXT — Tier-1 diagnosis (the active task)
+## 4. Tier-1 diagnosis (DONE, 2026-09-18) — root cause found
 
-Determine whether this is an **activation** problem (right signals, wrong times/regimes) or a **signal**
-problem (the setups have no forward edge):
+Ran the instrumented walk-forward (curated universe, 2021-11→2024-12) with raw per-trade capture
+(`scripts/diagnose_shorts_tier1.py`). Findings:
 
-1. Break the OOS short losses down by **regime** and by **year/window** — is the loss concentrated in
-   specific regimes/periods, or uniform?
-2. Break down by **family** (breakdown vs fade-top) and by **trigger** — does any single trigger carry a
-   real edge that the pooling masks?
-3. Compare activation frequency IS vs OOS — are we firing far more in OOS (overfit activation) than the
-   isolation harness implied?
-4. **Decision gate:** if a subset (a regime × family × trigger) shows a robust, friction-surviving OOS
-   edge → keep only that, re-validate, consider re-enabling. If nothing survives → shelve the shorts
-   engine (keep the code, flag off) and record the negative result.
+- **Both IS and OOS were dominated by expiry, not stop-outs**: IS expired_rate 72.3%, OOS 54.7%.
+  Resolved win rate was already only 17.5% IS (below the 33% breakeven a 2:1 target needs) before
+  collapsing further OOS. Root mechanism: the fixed 2.0 R:R floor + "only ever push TP further away"
+  stretch created targets that were structurally unreachable in 14 days — shorts fight the market's
+  upward drift to get there, so a target sized the same way as a long's (which gets help from that
+  drift) rarely resolves at all.
+- Backed out that in-sample, unresolved ("expired") trades averaged **+0.52R mark-to-market** (price
+  was moving the right way, just not far enough) — but out-of-sample that same bucket was ≈ **+0.01R**,
+  essentially flat. That's a genuine OOS directional-edge collapse in the trigger definitions
+  themselves, layered on top of the target/horizon mismatch.
+- `failed_retest` — the trigger assigned the *highest* confidence bonus ("ordered by precision") — was
+  empirically the **worst** performer (67 OOS trades, 0 wins). The precision ordering was backwards.
+- Confidence score carried **no positive predictive signal** for shorts (no monotonic relationship with
+  outcome).
+- External research (3 parallel agents: structural short-edge literature, short-selling pattern
+  validity, backtest-overfitting methodology) converged hard with this: momentum-crash literature, the
+  equity risk premium, and established short-selling practitioner rules (O'Neil, Staley) all point to
+  the same missing pieces — relative-strength-vs-market confirmation, volume confirmation on breakdown
+  failures, and a confirmation-bar delay before entry (don't enter on the trap leg).
 
-Only after a subset clears an honest walk-forward (n ≥ 30, survives friction, degradation ≤ ~1.1) does
-`SHORTS_ENGINE_ENABLED` flip back on.
+## 5. Phase 1 redesign — BUILT, TESTED, VALIDATED, FAILED THE BAR (2026-09-18 evening)
 
-## 5. Deferred / out of scope
+Brainstormed an architectural (not bounded) redesign; approved path = **phased**: cheap stateless fixes
+first, checkpoint, only add the expensive stateful confirmation-bar delay (Phase 2) if the checkpoint
+fell short.
+
+**Phase 1 (stateless) — shipped:**
+- RS-vs-market hard gate: breakdown requires `rs_20d < 0.90` (confirmed weakness vs SPX); fade-top
+  requires `rs_60d > 1.10` (confirmed prior leadership) — reuses the existing, already-calibrated
+  `compute_relative_strength`. Fails closed on missing data.
+- Volume confirmation extended to all 3 breakdown triggers (was only on `support_breakdown`).
+- **Horizon-matched R:R sizing** — cap the TP stretch at `avg_daily_move × 10 days` reachable distance,
+  lower the floor to 1.5, reject if still unreachable, instead of blindly stretching to a fixed 2.0.
+  **This part is verified correct and valuable on its own** — cut the expiry rate roughly in half
+  everywhere tested (72%→32% IS, 55%→33% OOS).
+- Flattened `TRIGGER_BASE_OFFSET` (removed the falsified "precision ranking").
+
+373 unit tests, independently code-reviewed (sign conventions / RS-gate boolean logic / sizing
+arithmetic all traced with concrete numbers — no bugs found).
+
+**Validation — tested across 3 configurations, all fail the success bar (OOS expectancy ≥+0.15R,
+n≥40 resolved, holds on ≥2 blind-holdout episodes):**
+
+| Config | OOS resolved WR | OOS avg pnl_r | n resolved |
+|---|---|---|---|
+| Original (pre-Phase-1) | ~2–22% (universe-dependent) | −0.66R to −0.08R | varies |
+| Phase 1 with RS-gate (checkpoint, 2021-2024) | 16.7% | −0.22R | 6 (thin) |
+| Phase 1, RS-gate ablated (isolates that variable) | 14.3% | −0.19R | 21 (larger, still fails) |
+
+- **Blind holdout** (2018 Q4 selloff + 2020 COVID crash — never touched during design): only 1 signal
+  total across both episodes, **zero during the entire COVID crash** — the single most extreme bear
+  scenario available. The RS-gate structurally suppresses activation in exactly the highest-conviction
+  systemic-crash case: a synchronized, market-wide crash *compresses* single-stock RS-vs-index
+  dispersion (everything falls together) rather than widening it, so "confirmed relative weakness vs the
+  broad index" rarely shows up even when a stock is genuinely breaking down.
+- **The RS-gate ablation ruled out "the gate is the problem"**: removing it made in-sample performance
+  look great (49.5% WR, +0.34R) while out-of-sample got *worse* in relative terms (still −0.19R, on a
+  larger, more reliable sample of 21 resolved trades). That's the textbook overfitting signature getting
+  more pronounced, not resolving — the underlying trigger definitions don't have real OOS directional
+  edge, with or without the RS-gate.
+
+**Decision:** `SHORTS_ENGINE_ENABLED` stays `False`. Per systematic-debugging discipline, 3 tested
+configurations failing the same way (in-sample looks fine or at least not-worse, out-of-sample
+decisively negative) means this is architectural, not a threshold to keep nudging. All three research
+agents independently flagged, before any of this validation ran, that pure daily-bar technical-analysis
+shorting may lack robust edge at this fidelity without a different data class. This validation confirms
+that concern rather than a specific implementation bug — the horizon-sizing bug WAS real and IS fixed,
+but fixing it exposed rather than fixed the deeper signal-quality gap.
+
+## 6. What's actually left, if this gets picked up again
+
+Two live options — neither is "retune the same thresholds again" (2021-2024 is well and truly spent
+across 3 iterations now; any further work needs genuinely fresh validation data):
+
+1. **Phase 2 anyway** (stateful confirmation-bar entry delay: arm on the trigger day, require a
+   subsequent day's close beyond a short MA before actually entering). Unproven this would help — the
+   ablation suggests the problem is signal quality (no real OOS directional edge), not entry timing,
+   which Phase 2 doesn't address. Would need a new architecture (stateful, touches both replay and
+   live) and a fresh blind-holdout episode (e.g. 2015-16 China/oil selloff, Aug 2011 debt-ceiling
+   selloff — NOT 2018 Q4/2020 COVID, both now spent) before it could be trusted.
+2. **Approach C — a different data class entirely** (short-interest/borrow data, options flow, market
+   breadth) — what the research most strongly points to as the actually-correct fix if pure TA has no
+   edge here. Bigger scope, effectively a new project, likely needs a paid data source.
+
+**Reusable tooling from this session** (all in `scripts/`):
+- `diagnose_shorts_tier1.py` — instrumented walk-forward over 2021-2024 with full per-trade breakdown
+  (family/trigger/regime/year/confidence). `docker-compose exec -T app python -m scripts.diagnose_shorts_tier1`
+  (~35-40 min).
+- `validate_shorts_blind_holdout.py` — 2018 Q4 + 2020 COVID (now spent — don't reuse without adding a
+  genuinely fresh episode alongside).
+- `diagnose_shorts_rs_ablation.py` — pattern for isolating one gate/threshold's effect without touching
+  the blind holdout; reusable as a template for testing future hypotheses on the spent checkpoint data.
+
+## 7. Deferred / out of scope
 
 - Full **portfolio-aware backtest** (capacity + conflict, not per-signal) — a separate, larger project.
 - Single-window backtest loop (`replay.py:146`) is not shorts-wired (only `_replay_window` /
