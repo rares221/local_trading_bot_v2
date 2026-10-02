@@ -14,6 +14,7 @@ import logging
 import threading
 import time
 from datetime import date, datetime, timedelta
+from app.core.market_time import market_date
 from typing import Optional
 
 import pandas as pd
@@ -378,7 +379,7 @@ def fetch_next_earnings(symbol: str) -> Optional[date]:
 
 def _earnings_finnhub(client, symbol: str) -> Optional[date]:
     try:
-        today = date.today()
+        today = market_date()
         to_date = (datetime.now() + timedelta(days=365)).strftime("%Y-%m-%d")
         from_date = today.strftime("%Y-%m-%d")
         data = client.earnings_calendar(
@@ -401,7 +402,7 @@ def _earnings_finnhub(client, symbol: str) -> Optional[date]:
 def _earnings_yfinance(symbol: str) -> Optional[date]:
     try:
         import yfinance as yf
-        today = date.today()
+        today = market_date()
         ticker = yf.Ticker(symbol)
         cal = ticker.calendar
         if cal is None:

@@ -14,7 +14,8 @@ import json
 import logging
 import re
 from calendar import monthrange
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
+from app.core.market_time import market_date
 from pathlib import Path
 from typing import Any
 
@@ -196,7 +197,7 @@ def fetch_all_macro_dates(
     Fetch all macro event dates from public sources.
     Returns dict with 'fomc', 'cpi', 'nfp' keys, each containing ISO date strings.
     """
-    current_year = date.today().year
+    current_year = market_date().year
     start_year = current_year - years_back
     end_year = current_year + years_ahead
 
@@ -214,7 +215,7 @@ def fetch_all_macro_dates(
         "fomc": sorted([d.isoformat() for d in fomc_filtered]),
         "cpi": sorted([d.isoformat() for d in cpi_dates]),
         "nfp": sorted([d.isoformat() for d in nfp_dates]),
-        "fetched_at": datetime.utcnow().isoformat(),
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
         "start_year": start_year,
         "end_year": end_year,
     }
@@ -228,7 +229,9 @@ def _load_cache() -> dict[str, Any] | None:
         with open(CACHE_PATH, "r", encoding="utf-8") as f:
             data = json.load(f)
         fetched_at = datetime.fromisoformat(data.get("fetched_at", "2000-01-01"))
-        if datetime.utcnow() - fetched_at > timedelta(days=CACHE_TTL_DAYS):
+        if fetched_at.tzinfo is None:  # legacy caches stored naive UTC
+            fetched_at = fetched_at.replace(tzinfo=timezone.utc)
+        if datetime.now(timezone.utc) - fetched_at > timedelta(days=CACHE_TTL_DAYS):
             logger.info("Macro calendar cache expired")
             return None
         return data

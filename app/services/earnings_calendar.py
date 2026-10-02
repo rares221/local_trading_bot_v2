@@ -5,6 +5,7 @@ Results are cached in memory (24h TTL) to avoid hammering Yahoo Finance.
 import logging
 import time
 from datetime import date
+from app.core.market_time import market_date
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -49,7 +50,7 @@ def is_near_earnings(symbol: str, window_days: int = 2) -> tuple[bool, Optional[
     if next_date is None:
         return False, None
 
-    delta = (next_date - date.today()).days
+    delta = (next_date - market_date()).days
     if abs(delta) <= window_days:
         return True, delta
     return False, delta if delta >= 0 else None

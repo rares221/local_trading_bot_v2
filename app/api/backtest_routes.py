@@ -13,6 +13,7 @@ import json
 import logging
 import threading
 from datetime import datetime, timezone, date, timedelta
+from app.core.market_time import market_date
 from typing import Any, Optional
 from uuid import uuid4
 
@@ -298,7 +299,7 @@ async def quick_backtest(
 
     # Signal window: configurable lookback (90–365 days)
     # Pre-fetch: always 2y so indicators have enough bars regardless of window size
-    end = date.today()
+    end = market_date()
     start = end - timedelta(days=days)
     prefetch_period = "2y"
     max_outcome_bars = 14  # 14 trading days = ~3 calendar weeks

@@ -374,10 +374,24 @@ class StreamProcessor:
                 # Priority: watched tickers first, then confidence >= 40%, sorted desc
                 # Hard cap at _MAX_LLM_TICKERS to bound per-run cost
                 watchlist = set(self._engine.watchlist if self._engine else [])
+                # Regime-aware short confidence floor: only allow shorts in regimes
+                # where the engine permits them; block in all others.
+                _regime_label = regime_summary.split(" | ")[0].strip().lower()
+                from app.services.recommendations.engine import (
+                    SHORTS_ENABLED,
+                    SHORTS_BEAR_REGIME_ENABLED,
+                )
+                _shorts_regime_ok = SHORTS_ENABLED or (SHORTS_BEAR_REGIME_ENABLED and _regime_label == "bear")
+
                 eligible = [
                     s for s in signals
-                    if (s.get("confidence") or 0) >= (
-                        _MIN_CONFIDENCE_SHORT if s.get("direction") == "short" else _MIN_CONFIDENCE_LONG
+                    if (
+                        s.get("direction") != "short"
+                        and (s.get("confidence") or 0) >= _MIN_CONFIDENCE_LONG
+                    ) or (
+                        s.get("direction") == "short"
+                        and _shorts_regime_ok
+                        and (s.get("confidence") or 0) >= _MIN_CONFIDENCE_SHORT
                     )
                 ]
                 llm_signals = sorted(
@@ -945,7 +959,10 @@ class StreamProcessor:
         try:
             from app.services.market_context import detect_market_regime
             regime = detect_market_regime()
-            return f"{regime.regime} | SPX: {regime.spx_trend} | VIX: {regime.vix_level}"
+            # First token is the canonical 5-label so _regime_label parsing (:379) and the
+            # bear-regime short floor (:384) actually match. Was regime.regime (3-label) —
+            # which never equals "bear", leaving that exception dead.
+            return f"{regime.extended_regime} | SPX: {regime.spx_trend} | VIX: {regime.vix_level}"
         except Exception:
             return "unknown"
 

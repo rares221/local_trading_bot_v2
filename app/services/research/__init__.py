@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from datetime import date, datetime, timedelta, timezone
+from app.core.market_time import market_date
 
 from app.models.feed_item import FeedItem
 from app.services.analysis import get_latest_analysis
@@ -82,7 +83,7 @@ async def build_research_context(
         # Horizon classification from expiry_date
         if rec.expiry_date:
             from app.services.technicals import classify_horizon
-            expiry_days = max(1, (rec.expiry_date - date.today()).days)
+            expiry_days = max(1, (rec.expiry_date - market_date()).days)
             ctx["expiry_days"] = expiry_days
             ctx["horizon"] = classify_horizon(expiry_days)
 
@@ -262,7 +263,7 @@ async def build_research_context(
                 if _horizon == "far":
                     try:
                         from datetime import date as _date
-                        _today = _date.today()
+                        _today = market_date()
                         _ed_date = _fetch_earnings(_sym)
                         if _ed_date:
                             _dte = (_ed_date - _today).days

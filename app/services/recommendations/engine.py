@@ -58,7 +58,6 @@ from app.services.technicals import (
     calc_risk_reward,
     clear_cache,
     compute_atr_levels,
-    compute_confidence,
     compute_technical_score,
     compute_relative_strength,
     determine_direction,
@@ -82,6 +81,12 @@ from app.services.recommendations.asset_class_policy import (
     AssetClassPolicy,
     get_asset_class_policy,
 )
+from app.services.recommendations.scoring import (
+    apply_ofi_gate,
+    is_rsi_exhausted,
+    score_candidate,
+)
+from app.core.market_time import market_date
 
 RISK_TIER_ORDER = {"conservative": 0, "moderate": 1, "aggressive": 2}
 
@@ -93,17 +98,26 @@ CORRELATION_THRESHOLD = 0.75
 
 # Minimum Risk:Reward ratio to include a recommendation (skip trades where reward doesn't justify risk).
 MIN_RISK_REWARD = 2.0  # raised 1.6→2.0: breakeven WR drops from 38.5% to 33.3%, giving our 35% WR positive EV
-# Short trades disabled: backtest shows 24.7% WR for shorts vs 35.8% for longs — shorts are net -EV.
-# Re-enable once short signal quality improves (e.g. dedicated short scoring, bear-regime-only filter).
+# Shorts are disabled. The exception path (bear-regime shorts via the existing long-biased engine)
+# was validated across 2020-2024 and the full 2022 bear window — only 7-19 short trades fired in
+# either period. The engine generates long-direction signals by design; shorts need a dedicated
+# signal generator with different entry logic (topping patterns, distribution volume, failed retests).
+# See shorts-recovery-plan for the separate-engine roadmap.
 SHORTS_ENABLED = False
-# Bear-regime exception: re-enable shorts when market_regime == "bear".
-# Backtest aggregate short WR was 22.8% — but bear-regime-only shorts are expected to perform better.
-# Confidence floor of BEAR_REGIME_SHORT_MIN_CONFIDENCE enforced further below in _build_candidate().
-# Note: when SHORTS_ENABLED=True, this floor only applies in bear regime; non-bear shorts bypass it.
 SHORTS_BEAR_REGIME_ENABLED = False
 
+# NEW separate shorts engine (app/services/recommendations/shorts_signals.py + shorts_engine_io.py).
+# Regime-gated at generation time (breakdown in `bear`, fade-top on deteriorating tape; both blocked
+# in crisis/high_vol). This master-enables the shorts second pass in the daily batch. Distinct from
+# the legacy SHORTS_ENABLED long-engine direction flip above.
+# DISABLED 2026-09-18: the full-universe walk-forward showed the shorts cohort net-negative
+# (-0.08R, 21.6% resolved WR over 2021-2024). Kept off pending the curated-universe re-validation.
+SHORTS_ENGINE_ENABLED = False
+MAX_SHORTS_PER_CLASS = 2
+
 # Minimum confidence required for a bear-regime short to pass (vs ~35-40 for longs).
-BEAR_REGIME_SHORT_MIN_CONFIDENCE = 50
+# Tested at 50 and 60 — confidence floor is not the lever; WR was ~10% at both thresholds.
+BEAR_REGIME_SHORT_MIN_CONFIDENCE = 60
 
 # Macro-day confidence penalty: see `MACRO_DAY_CONFIDENCE_PENALTY` in `app.services.macro_calendar`.
 
@@ -1172,9 +1186,8 @@ def _build_candidate(
         )
         return None
 
-    # Stale snapshot: live fetch failed, using cached data from a previous run.
-    # Apply a confidence penalty so the signal is visibly discounted.
-    _stale_confidence_penalty = 8 if snap.is_stale else 0
+    # Stale snapshot (live fetch failed, cached data reused) is discounted inside the shared
+    # score_candidate() so batch and live apply it identically — see scoring.STALE_CONFIDENCE_PENALTY.
 
     price = round(snap.price, 2)
 
@@ -1182,7 +1195,10 @@ def _build_candidate(
     pair = get_sentiment_score_and_count(category, asset_id, by_asset_sentiment or {})
     sentiment_avg = pair[0] if pair else None
     sentiment_count = pair[1] if pair else 0
-    regime_id = market_ctx.regime.regime if market_ctx else None
+    # Canonical 5-label feeds the scorers (determine_direction / compute_confidence) so
+    # regime profiles match backtest. The 3-label market_ctx.regime.regime is kept only for
+    # the risk_off long→short flip and UI (see :356, :1237).
+    regime_id = market_ctx.regime.extended_regime if market_ctx else None
     direction = determine_direction(
         sentiment_avg,
         snap,
@@ -1206,17 +1222,19 @@ def _build_candidate(
     # Backtest: crisis=12.5% WR (-0.71R avg), high_vol=23.5% WR (-0.009R avg) — both net negative EV.
     # Uses extended_regime (5-label VIX-based) so live labels match backtest definitions.
     if market_ctx and market_ctx.regime.extended_regime in ("crisis", "high_vol"):
+        _log_engine_skip(
+            "regime_hard_block",
+            category=category,
+            asset_id=asset_id,
+            symbol=symbol,
+            policy=pol.key,
+            regime=market_ctx.regime.extended_regime,
+            ad_hoc=ad_hoc,
+        )
         return None
 
-    # ADX trend-strength soft penalty: ADX < 20 = weak/no trend — momentum signals less reliable.
-    # Soft penalty (-8) rather than hard gate preserves diversification while down-weighting choppy entries.
-    # No penalty if ADX data unavailable (missing data ≠ no trend).
-    _adx_confidence_penalty = 0
-    if snap and snap.adx is not None:
-        _adx_val, *_ = snap.adx
-        if _adx_val < 20:
-            _adx_confidence_penalty = 8
-            logger.debug("[ENGINE] %s: ADX=%.1f < 20 (weak trend) → adx_penalty=-8", asset_id, _adx_val)
+    # (ADX weak-trend soft penalty is computed in compute_soft_penalties below, pooled with the
+    #  other soft penalties after base_confidence.)
 
     # Market regime direction override for equities
     regime_note = None
@@ -1249,61 +1267,60 @@ def _build_candidate(
         _bear_regime_short_allowed = (
             SHORTS_BEAR_REGIME_ENABLED
             and market_ctx is not None
-            and market_ctx.regime.regime == "bear"
+            and market_ctx.regime.extended_regime == "bear"
         )
         if not _bear_regime_short_allowed:
+            _log_engine_skip(
+                "short_disabled",
+                category=category,
+                asset_id=asset_id,
+                symbol=symbol,
+                policy=pol.key,
+                regime=market_ctx.regime.extended_regime if market_ctx else None,
+                ad_hoc=ad_hoc,
+            )
             return None
 
     # EMA200 hard gate for short trades: do not short an asset that is above its 200-day EMA.
     # Structural market upward bias means shorting above EMA200 fights the macro trend —
     # backtest confirmed 20% win rate for shorts overall; EMA200 is the strongest available filter.
     if direction == "short" and snap and snap.ema200 is not None and snap.price > snap.ema200:
+        _log_engine_skip(
+            "short_above_ema200",
+            category=category,
+            asset_id=asset_id,
+            symbol=symbol,
+            policy=pol.key,
+            price=snap.price,
+            ema200=snap.ema200,
+            ad_hoc=ad_hoc,
+        )
         return None
 
     # ── Load risk preference once — used by several gates below ─────────────────
     from app.core.preferences import get_preferred_risk as _get_preferred_risk
     _preferred_risk = _get_preferred_risk()
 
-    # RSI exhaustion gate: block entries at extremes — chasing overbought longs and oversold shorts
-    # leads to mean-reversion losses. Ceiling is regime + preference aware:
-    #   base 65, +5 in risk_on regime, +5 for aggressive preference → max 75.
-    #   risk_off hard-caps ceiling at 60 regardless of preference.
-    _rsi_long_ceiling = 65
-    if regime_id == "risk_on":
-        _rsi_long_ceiling += 5
-    if _preferred_risk == "aggressive":
-        _rsi_long_ceiling += 5
-    elif _preferred_risk == "conservative":
-        _rsi_long_ceiling -= 2
-    if regime_id == "risk_off":
-        _rsi_long_ceiling = min(_rsi_long_ceiling, 60)
-    _rsi_long_ceiling = max(58, min(75, _rsi_long_ceiling))
-    _rsi_short_floor = 100 - _rsi_long_ceiling
-
-    if snap and snap.rsi is not None:
-        if direction == "long" and snap.rsi > _rsi_long_ceiling:
-            return None
-        if direction == "short" and snap.rsi < _rsi_short_floor:
-            return None
+    # RSI exhaustion gate (regime + preference aware) — extracted to the shared scorer so replay/live
+    # apply the identical ceiling. regime_id is the canonical 5-label (bull widens; bear/high_vol/crisis
+    # cap the long ceiling at 60). Blocks chasing overbought longs / oversold shorts.
+    if is_rsi_exhausted(snap, direction, regime_id, _preferred_risk):
+        _log_engine_skip(
+            "rsi_exhausted",
+            category=category,
+            asset_id=asset_id,
+            symbol=symbol,
+            policy=pol.key,
+            direction=direction,
+            rsi=snap.rsi if snap else None,
+            ad_hoc=ad_hoc,
+        )
+        return None
         # RSI slope: soft penalty instead of hard gate (volatile markets punish hard skips)
         # Bonus for positive slope already handled in confidence scoring below.
 
-    # MACD alignment penalty: bearish histogram on longs / bullish on shorts = momentum against trade.
-    # Was a hard gate (4 skips/run) — converted to soft penalty; pooled in _new_filter_penalty below.
-    _macd_alignment_penalty = 0
-    if snap and snap.macd is not None:
-        if direction == "long" and snap.macd_bearish:
-            _macd_alignment_penalty = 8
-        elif direction == "short" and snap.macd_bullish:
-            _macd_alignment_penalty = 8
-
-    # Volume confirmation: threshold is preference-aware.
-    # Was a hard gate (18 skips/run, unreliable on non-equity) — soft penalty, equity-only; pooled below.
-    _vol_floor = 0.80 if _preferred_risk == "conservative" else (0.65 if _preferred_risk == "aggressive" else 0.75)
-    _volume_penalty = 0
-    if snap and snap.volume_ratio is not None:
-        if category in _STOCK_CATEGORIES and snap.volume_ratio < _vol_floor:
-            _volume_penalty = 6
+    # (MACD-alignment and volume-confirmation soft penalties are computed in
+    #  compute_soft_penalties below, pooled after base_confidence.)
 
     # ATR-based stop loss / take profit
     sl, tp = compute_atr_levels(price, risk_tier, snapshot=snap, direction=direction)
@@ -1317,7 +1334,7 @@ def _build_candidate(
 
     # Expiry estimation
     expiry_days = estimate_expiry_days(price, tp, snapshot=snap)
-    expiry = date.today() + timedelta(days=expiry_days)
+    expiry = market_date() + timedelta(days=expiry_days)
 
     # Ranking score
     score = compute_technical_score(sentiment_avg, sentiment_count, snap, direction=direction)
@@ -1337,6 +1354,16 @@ def _build_candidate(
         vel_for_direction = vel if direction == "long" else -vel
         if vel_for_direction < -0.15:
             logger.debug("[ENGINE] %s: velocity=%.3f strongly against direction (%s) → skip", asset_id, vel, direction)
+            _log_engine_skip(
+                "sentiment_velocity_reversal",
+                category=category,
+                asset_id=asset_id,
+                symbol=symbol,
+                policy=pol.key,
+                direction=direction,
+                velocity=vel,
+                ad_hoc=ad_hoc,
+            )
             return None
         elif vel_for_direction < -0.05:
             # -0.1 vel → -4 pts; -0.149 vel → -5 pts. Threshold -0.05 avoids penalising flat/noise.
@@ -1350,183 +1377,40 @@ def _build_candidate(
         if aligned_dir != direction:
             score -= pol.mtf_misalign_score_penalty
 
-    # Confidence score (0–100) with market context adjustment; regime-specific thresholds
-    base_confidence = compute_confidence(
-        sentiment_avg,
-        sentiment_count,
-        snap,
-        direction,
-        regime=regime_id,
+    # Confidence score (0–100): the shared scorer composes base compute_confidence → pooled
+    # soft-penalties → signal bonuses (regime-specific thresholds; regime_id is the canonical
+    # 5-label). Identical composition to replay/live so the three paths cannot drift.
+    _score = score_candidate(
+        snap, direction, regime_id, category, _preferred_risk,
+        sentiment_avg, sentiment_count,
+        today=market_date(),
+        vel_confidence_penalty=vel_confidence_penalty,
         sentiment_signal_scale=pol.sentiment_signal_scale,
         indicator_conflict_multiplier=pol.indicator_conflict_multiplier,
     )
-    confidence = base_confidence
+    base_confidence = _score.base_confidence
+    confidence = _score.confidence
     logger.debug(
-        "[ENGINE] %s (%s): base_conf=%d, sent_avg=%s, sent_cnt=%d, dir=%s",
-        asset_id, symbol, base_confidence, sentiment_avg, sentiment_count, direction,
+        "[ENGINE] %s (%s): base_conf=%d soft_pen=%d (%s) bonuses=(%s) dir=%s → conf=%d",
+        asset_id, symbol, base_confidence, _score.soft_penalty,
+        ", ".join(_score.penalty_notes), ", ".join(_score.bonus_notes), direction, confidence,
     )
-    # OBV distribution penalty (longs only): -5 pts when OBV slope is negative.
-    # OBV already contributes +10 pts in compute_confidence when confirming direction;
-    # explicit -5 for disagreement keeps total OBV swing at 15 pts — proportionate for one indicator.
-    _obv_penalty = 0
-    if direction == "long" and snap and snap.obv_confirming_down:
-        _obv_penalty = 5
 
-    # MACD histogram momentum decay penalty: histogram positive but slope negative = momentum fading.
-    # Research shows decelerating entries fail ~60% of the time even when MACD is still technically bullish.
-    # Only applies to longs where we rely on upward momentum continuation.
-    _macd_decay_penalty = 0
-    if direction == "long" and snap and snap.macd is not None and snap.macd_hist_slope is not None:
-        if snap.macd[2] > 0 and snap.macd_hist_slope < 0:
-            _macd_decay_penalty = 5
-
-    # RSI slope penalty: fading momentum — pooled below. Bonus (+4) stays outside the cap.
-    _rsi_slope_penalty = 0
-    if snap and snap.rsi is not None and snap.rsi_slope is not None:
-        if direction == "long":
-            if snap.rsi_slope < -4.0:
-                _rsi_slope_penalty = 8
-            elif snap.rsi_slope < -2.0:
-                _rsi_slope_penalty = 4
-        elif direction == "short":
-            if snap.rsi_slope > 2.0:
-                _rsi_slope_penalty = 4
-
-    # Cap-tier penalty — Step 6 is the confirmed sweet spot (Sharpe 2.486, +0.119R, 244R DD).
-    # All variations tested (Step 6b/6c/6d) regressed vs Step 6. Mid -4 / small -6 is final.
-    # "other" left ungated — hard gate caused perverse selection (3.7% WR remaining).
-    _cap_tier_penalty = 0
-    if category == "stocks_mid":
-        _cap_tier_penalty = 4
-    elif category == "stocks_small":
-        _cap_tier_penalty = 6
-
-    # Combined soft-penalty cap: all confidence-reducing signals pooled so no combination of weak
-    # signals can stack into an invisible hard gate. Cap raised 20→25 with MACD+volume added.
-    _new_filter_penalty = min(
-        _adx_confidence_penalty + _obv_penalty + vel_confidence_penalty + _macd_decay_penalty
-        + _rsi_slope_penalty + _macd_alignment_penalty + _volume_penalty + _cap_tier_penalty,
-        25,
-    )
-    if _new_filter_penalty > 0:
-        confidence = max(0, confidence - _new_filter_penalty)
-        _nfp_parts = []
-        if _adx_confidence_penalty > 0:
-            _nfp_parts.append(f"adx_weak_trend=-{_adx_confidence_penalty}")
-        if _obv_penalty > 0:
-            _nfp_parts.append(f"obv_distribution=-{_obv_penalty}")
-        if vel_confidence_penalty > 0:
-            _nfp_parts.append(f"sentiment_fading=-{vel_confidence_penalty}")
-        if _macd_decay_penalty > 0:
-            _nfp_parts.append(f"macd_momentum_decay=-{_macd_decay_penalty}")
-        if _rsi_slope_penalty > 0:
-            _nfp_parts.append(f"rsi_slope=-{_rsi_slope_penalty}")
-        if _macd_alignment_penalty > 0:
-            _nfp_parts.append(f"macd_alignment=-{_macd_alignment_penalty}")
-        if _volume_penalty > 0:
-            _nfp_parts.append(f"volume_low=-{_volume_penalty}")
-        if _cap_tier_penalty > 0:
-            _nfp_parts.append(f"cap_tier=-{_cap_tier_penalty}")
-        logger.debug(
-            "[ENGINE] %s: new_filter_penalty=%d (%s) → conf=%d",
-            asset_id, _new_filter_penalty, ", ".join(_nfp_parts), confidence,
+    # Order Flow Imbalance gate + adjustment (extracted to the shared scorer). Strong distribution
+    # (OFI < 0.35 long) / accumulation (OFI > 0.65 short) hard-skips; milder OFI nudges confidence ±.
+    confidence, _ofi_skip = apply_ofi_gate(confidence, snap, direction)
+    if _ofi_skip:
+        _log_engine_skip(
+            "ofi_gate",
+            category=category,
+            asset_id=asset_id,
+            symbol=symbol,
+            policy=pol.key,
+            direction=direction,
+            ofi_ratio=getattr(snap, "ofi_ratio", None) if snap else None,
+            ad_hoc=ad_hoc,
         )
-
-    # ── Bonus signals: items 3-5 — reward high-conviction setups ─────────────────────
-    _bonus_parts: list[str] = []
-
-    # Item 3 — MACD + RSI dual alignment bonus (+6 pts):
-    # When MACD histogram > 0 (bullish momentum) AND RSI is in the 45-65 sweet spot (not overbought),
-    # both indicators explicitly agree — research shows 73-84% WR for this combined setup.
-    if direction == "long" and snap and snap.macd is not None and snap.rsi is not None:
-        if snap.macd[2] > 0 and 45 <= snap.rsi <= 65:
-            confidence = min(100, confidence + 6)
-            _bonus_parts.append("macd_rsi_aligned=+6")
-
-    # Item 4 — Volume surge bonus (+5 pts):
-    # volume_ratio > 1.5 = genuine buying pressure (not just above the gate floor).
-    # Research on breakout studies: volume >1.5× 20-day avg with price trending = 68-72% WR.
-    if snap and snap.volume_ratio is not None and snap.volume_ratio > 1.5:
-        confidence = min(100, confidence + 5)
-        _bonus_parts.append(f"volume_surge=+5 ({snap.volume_ratio:.2f}x)")
-
-    # Item 5 — RSI directional momentum bonus (+4 pts):
-    # Positive slope + non-overbought = momentum continuation. Penalties pooled in _new_filter_penalty.
-    if snap and snap.rsi is not None and snap.rsi_slope is not None:
-        if direction == "long" and snap.rsi_slope > 0 and snap.rsi < 65:
-            confidence = min(100, confidence + 4)
-            _bonus_parts.append(f"rsi_momentum=+4 (slope={snap.rsi_slope:+.1f})")
-
-    # Item 5b — Triple-confluence bonus (+5 pts): MACD histogram > 0 + RSI > 50 + volume above average.
-    if direction == "long" and snap and snap.macd is not None and snap.rsi is not None and snap.volume_ratio is not None:
-        if snap.macd[2] > 0 and snap.rsi > 50 and snap.volume_ratio > 1.0:
-            confidence = min(100, confidence + 5)
-            _bonus_parts.append("triple_confluence=+5")
-
-    # Item 5c — ATR percentile regime: high-vol (>75th pct) penalizes longs; low-vol (<25th pct) rewards.
-    if snap and snap.atr_percentile is not None:
-        if snap.atr_percentile > 0.75:
-            confidence = max(0, confidence - 3)
-            _bonus_parts.append(f"atr_regime=-3 (high_vol pct={snap.atr_percentile:.2f})")
-        elif snap.atr_percentile < 0.25:
-            confidence = min(100, confidence + 3)
-            _bonus_parts.append(f"atr_regime=+3 (low_vol pct={snap.atr_percentile:.2f})")
-
-    # Turn-of-month bonus (+2 pts): first 3 / last 2 calendar days — institutional inflows / window dressing.
-    _today = date.today()
-    _last_dom = calendar.monthrange(_today.year, _today.month)[1]
-    if _today.day <= 3 or _today.day >= _last_dom - 1:
-        confidence = min(100, confidence + 2)
-        _bonus_parts.append("turn_of_month=+2")
-
-    # Item 6 — 52-week high proximity bonus (+8 pts):
-    # Research: stocks within 5% of 52-week high with volume >1.5× show 72% WR over ~28 days.
-    # Within 3% = very strong momentum signal. Gate: volume_ratio > 1.0 to avoid thin breakouts.
-    if direction == "long" and snap and snap.pct_from_52w_high is not None:
-        vol_ok = snap.volume_ratio is None or snap.volume_ratio >= 1.0
-        if snap.pct_from_52w_high <= 0.03 and vol_ok:
-            confidence = min(100, confidence + 8)
-            _bonus_parts.append(f"near_52w_high=+8 ({snap.pct_from_52w_high*100:.1f}% below)")
-        elif snap.pct_from_52w_high <= 0.08 and vol_ok:
-            confidence = min(100, confidence + 4)
-            _bonus_parts.append(f"near_52w_high=+4 ({snap.pct_from_52w_high*100:.1f}% below)")
-
-    # Item 7 — EMA200 distance sweet spot (+3 pts / -3 pts):
-    # Price 2-10% above EMA200 = momentum trend intact. <1% = borderline (fragile), >15% = overextended.
-    # EMA200 already gates direction; this adds nuance within the passing zone.
-    if direction == "long" and snap and snap.ema200 is not None and snap.ema200 > 0:
-        ema_dist = (snap.price - snap.ema200) / snap.ema200
-        if 0.02 <= ema_dist <= 0.10:
-            confidence = min(100, confidence + 3)
-            _bonus_parts.append(f"ema200_sweet_spot=+3 ({ema_dist*100:.1f}% above)")
-        elif ema_dist > 0.15:
-            confidence = max(0, confidence - 3)
-            _bonus_parts.append(f"ema200_overextended=-3 ({ema_dist*100:.1f}% above)")
-
-    if _bonus_parts:
-        logger.debug("[ENGINE] %s: signal_bonuses %s → conf=%d", asset_id, ", ".join(_bonus_parts), confidence)
-
-    # Order Flow Imbalance adjustment: OFI reflects institutional buying/selling pressure.
-    # Accumulation (OFI > 0.6) boosts confidence for longs; distribution (OFI < 0.4) penalizes.
-    # Strong distribution (OFI < 0.35) on a long → hard skip (sellers clearly in control).
-    if snap and snap.ofi_ratio is not None:
-        ofi = snap.ofi_ratio
-        if direction == "long":
-            if ofi < 0.35:
-                logger.debug("[ENGINE] %s: OFI=%.2f strong distribution → skip long", asset_id, ofi)
-                return None
-            elif ofi < 0.4:
-                confidence = max(0, confidence - 5)
-            elif ofi > 0.6:
-                confidence = min(100, confidence + 3)
-        elif direction == "short":
-            if ofi > 0.65:
-                logger.debug("[ENGINE] %s: OFI=%.2f strong accumulation → skip short", asset_id, ofi)
-                return None
-            elif ofi > 0.6:
-                confidence = max(0, confidence - 5)
-            elif ofi < 0.4:
-                confidence = min(100, confidence + 3)
+        return None
     if trend_aligned:
         confidence = min(100, confidence + pol.mtf_aligned_confidence_bonus)
     if market_ctx:
@@ -1771,7 +1655,7 @@ def _build_candidate(
 
     # Bear-regime short confidence floor: only high-conviction short signals are allowed.
     # Raised to 50 (vs ~35-40 for longs) to compensate for historically lower short WR.
-    if direction == "short" and market_ctx and market_ctx.regime.regime == "bear":
+    if direction == "short" and market_ctx and market_ctx.regime.extended_regime == "bear":
         _bear_short_min_conf = BEAR_REGIME_SHORT_MIN_CONFIDENCE
         if confidence < _bear_short_min_conf:
             _log_engine_skip(
@@ -1880,7 +1764,7 @@ def _build_candidate(
             expiry_days=expiry_days,
             near_earnings=near_earnings,
             category=category,
-            today=date.today(),
+            today=market_date(),
             max_penalty=gap_cfg["gap_risk_max_penalty"],
         )
         if gap_risk_level != "low":
@@ -2223,7 +2107,7 @@ def build_daily_candidates(
 
     out: list[Candidate] = []
     batch_ctx: dict[str, Any] = {
-        "batch_date": date.today().isoformat(),
+        "batch_date": market_date().isoformat(),
         "pipeline_run_id": pipeline_run_id,
         "skips": {},
         "skips_by_cat": {},
@@ -2283,7 +2167,42 @@ def build_daily_candidates(
             total_risk_pct += candidate_risk
             return True
 
+        # Shorts second pass (Option 3): in short-active stock/index categories, take up to
+        # MAX_SHORTS_PER_CLASS highest-confidence shorts FIRST, then longs fill the remaining
+        # slots to `cap`. Quiet classes (no qualifying shorts) keep all `cap` slots for longs.
+        # Conflict-prevention (no long+short on the same asset) is free via _try_add's dedup.
+        from app.services.recommendations.shorts_engine_io import (
+            build_short_candidates_for_category as _build_shorts,
+            compute_tape_deteriorating as _compute_tape_det,
+        )
+        _short_regime = market_ctx.regime.extended_regime if market_ctx else None
+        _short_active = SHORTS_ENGINE_ENABLED and _short_regime not in ("crisis", "high_vol")
+        _tape_det = _compute_tape_det() if _short_active else False
+        _short_categories = (*_STOCK_CATEGORIES, "indices")
+
         for category in BATCH_CATEGORIES:
+            shorts_added = 0
+            if (_short_active and category in _short_categories
+                    and (_short_regime == "bear" or _tape_det)):
+                short_cands = _build_shorts(
+                    category,
+                    regime=_short_regime,
+                    tape_deteriorating=_tape_det,
+                    exclude_taken=exclude_taken,
+                    today=market_date(),
+                    preferred_risk=preferred_risk,
+                )
+                for sc in short_cands:
+                    if shorts_added >= MAX_SHORTS_PER_CLASS:
+                        break
+                    if _try_add(sc):
+                        shorts_added += 1
+                if shorts_added:
+                    logger.info(
+                        "[ENGINE][%s] shorts pass: added %d (regime=%s tape_det=%s)",
+                        category, shorts_added, _short_regime, _tape_det,
+                    )
+
             ranked = build_daily_candidates_for_category(
                 category,
                 max_count=max(pool_per_category, cap),
@@ -2294,15 +2213,18 @@ def build_daily_candidates(
                 market_ctx=market_ctx,
                 active_events=active_events,
             )
-            taken = 0
+            taken = shorts_added  # shorts already consumed slots toward `cap`
             for c in ranked:
                 if taken >= cap:
                     break
                 if _try_add(c):
                     taken += 1
-            logger.info("[ENGINE][%s] added %d / target %d to batch", category, taken, cap)
+            logger.info(
+                "[ENGINE][%s] added %d / target %d to batch (%d shorts)",
+                category, taken, cap, shorts_added,
+            )
 
-        if is_high_impact_day(date.today(), window_days=1):
+        if is_high_impact_day(market_date(), window_days=1):
             for c in out:
                 current = c.confidence_score or 0
                 c.confidence_score = max(0, current - MACRO_DAY_CONFIDENCE_PENALTY)

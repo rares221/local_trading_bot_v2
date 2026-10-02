@@ -21,7 +21,7 @@ _WATCHLIST_FILE = _DATA_DIR / "live_watchlist.json"
 
 DEFAULT_WATCHLIST = [
     "AAPL", "TSLA", "NVDA", "MSFT",
-    "GC=F", "CL=F", "BZ=F", "GC=F", "NG=F", "SI=F",
+    "GC=F", "CL=F", "BZ=F", "NG=F", "SI=F",
     "BTC-USD", "ETH-USD", "BNB-USD", "SOL-USD",
     "EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X",
     "SPY", "QQQ", "GLD", "TLT", "XLE", "XLF",

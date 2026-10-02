@@ -115,9 +115,9 @@ class TestSimulateOutcomeShort:
         ])
         result = simulate_outcome(100.0, 105.0, 90.0, "short", bars)
         assert result.outcome == "hit_sl"
-        # NOTE: pnl_r direction for short SL is currently inverted (+1.0 instead of -1.0)
-        # because _pnl_r uses (close - entry) / risk without accounting for direction.
-        # Outcome detection is correct; pnl calculation is a known issue.
+        # _pnl_r is direction-aware: for a short, pnl_r = (entry - close) / risk, so an SL
+        # hit at 105 on a short entered at 100 (risk 5) is -1.0 R — a loss, not a gain.
+        assert result.pnl_r == pytest.approx(-1.0, abs=0.01)
         assert result.closing_price == 105.0
 
     def test_short_expires(self):

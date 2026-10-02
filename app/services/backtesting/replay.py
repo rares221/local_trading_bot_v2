@@ -38,6 +38,7 @@ from app.services.recommendations.engine import (
     _min_rr_floor_for_build,
 )
 from app.services.recommendations.asset_class_policy import get_asset_class_policy
+from app.services.recommendations.scoring import apply_signal_bonuses, compute_soft_penalties
 from app.services.backtesting.data_provider import (
     get_future_bars,
     get_trading_days,
@@ -244,14 +245,6 @@ def _build_signal(
                 hist_count = entry.get("count", 0)
                 break
 
-    # ADX trend-strength soft penalty: ADX < 20 = weak/no trend — mirrors live engine.
-    # Soft penalty (-8) rather than hard gate preserves diversification.
-    _adx_penalty = 0
-    if snap.adx is not None:
-        _adx_val, *_ = snap.adx
-        if _adx_val < 20:
-            _adx_penalty = 8
-
     # Direction from sentiment + technicals, mirroring the live engine.
     # Pass hist_sentiment so macro-linked assets (oil, FX, gold) use the same
     # 30-50% sentiment weight the engine uses, not pure technicals.
@@ -284,88 +277,17 @@ def _build_signal(
         if confidence < BEAR_REGIME_SHORT_MIN_CONFIDENCE:
             return None
 
-    # Combined soft-penalty cap: all confidence-reducing signals pooled so no combination of weak
-    # signals can stack into an invisible hard gate. Cap 25 pts.
-    # --- MIRRORED FROM engine.py ---
     category = _guess_category(symbol)
     pol = get_asset_class_policy(category, symbol)
-    _obv_penalty = 5 if (direction == "long" and snap.obv_confirming_down) else 0
-    _macd_decay_penalty = 0
-    if direction == "long" and snap.macd is not None and snap.macd_hist_slope is not None:
-        if snap.macd[2] > 0 and snap.macd_hist_slope < 0:
-            _macd_decay_penalty = 5
-    _rsi_slope_penalty = 0
-    if snap.rsi is not None and snap.rsi_slope is not None:
-        if direction == "long":
-            if snap.rsi_slope < -4.0:
-                _rsi_slope_penalty = 8
-            elif snap.rsi_slope < -2.0:
-                _rsi_slope_penalty = 4
-        elif direction == "short":
-            if snap.rsi_slope > 2.0:
-                _rsi_slope_penalty = 4
-    _macd_alignment_penalty = 0
-    if snap.macd is not None:
-        if direction == "long" and snap.macd_bearish:
-            _macd_alignment_penalty = 8
-        elif direction == "short" and snap.macd_bullish:
-            _macd_alignment_penalty = 8
-    _vol_floor = 0.75  # moderate default; Step 4 will make this preference-aware
-    _volume_penalty = 0
-    if snap.volume_ratio is not None and category in _STOCK_CATEGORIES:
-        if snap.volume_ratio < _vol_floor:
-            _volume_penalty = 6
-    # --- MIRRORED FROM engine.py ---
-    # Step 6 confirmed sweet spot — mid -4 / small -6 / other ungated. See engine.py for rationale.
-    _cap_tier_penalty = 0
-    if category == "stocks_mid":
-        _cap_tier_penalty = 4
-    elif category == "stocks_small":
-        _cap_tier_penalty = 6
-    _new_filter_penalty = min(
-        _adx_penalty + _obv_penalty + _macd_decay_penalty
-        + _rsi_slope_penalty + _macd_alignment_penalty + _volume_penalty + _cap_tier_penalty,
-        25,
-    )
+    # Soft-penalty pool — shared with the batch engine (scoring.py). Replay has no sentiment
+    # velocity (vel_pen=0), and its vol floor is the moderate default, so preferred_risk="moderate".
+    # This preserves the previous inline behavior byte-for-byte.
+    _new_filter_penalty, _ = compute_soft_penalties(snap, direction, category, "moderate", 0)
     if _new_filter_penalty > 0:
         confidence = max(0, confidence - _new_filter_penalty)
 
-    # Signal bonuses (mirrors engine.py)
-    if direction == "long" and snap.macd is not None and snap.rsi is not None:
-        if snap.macd[2] > 0 and 45 <= snap.rsi <= 65:
-            confidence = min(100, confidence + 6)
-    if snap.volume_ratio is not None and snap.volume_ratio > 1.5:
-        confidence = min(100, confidence + 5)
-    # RSI momentum bonus (+4 pts): positive slope + non-overbought. Penalties pooled above.
-    if snap.rsi is not None and snap.rsi_slope is not None:
-        if direction == "long" and snap.rsi_slope > 0 and snap.rsi < 65:
-            confidence = min(100, confidence + 4)
-    # Triple-confluence bonus (+5 pts): MACD histogram > 0 + RSI > 50 + volume above average — all three bullish.
-    if direction == "long" and snap.macd is not None and snap.rsi is not None and snap.volume_ratio is not None:
-        if snap.macd[2] > 0 and snap.rsi > 50 and snap.volume_ratio > 1.0:
-            confidence = min(100, confidence + 5)
-    # ATR percentile regime: high-vol (>75th pct) = elevated risk, penalize longs; low-vol (<25th pct) = reward.
-    if snap.atr_percentile is not None:
-        if snap.atr_percentile > 0.75:
-            confidence = max(0, confidence - 3)
-        elif snap.atr_percentile < 0.25:
-            confidence = min(100, confidence + 3)
-    # Turn-of-month bonus (+2 pts): first 3 / last 2 calendar days — institutional inflows / window dressing.
-    _last_dom = calendar.monthrange(sim_date.year, sim_date.month)[1]
-    if sim_date.day <= 3 or sim_date.day >= _last_dom - 1:
-        confidence = min(100, confidence + 2)
-    if direction == "long" and snap.pct_from_52w_high is not None:
-        vol_ok = snap.volume_ratio is None or snap.volume_ratio >= 1.0
-        if snap.pct_from_52w_high <= 0.03 and vol_ok:
-            confidence = min(100, confidence + 8)
-        elif snap.pct_from_52w_high <= 0.08 and vol_ok:
-            confidence = min(100, confidence + 4)
-    if direction == "long" and snap.ema200 is not None and snap.ema200 > 0:
-        ema_dist = (snap.price - snap.ema200) / snap.ema200
-        if 0.02 <= ema_dist <= 0.10:
-            confidence = min(100, confidence + 3)
-        elif ema_dist > 0.15:
-            confidence = max(0, confidence - 3)
+    # Signal bonuses — shared with the batch engine (scoring.py). sim_date drives turn-of-month.
+    confidence, _ = apply_signal_bonuses(confidence, snap, direction, sim_date)
 
     # Volume Profile walk-forward adjustments (same logic as live engine)
     # snap.vpoc is computed from OHLCV sliced to sim_date — fully walk-forward.
@@ -572,6 +494,35 @@ def _guess_category(symbol: str) -> str:
     return _CATEGORY_MAP.get(symbol, "stocks_large")
 
 
+# Categories the shorts engine applies to (mirrors the live orchestrator integration).
+_SHORT_WF_CATEGORIES = ("stocks_large", "stocks_mid", "stocks_small", "indices")
+
+
+def _short_sig_to_replay_dict(ssig, sim_date: date, regime: str, category: str) -> dict:
+    """Convert a ShortSignal into the replay signal-dict shape (for outcome sim + metrics)."""
+    return {
+        "symbol": ssig.symbol,
+        "asset_category": category,
+        "direction": "short",
+        "risk_tier": "moderate",
+        "entry_date": sim_date.isoformat(),
+        "entry_price": round(ssig.entry, 4),
+        "stop_loss": round(ssig.stop_loss, 4),
+        "take_profit": round(ssig.take_profit, 4),
+        "confidence_score": ssig.confidence,
+        "risk_reward": round(ssig.risk_reward, 4) if ssig.risk_reward else None,
+        "trigger": ssig.trigger,
+        "volatility_regime": None,
+        "trend_bias": None,
+        "atr_pct": None,
+        "vpoc": None, "vah": None, "val": None, "vp_bias": "at_vpoc",
+        "vp_flag": "none", "in_value_area": False, "rs_20d": None,
+        "market_regime": regime,
+        "outcome": None, "closing_price": None, "outcome_date": None,
+        "bars_held": None, "pnl_r": None,
+    }
+
+
 def run_walkforward_backtest(
     start_date: date,
     end_date: date,
@@ -744,10 +695,41 @@ def _replay_window(
     trading_days = get_trading_days(ohlcv_data, start, end)
     signals: list[dict] = []
 
+    # Shorts engine (integrated cohort). Per-signal like the long path — no portfolio conflict/
+    # capacity here (those live only in the live orchestrator); this validates the shorts EDGE and
+    # its IS/OOS degradation within the walk-forward. by_direction in compute_metrics separates them.
+    from app.services.recommendations.shorts_signals import (
+        try_arm_short, check_confirmation, finalize_short_signal, family_of_trigger,
+        ArmedShort, _tape_deteriorating,
+    )
+    # Shorts are gated behind the same flag as live (SHORTS_ENGINE_ENABLED) so the walk-forward stays
+    # long-only by default — the shorts cohort was walk-forward-rejected (negative OOS). Read at runtime
+    # so the shorts diagnosis can flip the flag on for a one-off analysis without a code change.
+    from app.services.recommendations.engine import SHORTS_ENGINE_ENABLED as _SHORTS_ON
+    # Restrict backtest shorts to the CURATED short universe (matches the live orchestrator, which
+    # only shorts SHORT_UNIVERSE) — validating shorts on the full engine universe over-fires on
+    # low-quality names and is not the production config.
+    from app.services.recommendations.shorts_engine_io import SHORT_UNIVERSE as _SHORT_UNIV
+    _short_syms = {yf for (_c, _a, yf, _r) in _SHORT_UNIV}
+    # Phase 2 two-stage entry: per-symbol "armed, waiting for confirmation" state, local to
+    # this window. Live persists the equivalent state in a DB table (armed_shorts, see
+    # shorts_engine_io.py) so it survives across daily batch runs; replay's day-loop already
+    # provides a natural scope for this and needs no cross-run persistence.
+    _armed: dict[str, dict] = {}
+
     for sim_date in trading_days:
         cutoff_ts = pd.Timestamp(sim_date)
         tech.set_backtest_mode(cutoff_ts)
         day_regime = regime_calendar.get(sim_date, "neutral")
+
+        # Fade-top activation for this day (VIX rising + SPX below 20d MA). tech.fetch_ohlcv returns
+        # the cached ^VIX/^GSPC sliced to the cutoff just set — walk-forward safe.
+        tape_det = False
+        _vix = tech.fetch_ohlcv("^VIX")
+        _spx = tech.fetch_ohlcv("^GSPC")
+        if _vix is not None and _spx is not None and "Close" in _vix.columns and "Close" in _spx.columns:
+            tape_det = _tape_deteriorating(_vix["Close"], _spx["Close"])
+        shorts_active = _SHORTS_ON and day_regime not in ("crisis", "high_vol") and (day_regime == "bear" or tape_det)
 
         for symbol in symbols:
             try:
@@ -757,6 +739,61 @@ def _replay_window(
                     signals.append(sig)
             except Exception as e:
                 logger.debug("[WF] Error building signal %s @%s: %s", symbol, sim_date, e)
+
+            if not shorts_active or symbol not in _short_syms:
+                continue
+            cat = _guess_category(symbol)
+            if cat not in _SHORT_WF_CATEGORIES:
+                continue
+            try:
+                sdf = ohlcv_data.get(symbol)
+                if sdf is None or sdf.empty:
+                    continue
+                bars = sdf[sdf.index <= cutoff_ts]
+                if len(bars) < 60:
+                    continue
+                snap = build_snapshot(symbol)
+                if snap is None or snap.price <= 0:
+                    continue
+                # RS-vs-market gates (Phase 1 redesign, see shorts_signals.py): walk-forward
+                # safe via the same cutoff-respecting compute_relative_strength used above.
+                rs_vs_market = compute_relative_strength(symbol, "^GSPC", period=20)
+                rs_prior = compute_relative_strength(symbol, "^GSPC", period=60)
+
+                pending = _armed.get(symbol)
+                if pending is not None:
+                    armed = ArmedShort(
+                        symbol=symbol, category=cat, family=pending["family"],
+                        trigger=pending["trigger"], armed_date=pending["armed_date"],
+                    )
+                    status = check_confirmation(
+                        armed, snap, bars, day_regime, tape_det,
+                        rs_vs_market, rs_prior, pending["days_since_armed"],
+                    )
+                    if status == "confirmed":
+                        del _armed[symbol]
+                        ssig = finalize_short_signal(
+                            armed, snap, bars, regime_id=day_regime, risk_tier=risk_tier,
+                            preferred_risk="moderate", sentiment_avg=None, sentiment_count=0,
+                            today=sim_date,
+                        )
+                        if ssig is not None:
+                            signals.append(_short_sig_to_replay_dict(ssig, sim_date, day_regime, cat))
+                    elif status == "expired":
+                        del _armed[symbol]
+                    else:
+                        pending["days_since_armed"] += 1
+                    # Already armed this cycle either way — don't also scan for a new trigger.
+                    continue
+
+                trigger = try_arm_short(snap, bars, day_regime, tape_det, rs_vs_market, rs_prior)
+                if trigger is not None:
+                    _armed[symbol] = {
+                        "family": family_of_trigger(trigger), "trigger": trigger,
+                        "armed_date": sim_date, "days_since_armed": 0,
+                    }
+            except Exception as e:
+                logger.debug("[WF] Error building short %s @%s: %s", symbol, sim_date, e)
 
     tech.clear_backtest_mode()
 

@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import logging
 import math
+import os
+import time
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -22,6 +24,14 @@ logger = logging.getLogger(__name__)
 _ohlcv_cache: dict[str, pd.DataFrame] = {}
 # Separate cache for intraday (key = symbol) to avoid overwriting daily
 _ohlcv_intraday_cache: dict[str, pd.DataFrame] = {}
+# Monotonic insert time per cache key, for TTL expiry (LIVE mode only).
+_ohlcv_cache_ts: dict[str, float] = {}
+# TTL for cached OHLCV in LIVE mode: past this age a cached frame is a miss and is refetched,
+# so a signal is never emitted off hours-stale bars between scheduled clear_cache() calls.
+# Backtest mode ignores the TTL (correctness comes from _apply_backtest_cutoff slicing, and the
+# cached frame is the full fetched history regardless of wall-clock age).
+_OHLCV_TTL_SECONDS = float(os.getenv("OHLCV_CACHE_TTL_SECONDS", "900"))  # 15 min (daily)
+_OHLCV_INTRADAY_TTL_SECONDS = float(os.getenv("OHLCV_INTRADAY_CACHE_TTL_SECONDS", "300"))  # 5 min
 # Snapshot persistence cache: last successful TechnicalSnapshot per symbol.
 # Used as a fallback when a live fetch fails (e.g. yfinance rate limiting).
 # Keyed by the raw symbol string passed to build_snapshot.
@@ -60,6 +70,20 @@ def _apply_backtest_cutoff(df: pd.DataFrame) -> Optional[pd.DataFrame]:
 def clear_cache() -> None:
     _ohlcv_cache.clear()
     _ohlcv_intraday_cache.clear()
+    _ohlcv_cache_ts.clear()
+
+
+def _cache_expired(cache_key: str, use_interval: str) -> bool:
+    """True if a live-mode cached frame is older than its TTL. Backtest mode never expires."""
+    if _backtest_cutoff is not None:
+        return False
+    ttl = _OHLCV_TTL_SECONDS if use_interval == "1d" else _OHLCV_INTRADAY_TTL_SECONDS
+    if ttl <= 0:
+        return False
+    inserted = _ohlcv_cache_ts.get(cache_key)
+    if inserted is None:
+        return False
+    return (time.monotonic() - inserted) > ttl
 
 
 def fetch_ohlcv(symbol: str, period: str = "90d", interval: Optional[str] = None) -> Optional[pd.DataFrame]:
@@ -72,7 +96,7 @@ def fetch_ohlcv(symbol: str, period: str = "90d", interval: Optional[str] = None
     use_interval = interval or "1d"
     cache_key = symbol if use_interval == "1d" else f"{symbol}_{use_interval}"
     cache = _ohlcv_cache if use_interval == "1d" else _ohlcv_intraday_cache
-    if cache_key in cache:
+    if cache_key in cache and not _cache_expired(cache_key, use_interval):
         cached = cache[cache_key]
         if cached.empty:
             return None
@@ -84,6 +108,7 @@ def fetch_ohlcv(symbol: str, period: str = "90d", interval: Optional[str] = None
         # Don't cache failures — transient yfinance errors would stick until clear_cache().
         return None
     cache[cache_key] = df
+    _ohlcv_cache_ts[cache_key] = time.monotonic()
     return _apply_backtest_cutoff(df)
 
 
@@ -747,7 +772,11 @@ def build_snapshot(symbol: str) -> Optional["TechnicalSnapshot"]:
     On fetch failure (yfinance rate limiting, timeout) falls back to the last
     successfully built snapshot for the same symbol, marked with is_stale=True.
     """
-    df = fetch_ohlcv(symbol)
+    # 1y (~252 bars) so 200-bar indicators actually compute in live: EMA200 (needs >=200 bars)
+    # and a true 52-week high. The former default (90d ~63 bars) left ema200=None in every live
+    # snapshot — silently disabling the EMA200 gate/bonus in the long engine AND the shorts
+    # fade-top family, a live/backtest parity gap (backtest uses full prefetched history).
+    df = fetch_ohlcv(symbol, period="1y")
     if df is None or df.empty or len(df) < 5:
         cached = _snapshot_persist.get(symbol)
         if cached is not None:
@@ -1069,12 +1098,23 @@ def compute_atr_levels(
                         break
 
             # TP: avoid placing TP inside an HVN (price stalls/reverses there)
+            # Guard: only snap if resulting R:R >= 1.0 — otherwise the HVN/VAH is too close
+            # to price (e.g. price sitting just under its own value area) and snapping would
+            # collapse the reward far below the risk (SL can be 2-3x ATR away).
             hvn_above = snapshot.nearest_hvn_above()
             if hvn_above and price < hvn_above < tp_base:
-                tp = hvn_above * 0.997  # just below the HVN — realistic exit
+                candidate = hvn_above * 0.997  # just below the HVN — realistic exit
+                sl_dist = abs(price - sl)
+                tp_dist = abs(candidate - price)
+                if sl_dist > 0 and tp_dist / sl_dist >= 1.0:
+                    tp = candidate
             # VAH as TP cap: strong resistance at value area boundary
             if snapshot.vah and price < snapshot.vah < tp_base:
-                tp = snapshot.vah * 0.998
+                candidate = snapshot.vah * 0.998
+                sl_dist = abs(price - sl)
+                tp_dist = abs(candidate - price)
+                if sl_dist > 0 and tp_dist / sl_dist >= 1.0:
+                    tp = candidate
 
         else:  # short
             # SL: only snap to HVN/VAH that is ABOVE sl_base (widens stop to natural resistance).
@@ -1086,16 +1126,24 @@ def compute_atr_levels(
 
             # TP: avoid placing TP inside an HVN below
             # Guard: snapped TP must remain BELOW entry (short target must be lower than price)
+            # AND only snap if resulting R:R >= 1.0 — otherwise the HVN/VAL is too close to
+            # price and snapping would collapse the reward far below the risk.
             hvn_below = snapshot.nearest_hvn_below()
             if hvn_below and tp_base < hvn_below < price:
                 candidate = hvn_below * 1.003  # just above the HVN
                 if candidate < price:           # only snap if still below entry
-                    tp = candidate
+                    sl_dist = abs(price - sl)
+                    tp_dist = abs(price - candidate)
+                    if sl_dist > 0 and tp_dist / sl_dist >= 1.0:
+                        tp = candidate
             # VAL as TP cap: strong support at value area boundary
             if snapshot.val and tp_base < snapshot.val < price:
                 candidate = snapshot.val * 1.002
                 if candidate < price:           # only snap if still below entry
-                    tp = candidate
+                    sl_dist = abs(price - sl)
+                    tp_dist = abs(price - candidate)
+                    if sl_dist > 0 and tp_dist / sl_dist >= 1.0:
+                        tp = candidate
 
     # ── Swing S/R fallback (when VP levels don't apply) ──────────────────────
     if snapshot:
@@ -1192,52 +1240,32 @@ def classify_horizon(expiry_days: int) -> str:
 # Regime-dependent weights (dynamic indicator weights)
 # ---------------------------------------------------------------------------
 
+# These four helpers now delegate to the canonical regime taxonomy in regime_map.
+# They expect the canonical 5-label scheme (crisis|high_vol|bear|bull|neutral); callers
+# feed `extended_regime` / backtest `day_regime`. See app/services/regime_map.py.
+
 def _regime_direction_weights(regime: Optional[str] = None) -> tuple[float, float]:
-    """
-    Sentiment vs technical weight for direction. risk_on: trust trend more (less sentiment).
-    risk_off: slightly more sentiment; cautious: balanced.
-    """
-    if regime == "risk_on":
-        return (0.20, 0.80)
-    if regime == "risk_off":
-        return (0.25, 0.75)
-    # cautious or None
-    return (0.30, 0.70)
+    """(sentiment_w, technical_w) — delegates to regime_map.direction_weights."""
+    from app.services.regime_map import direction_weights
+    return direction_weights(regime)
 
 
 def _regime_tech_weights(regime: Optional[str] = None) -> tuple[float, float]:
-    """
-    Trend (MACD, ADX) vs mean-reversion (RSI, Stochastic, Bollinger) multiplier.
-    risk_on: favor trend; risk_off: favor mean reversion.
-    """
-    if regime == "risk_on":
-        return (1.2, 0.85)
-    if regime == "risk_off":
-        return (0.85, 1.2)
-    return (1.0, 1.0)
+    """(trend_mult, mean_reversion_mult) — delegates to regime_map.tech_weights."""
+    from app.services.regime_map import tech_weights
+    return tech_weights(regime)
 
 
 def _regime_rsi_thresholds(regime: Optional[str] = None) -> tuple[float, float, float, float]:
-    """
-    (bull_bar, bear_bar, overbought, oversold). risk_off: stricter (60/40, 65/35).
-    risk_on: more lenient (52/48, 72/28). cautious: default (55/45, 70/30).
-    """
-    if regime == "risk_off":
-        return (60.0, 40.0, 65.0, 35.0)
-    if regime == "risk_on":
-        return (52.0, 48.0, 72.0, 28.0)
-    return (55.0, 45.0, 70.0, 30.0)
+    """(bull_bar, bear_bar, overbought, oversold) — delegates to regime_map.rsi_thresholds."""
+    from app.services.regime_map import rsi_thresholds
+    return rsi_thresholds(regime)
 
 
 def _regime_stoch_thresholds(regime: Optional[str] = None) -> tuple[float, float, float, float]:
-    """
-    (bull_bar, bear_bar, overbought, oversold). risk_off: stricter; risk_on: lenient.
-    """
-    if regime == "risk_off":
-        return (60.0, 40.0, 75.0, 25.0)
-    if regime == "risk_on":
-        return (52.0, 48.0, 85.0, 15.0)
-    return (55.0, 45.0, 80.0, 20.0)
+    """(bull_bar, bear_bar, overbought, oversold) — delegates to regime_map.stoch_thresholds."""
+    from app.services.regime_map import stoch_thresholds
+    return stoch_thresholds(regime)
 
 
 def _style_adjust_direction_weights(
@@ -1246,13 +1274,16 @@ def _style_adjust_direction_weights(
     regime: Optional[str],
     asset_direction_style: Optional[str],
 ) -> tuple[float, float]:
-    """Shift weight toward headlines for macro-linked assets (oil, FX, crypto, indices)."""
+    """Shift weight toward headlines for macro-linked assets (oil, FX, crypto, indices).
+    `regime` is the canonical 5-label; the larger bump applies in defensive regimes
+    (bear/high_vol/crisis), the old `risk_off` equivalent."""
+    _defensive = regime in ("bear", "high_vol", "crisis")
     if asset_direction_style == "macro_linked":
-        bump = 0.15 if regime == "risk_off" else 0.10
+        bump = 0.15 if _defensive else 0.10
         sent_w = min(0.50, sent_w + bump)
         tech_w = 1.0 - sent_w
     elif asset_direction_style == "index_macro":
-        bump = 0.12 if regime == "risk_off" else 0.06
+        bump = 0.12 if _defensive else 0.06
         sent_w = min(0.44, sent_w + bump)
         tech_w = 1.0 - sent_w
     return sent_w, tech_w
@@ -1269,8 +1300,9 @@ def determine_direction(
     asset_direction_style: Optional[str] = None,
 ) -> str:
     """
-    Decide long vs short. Weights are regime-dependent: risk_on → more technical/trend;
-    risk_off → more mean-reversion weight; cautious → balanced (30% sentiment, 70% technical).
+    Decide long vs short. Weights are regime-dependent on the canonical 5-label scheme:
+    bull → more technical/trend; bear → more mean-reversion + sentiment weight;
+    neutral → balanced. Profiles live in app/services/regime_map.py.
     Technicals: RSI, MACD, Bollinger, ADX (+DI vs -DI), Stochastic, OBV.
     """
     sent_w, tech_w = _regime_direction_weights(regime)

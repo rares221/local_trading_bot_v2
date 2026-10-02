@@ -119,18 +119,41 @@ def compute_metrics(trades: list[dict], total_trading_days: int = 0) -> dict[str
             "avg_pnl_r": round(bdata["pnl_r_sum"] / n, 4) if n > 0 else 0.0,
         }
 
-    # Per direction
+    # Per direction — full quality profile needed for short cohort gate in Phase 4
     direction_stats: dict[str, dict] = {}
     for t in all_outcomes:
         d = t.get("direction", "long")
         if d not in direction_stats:
-            direction_stats[d] = {"total": 0, "wins": 0}
+            direction_stats[d] = {"total": 0, "wins": 0, "losses": 0, "pnl_r_sum": 0.0,
+                                  "win_pnl_r_sum": 0.0, "loss_pnl_r_sum": 0.0, "pnl_r_count": 0}
         direction_stats[d]["total"] += 1
         if t.get("outcome") == "hit_tp":
             direction_stats[d]["wins"] += 1
+            p = t.get("pnl_r")
+            if p is not None and not math.isnan(p):
+                direction_stats[d]["win_pnl_r_sum"] += p
+        elif t.get("outcome") == "hit_sl":
+            direction_stats[d]["losses"] += 1
+            p = t.get("pnl_r")
+            if p is not None and not math.isnan(p):
+                direction_stats[d]["loss_pnl_r_sum"] += p
+        p = t.get("pnl_r")
+        if p is not None and not math.isnan(p):
+            direction_stats[d]["pnl_r_sum"] += p
+            direction_stats[d]["pnl_r_count"] += 1
     for d, ds in direction_stats.items():
         n = ds["total"]
+        resolved = ds["wins"] + ds["losses"]
         ds["win_rate"] = round(ds["wins"] / n, 4) if n > 0 else 0.0
+        ds["resolved_win_rate"] = round(ds["wins"] / resolved, 4) if resolved > 0 else 0.0
+        ds["hit_tp_rate"] = round(ds["wins"] / n, 4) if n > 0 else 0.0
+        ds["hit_sl_rate"] = round(ds["losses"] / n, 4) if n > 0 else 0.0
+        ds["avg_pnl_r"] = round(ds["pnl_r_sum"] / ds["pnl_r_count"], 4) if ds["pnl_r_count"] > 0 else 0.0
+        ds["avg_win_r"] = round(ds["win_pnl_r_sum"] / ds["wins"], 4) if ds["wins"] > 0 else None
+        ds["avg_loss_r"] = round(ds["loss_pnl_r_sum"] / ds["losses"], 4) if ds["losses"] > 0 else None
+        # drop internal accumulators from output
+        for k in ("pnl_r_sum", "win_pnl_r_sum", "loss_pnl_r_sum", "pnl_r_count"):
+            ds.pop(k, None)
 
     # Per symbol win rates (top losers/winners)
     symbol_stats: dict[str, dict] = {}

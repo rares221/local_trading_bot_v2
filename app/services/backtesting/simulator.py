@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+from app.core.market_time import market_date
 from typing import Optional
 
 import pandas as pd
@@ -43,7 +44,7 @@ def simulate_outcome(
         return SimulatedOutcome(
             outcome="expired",
             closing_price=entry_price,
-            outcome_date=date.today(),
+            outcome_date=market_date(),
             bars_held=0,
             pnl_r=0.0,
         )
@@ -59,7 +60,7 @@ def simulate_outcome(
         return SimulatedOutcome(
             outcome="expired",
             closing_price=entry_price,
-            outcome_date=date.today(),
+            outcome_date=market_date(),
             bars_held=0,
             pnl_r=0.0,
         )

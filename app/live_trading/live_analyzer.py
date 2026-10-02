@@ -17,6 +17,7 @@ import asyncio
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from app.core.market_time import market_date
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -244,6 +245,16 @@ def _aggregate_live_sentiment_sync() -> dict[str, dict]:
         return {}
 
 
+# Ticker-shaped strings that news discovery must never promote: delisted, acquired, or
+# structurally unfetchable via yfinance (surface as "possibly delisted / no price data").
+_DISCOVERY_DENYLIST: frozenset[str] = frozenset({
+    "SWEEP",  # not a real equity ticker
+    "CFD",    # generic term ("contract for difference"), not a ticker
+    "ZEC",    # Zcash — crypto with persistent yfinance data gaps on this symbol form
+    "PXD",    # Pioneer Natural Resources — acquired by Exxon (2024), delisted
+})
+
+
 def _discover_tickers(sentiment_data: dict[str, dict]) -> list[tuple[str, str, str, str]]:
     """
     Find tickers from sentiment data that aren't in the base universe.
@@ -257,6 +268,8 @@ def _discover_tickers(sentiment_data: dict[str, dict]) -> list[tuple[str, str, s
     candidates: list[tuple[str, int]] = []
     for tag, info in sentiment_data.items():
         if tag in _BASE_ASSET_IDS:
+            continue
+        if tag in _DISCOVERY_DENYLIST:
             continue
         if not is_likely_ticker(tag):
             continue
@@ -301,6 +314,7 @@ def _compute_signal_sync(
     backtest_stats: dict | None = None,
     sentiment_velocity: float | None = None,
     sentiment_conviction: float | None = None,
+    preferred_risk: str = "moderate",
 ) -> dict | None:
     """
     Blocking computation of a full math signal for one asset.
@@ -310,7 +324,6 @@ def _compute_signal_sync(
         from app.services.technicals import (
             build_snapshot,
             compute_atr_levels,
-            compute_confidence,
             compute_technical_score,
             determine_direction,
             calc_risk_reward,
@@ -340,6 +353,43 @@ def _compute_signal_sync(
     except Exception:
         direction = "long"
 
+    # ── Short gates (mirrors engine.py / replay.py) ───────────────────────────
+    if direction == "short":
+        from app.services.recommendations.engine import (
+            SHORTS_ENABLED,
+            SHORTS_BEAR_REGIME_ENABLED,
+            BEAR_REGIME_SHORT_MIN_CONFIDENCE,
+        )
+        # Gate 1: EMA200 hard gate — do not short above EMA200
+        if snap.ema200 is not None and snap.price > snap.ema200:
+            return None
+        # Gate 2: Regime hard gate — block in crisis / high_vol
+        if regime in ("crisis", "high_vol"):
+            return None
+        # Gate 3: SHORTS_ENABLED flag / bear-regime exception
+        shorts_ok = SHORTS_ENABLED or (SHORTS_BEAR_REGIME_ENABLED and regime == "bear")
+        if not shorts_ok:
+            return None
+        # Gate 4: Bear-regime confidence floor (evaluated after confidence is computed below)
+        # — stored here so we can check it once confidence is available
+        _bear_short_min_conf = BEAR_REGIME_SHORT_MIN_CONFIDENCE
+    else:
+        _bear_short_min_conf = None
+    # ─────────────────────────────────────────────────────────────────────────
+
+    # ── Parity gates + confidence pipeline: shared with the batch engine (scoring.py) ──
+    from app.services.recommendations.scoring import (
+        apply_ofi_gate,
+        is_rsi_exhausted,
+        score_candidate,
+    )
+
+    # RSI exhaustion hard gate (regime + preference aware) — engine gates this, live previously
+    # did not, so live could emit overbought longs / oversold shorts the batch engine rejects.
+    if is_rsi_exhausted(snap, direction, regime, preferred_risk):
+        return None
+    # ──────────────────────────────────────────────────────────────────────────────────────────
+
     try:
         math_sl, math_tp = compute_atr_levels(
             price=snap.price,
@@ -353,21 +403,43 @@ def _compute_signal_sync(
         math_sl = round(snap.price * (1 - 0.02 * mult), 4)
         math_tp = round(snap.price * (1 + 0.03 * mult), 4)
 
+    # ── Confidence: engine-parity pipeline (Option A) via the shared score_candidate ─────────
+    # Same composition as the batch engine: base compute_confidence → pooled soft-penalties →
+    # signal bonuses. The compute_live_confidence backtest-winrate blend no longer gates — it is
+    # demoted to a display-only overlay ("historical_confidence") below.
+    from datetime import date as _date
+
+    # Sentiment-velocity fade (engine parity): strong reversal against the trade hard-skips;
+    # a mild decline feeds the pooled soft penalty inside score_candidate.
+    _vel_pen = 0
+    if sentiment_velocity is not None:
+        _vel_for_dir = sentiment_velocity if direction == "long" else -sentiment_velocity
+        if _vel_for_dir < -0.15:
+            return None
+        elif _vel_for_dir < -0.05:
+            _vel_pen = int(abs(_vel_for_dir) * 40)
+
+    try:
+        _score = score_candidate(
+            snap, direction, regime, category, preferred_risk,
+            sentiment_avg if sentiment_count > 0 else None, sentiment_count,
+            today=market_date(), vel_confidence_penalty=_vel_pen,
+        )
+        confidence = _score.confidence
+        indicator_score = _score.base_confidence
+    except Exception:
+        confidence = 50
+        indicator_score = 50
+
+    # Display-only overlay: historical backtest-winrate blend (NOT used for gating).
     try:
         from app.live_trading.live_confidence import compute_live_confidence
-        indicator_score = compute_confidence(
-            sentiment_avg=sentiment_avg if sentiment_count > 0 else None,
-            sentiment_count=sentiment_count,
-            snapshot=snap,
-            direction=direction,
-            regime=regime,
-        )
-        confidence = compute_live_confidence(
+        historical_confidence = compute_live_confidence(
             backtest_stats=backtest_stats,
             indicator_score=indicator_score,
         )
     except Exception:
-        confidence = 50
+        historical_confidence = None
 
     try:
         rr = calc_risk_reward(snap.price, math_sl, math_tp)
@@ -396,6 +468,16 @@ def _compute_signal_sync(
         elif sentiment_conviction < 0.3:
             confidence = max(0, confidence - 8)
 
+    # OFI hard gate + confidence nudge (parity with engine): strong distribution on a long /
+    # accumulation on a short hard-skips; milder imbalance nudges confidence ±.
+    confidence, _ofi_skip = apply_ofi_gate(confidence, snap, direction)
+    if _ofi_skip:
+        return None
+
+    # Gate 4: Bear-regime confidence floor for shorts (checked after final confidence)
+    if _bear_short_min_conf is not None and confidence < _bear_short_min_conf:
+        return None
+
     return {
         "asset_id":        asset_id,
         "ticker":          yf_symbol,
@@ -405,6 +487,7 @@ def _compute_signal_sync(
         "math_sl":         round(math_sl, 4),
         "math_tp":         round(math_tp, 4),
         "confidence":      confidence,
+        "historical_confidence": historical_confidence,  # display overlay (backtest hit-rate blend)
         "risk_reward":     rr,
         "tech_score":      tech_score,
         "regime":          regime,
@@ -428,12 +511,14 @@ async def build_all_signals(min_confidence: int = 10) -> list[dict]:
     """
     loop = asyncio.get_event_loop()
 
-    # Get regime
-    regime = "cautious"
+    # Get regime — use the canonical 5-label (extended_regime) so the scorer's regime
+    # profiles and the short gates (crisis/high_vol/bear at :354,:357) actually match.
+    # Feeding the 3-label ctx.regime here left those gates permanently dead.
+    regime = "neutral"
     try:
         from app.services.market_context import detect_market_regime
         ctx = await loop.run_in_executor(_snap_executor, detect_market_regime)
-        regime = ctx.regime if hasattr(ctx, "regime") else str(ctx)
+        regime = ctx.extended_regime if hasattr(ctx, "extended_regime") else str(ctx)
     except Exception:
         pass
 
@@ -443,7 +528,15 @@ async def build_all_signals(min_confidence: int = 10) -> list[dict]:
         loop.run_in_executor(_snap_executor, get_auto_universe),
     )
 
-    logger.info("[LIVE_ANALYZER] Universe: %d assets, regime=%s", len(universe), regime)
+    # Global risk preference — feeds the shared RSI-exhaustion ceiling (parity with engine).
+    try:
+        from app.core.preferences import get_preferred_risk
+        preferred_risk = get_preferred_risk()
+    except Exception:
+        preferred_risk = "moderate"
+
+    logger.info("[LIVE_ANALYZER] Universe: %d assets, regime=%s, preferred_risk=%s",
+                len(universe), regime, preferred_risk)
 
     # Pre-fetch backtest win rates for all symbols (async, before threads)
     from app.live_trading.live_confidence import fetch_backtest_stats
@@ -473,6 +566,7 @@ async def build_all_signals(min_confidence: int = 10) -> list[dict]:
                 sentiment_avg, sentiment_count, regime,
                 stats,
                 sentiment_velocity, sentiment_conviction,
+                preferred_risk,
             ),
         ))
 

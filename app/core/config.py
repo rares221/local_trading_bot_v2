@@ -1,6 +1,9 @@
+import logging
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -56,3 +59,33 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def validate_startup_config() -> None:
+    """
+    Validate required settings at startup. Called once from app/main.py's lifespan.
+
+    Missing provider is FATAL (nothing works without an LLM backend selected). A missing
+    API key for the selected provider is a WARNING, not fatal — the app still boots and
+    backtesting/analysis run; only LLM rationale generation is affected.
+    """
+    provider = (settings.research_llm_provider or "").strip().lower()
+    if not provider:
+        raise RuntimeError(
+            "RESEARCH_LLM_PROVIDER is not set. Set it in your .env to one of: "
+            "openai | anthropic | ollama | openrouter | lm_studio. See .env.example."
+        )
+
+    _key_for_provider = {
+        "openai": ("OPENAI_API_KEY", settings.openai_api_key),
+        "anthropic": ("ANTHROPIC_API_KEY", settings.anthropic_api_key),
+        "openrouter": ("OPENROUTER_API_KEY", settings.openrouter_api_key),
+    }
+    if provider in _key_for_provider:
+        env_name, value = _key_for_provider[provider]
+        if not value or not str(value).strip():
+            logger.warning(
+                "RESEARCH_LLM_PROVIDER=%r but %s is not set — LLM rationale generation will "
+                "fail. Set %s in .env (see .env.example) or switch providers.",
+                provider, env_name, env_name,
+            )

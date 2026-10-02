@@ -97,24 +97,19 @@ class MarketRegime:
     @property
     def extended_regime(self) -> str:
         """
-        5-label regime matching the backtest's regime.py definitions.
-        Used for engine gates so live and backtest regime labels are consistent.
-          crisis   — VIX ≥ 35 (backtest: 12.5% WR, -0.71R avg)
-          high_vol — VIX 25–35 (backtest: 23.5% WR, -0.009R avg)
-          bull     — VIX < 25, SPX trending up
-          bear     — VIX < 25, SPX trending down
-          neutral  — VIX < 25, mixed signals
+        Canonical 5-label regime — delegates to app/services/regime_map.py so live and
+        backtest classify the SAME day identically (crisis≥40, high_vol≥30, bear=SPX<200SMA
+        AND VIX≥20, bull=SPX>200SMA AND VIX<20, else neutral).
+
+        Trend uses the 200-SMA ONLY (via spx_above_sma200), matching backtest regime.py —
+        NOT spx_trend, which mixes SMA50+SMA200. The classifier only tests the sign of
+        spx_vs_sma200, so a signed sentinel (+1/-1) is exactly equivalent to the fraction.
         """
-        vix = self.vix_level
-        if vix is not None and vix >= 35:
-            return "crisis"
-        if vix is not None and vix >= 25:
-            return "high_vol"
-        if self.spx_trend == "bullish":
-            return "bull"
-        if self.spx_trend == "bearish":
-            return "bear"
-        return "neutral"
+        from app.services.regime_map import classify_canonical_regime
+        spx_vs_sma200: Optional[float] = None
+        if self.spx_above_sma200 is not None:
+            spx_vs_sma200 = 1.0 if self.spx_above_sma200 else -1.0
+        return classify_canonical_regime(self.vix_level, spx_vs_sma200)
 
 
 def detect_market_regime() -> MarketRegime:
