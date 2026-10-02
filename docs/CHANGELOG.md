@@ -4,6 +4,45 @@
 
 ---
 
+## 2026-09-23 — `feature/shorts_fix`
+
+### Shorts engine — Phase 2 (confirmation-bar entry delay) tried, made things worse — effort CONCLUDED
+
+Picked up the shorts redesign where the 09-18 session left off, per the "what's left" options
+recorded then: built Phase 2 (the stateful confirmation-bar entry delay), the more invasive of
+the two remaining options. Full detail in `superpowers/plans/2026-09-18-shorts-engine.md` §6-8.
+
+- **Built**: two-stage entry (`try_arm_short` → `check_confirmation` → `finalize_short_signal`,
+  replacing the old one-shot `generate_short_signal`) — arm on the trigger day, wait up to 3
+  trading days for a close below the 10-day EMA (re-checking the family's structural gates
+  against fresh data each day), only then score/level using the confirmation day's data. Live
+  persists the pending-arm state in a new `armed_shorts` table (migration 009); replay uses an
+  equivalent in-memory dict local to its day-loop. 386 unit tests, independently designed via the
+  full brainstorming flow (architecture approved section-by-section before implementation).
+- **Validated** on the same 2021-2024 checkpoint (directional-only, already spent) plus two fresh
+  blind-holdout episodes never touched during design: **Aug-Oct 2011** (debt-ceiling + European
+  crisis) and **Aug 2015-Feb 2016** (China deval + oil crash) — 2018 Q4 and 2020 COVID were
+  already spent from Phase 1's holdout.
+- **Result: activation collapsed even further, and profitability didn't improve.** Checkpoint: 10
+  in-sample signals total across 8 windows / 3 years, and **all 10 expired** — zero trades in the
+  entire window ever hit a stop or a target, in-sample or out-of-sample. Blind holdout: **zero
+  signals in the 2011 debt-ceiling crisis** (joining 2020 COVID's zero from Phase 1), only 2
+  signals across the full 2015-16 selloff. Stacking the confirmation delay on Phase 1's RS-gate
+  didn't fix the win-rate problem — it compounded the activation problem instead.
+- **Decision: shorts effort CONCLUDED, not paused.** `SHORTS_ENGINE_ENABLED` stays `False`
+  indefinitely. Five configurations now tested (original, Phase 1 with/without the RS-gate, Phase
+  2) across four separate historical crisis episodes — every one either failed on profitability
+  or failed to produce a testable sample. Per systematic-debugging discipline, that consistent a
+  pattern across that many independent tests means the problem is architectural (daily-bar TA +
+  these trigger definitions don't carry robust short-side edge here), not a threshold worth
+  another tweak. No further gate-tuning is planned on this architecture.
+- **Next:** external research (web + open-source/GitHub repo search) dispatched into whether a
+  genuinely different data source (short interest, options flow, breadth, forensic-accounting red
+  flags) could work where daily-bar TA didn't — a separate future project, not a continuation of
+  this one.
+
+---
+
 ## 2026-09-18 — `feature/shorts_fix`
 
 ### Docs housekeeping — one-plan-one-spec convention

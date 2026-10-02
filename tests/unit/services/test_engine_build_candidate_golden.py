@@ -36,6 +36,10 @@ class _FakeDate(_dt.date):
 def patched_engine(monkeypatch):
     """Deterministic IO surface for _build_candidate with market_ctx=None."""
     monkeypatch.setattr(eng, "date", _FakeDate)
+    # score_candidate's `today` comes from market_date() (US/Eastern calendar date), not
+    # date.today() -- must freeze this too or the turn-of-month bonus leaks the real wall-clock
+    # date through on the 1st-3rd / last 2 days of any month the suite happens to run on.
+    monkeypatch.setattr(eng, "market_date", lambda: _FakeDate(2026, 9, 15))
     monkeypatch.setattr(prefs, "get_preferred_risk", lambda: "moderate")
     monkeypatch.setattr(
         eng, "check_trend_alignment",

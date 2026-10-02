@@ -25,6 +25,10 @@ def _snap(**kw) -> TechnicalSnapshot:
 def _signal(monkeypatch, snapshot, regime="bull", preferred_risk="moderate"):
     # _compute_signal_sync imports build_snapshot from app.services.technicals at call time.
     monkeypatch.setattr(tech, "build_snapshot", lambda symbol: snapshot)
+    # score_candidate's `today` comes from market_date(); freeze to a mid-month day so the
+    # turn-of-month confidence bonus doesn't leak the real wall-clock date into these fixtures.
+    import datetime as _dt
+    monkeypatch.setattr(la, "market_date", lambda: _dt.date(2026, 9, 15))
     return la._compute_signal_sync(
         "TESTA", "TESTA", "moderate", "indices",
         0.0, 0, regime, None, None, None, preferred_risk,
