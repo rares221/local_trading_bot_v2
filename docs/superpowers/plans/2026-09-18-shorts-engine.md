@@ -8,10 +8,14 @@
 > walk-forward checkpoints. Every configuration either failed on profitability or, in Phase 2's
 > case, collapsed activation so far that no resolvable sample remained at all (0 resolved trades
 > in a 3-year checkpoint). Full evidence in §6-7 below.
-> **Next:** the codebase-modification avenue is closed; the open avenue is a genuinely different
-> data source (short interest, options flow, breadth, forensic-accounting red flags) — external
-> research on this is in progress (§8, added 2026-09-23) rather than more gate-tuning on daily-bar
-> TA.
+> **Next:** the codebase-modification avenue is closed. The forensic-accounting follow-up (§9,
+> 2026-10-22) tested a genuinely longer horizon (12 months) and still missed the bar across three
+> universe configurations; a second research pass (also §9) concluded that even the leads with
+> real published edge (short-interest days-to-cover, daily short-volume) are diversified
+> portfolio-level factors, not single-name picks — a structural mismatch with this app's
+> one-ticker `Candidate` model. **Shorts stay closed on the current architecture, full stop.** If
+> ever revisited, it is a separate product initiative (12-month, cross-sectional, factor-neutralized),
+> not a fix to this one — see §9 for the shape.
 > **Spec:** `docs/superpowers/specs/2026-09-17-shorts-signal-design.md` (the one spec for this effort).
 > **Commit rule (CLAUDE.md):** the user commits; "checkpoints" are review pauses, not commits.
 
@@ -244,7 +248,79 @@ compatible with that design does not appear to exist in the current evidence bas
 further would mean building a genuinely different, longer-horizon (1-12 month) product with different
 data — a separate initiative, not a continuation of this one.
 
-## 9. Deferred / out of scope
+## 9. Structural short thesis — validation results + "what would it take" research (DONE, 2026-10-22)
+
+Two follow-ups to §8's research, picked up a month later. First, finished running
+`scripts/validate_structural_short_thesis.py` (Beneish M-score / Sloan accruals, 90-day formation
+lag, 365-day forward window — a genuinely long horizon, not a 14-day retrofit) across three universe
+configurations. Second, a dedicated research pass on exactly what "new math, new time windows, and a
+new testing way" would need to look like for a short-side edge to work at all, since §8 had identified
+the horizon problem but not spelled out the alternative shape.
+
+**Validation results (all three passes miss the success bar: avg spread ≤ −5%/yr AND direction
+correct ≥60% of years):**
+
+| Pass | Universe | Avg spread (worst − best quintile) | Years correct direction |
+|---|---|---|---|
+| 1 | S&P 500 only (survivorship-biased) | −3.19%/yr (misses bar) | 10/15 = 66.7% (clears bar) |
+| 2 | + mid + small cap | **+3.38%/yr** (sign flips) | 6/15 = 40.0% (misses bar) |
+| 3 | + mid cap only (small dropped, "control for size") | +2.05%/yr (still wrong sign) | 8/15 = 53.3% (misses bar) |
+
+Pass 2's sign flip and Pass 3's partial-but-incomplete recovery both trace to the same outlier: fiscal
+year 2020 alone has a +60.4%/+46% spread (the worst-M-score/distress quintile *outperformed* the best
+quintile by that much), persisting even after small-caps are dropped — a crisis-recovery confound
+(distressed-looking, high-beta names rallying hardest in the V-shaped 2020 recovery), not a small-cap-
+specific artifact. These numbers were run and reported in-session but never previously written here —
+recorded now for the record.
+
+**Research pass: what would a working longer-horizon short signal actually require?**
+
+- **No lead found is single-name-compatible.** The two factors with real, replicated published edge —
+  short-interest days-to-cover (Hong, Li, Ni & Scheinkman: ~1.2%/month, NYSE/AMEX/NASDAQ 1988-2012) and
+  daily short-sale volume (Diether, Lee & Werner; Boehmer, Jones & Zhang: ~1.16% over 20 trading days,
+  concentrated around earnings/downgrade days) — are both constructed and validated as **diversified
+  decile/quintile long-short portfolios across hundreds of names, monthly-rebalanced**, never as a
+  single-ticker conviction pick with its own SL/TP. That is a structural mismatch with this app's
+  one-ticker `Candidate` model, independent of horizon.
+- **Two leads ruled out, not just weak**: options skew/put-call ratios (sign-unstable across papers —
+  Cremers & Weinbaum find a *positive* return relation, Xing/Zhang/Zhao find *negative*, depending on
+  construction — a red flag, not a usable signal) and insider selling (insider *sales* show "much
+  weaker," in one follow-up statistically insignificant, predictability — unlike insider *buys*; the
+  buy/sell asymmetry is well-established in the literature, not a sample-size artifact).
+- **One correction to §8's research**: FINRA's *daily short-volume* (transaction flow) file is free and
+  updated daily. §8's "free-but-disqualifying 8-23-day staleness" claim applies only to the biweekly
+  short-*interest* (position) report — a different dataset. Doesn't change the recommendation (still a
+  portfolio factor, not single-name), but corrects the record if a portfolio-level initiative is ever
+  scoped.
+- **Forensic accounting (Beneish/Sloan) remains the one single-name-compatible lead**, but only
+  validated at 12-month+ horizons, and this project's own test of it (above) got an *inconclusive*
+  result, not a clean rejection — two fixable methodology gaps: (a) the confound control used (drop
+  small-caps) is cruder than field-standard practice (Fama-French/Carhart factor-neutralization of the
+  quintile-spread return series against MKT/SMB/HML/momentum, or the QMJ-style double-sort-on-size-then-
+  quality that Asness/Frazzini/Pedersen use, rather than excluding a whole market-cap bucket); (b) crisis-
+  recovery years (2009, 2020) were pooled into one annual average instead of bucketed as a known regime,
+  which is what let one outlier year swamp the signal — standard momentum-crash practice (Daniel &
+  Moskowitz, already cited in §8) treats V-shaped recovery years as a separate regime, not noise to
+  average away. A real point-in-time universe (vs. today's-constituents survivorship bias) is a further,
+  larger fix that could move the result in **either** direction — survivorship bias also removes the
+  bankruptcies/delistings that would be a distress-short's biggest wins, so the current "survivorship
+  bias works against us" framing in the validation script's docstring is only half the picture.
+
+**What it would take if ever revisited — a separate initiative, not a fix to this one:**
+12-month forensic-accounting signal, monthly-refreshed, surfaced as a watchlist/avoid-list (not a trade
+ticket with a 14-day countdown — this app's "14-day predictions" identity per CLAUDE.md is a real
+product constraint, not just a current parameter), scored by cross-sectional quintile rank rather than
+the existing confidence pipeline, validated with proper factor-neutralization and ideally a point-in-time
+universe. **Cheapest possible next step, if one more data point is ever wanted before shelving this for
+good:** re-run the existing Pass 3 data with a momentum-factor regression on the quintile spread instead
+of the small-cap exclusion — roughly half a day of research-script work, no app changes.
+
+**Decision: shorts stay disabled on the current architecture, indefinitely, with no further
+gate-tuning, horizon-extension, or data-source-swap work planned on it.** A longer-horizon,
+cross-sectional, factor-neutralized watchlist feature is a legitimate *future, separate* initiative,
+not a continuation of this one, and is not currently scheduled.
+
+## 10. Deferred / out of scope
 
 - Full **portfolio-aware backtest** (capacity + conflict, not per-signal) — a separate, larger project.
 - Single-window backtest loop (`replay.py:146`) is not shorts-wired (only `_replay_window` /

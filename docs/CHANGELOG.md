@@ -4,6 +4,122 @@
 
 ---
 
+## 2026-10-22 — `feature/shorts_fix` (longs confidence/win-rate investigation)
+
+### Confidence-score discrimination + exit/risk-management diagnostics — CONCLUDED, no improvement found
+
+Triggered by the user's observation that win rate "feels too low." Diagnosed in two parts before
+any design work: (1) does the existing confidence score, or any other already-computed feature,
+actually discriminate winners from losers; (2) if not, can exit/risk-management changes improve
+expectancy without needing better entry discrimination. Read-only diagnostics throughout, several
+throwaway scripts under `scripts/` (not committed to app logic), all against stored backtest run
+`062af0ff` (3-year walk-forward, 2023-05-27→2026-05-27, 7124 resolved trades) unless noted.
+
+**Baseline reconfirmed, no drift**: WR 32.3%, Sharpe 3.10, +0.125R avg — matches the engine-parity
+re-baseline exactly.
+
+**Entry-side: 15 features tested, all null.** The 9 `compute_confidence` TA components
+(RSI/MACD/Stochastic/ADX/OBV/Bollinger/VWAP/EMA200/conflict-penalty) — max |correlation| with
+outcome 0.071 (Bollinger, sign-wrong: full points → 32.0% WR, zero points → 39.1% WR). Extending to
+relative strength (`rs_20d`/`rs_60d`/`sector_rs`), volume-profile positioning, and continuous OFI —
+all 3-7x weaker than the weakest TA component. Sentiment, tested properly (real decay-weighted
+historical data via `aggregate.py`'s actual formula, not a simplified stand-in) — also null
+(−0.003/+0.026), plus a structural coverage gap: only 5.6% of trades ever had a matching sentiment
+tag (feed pipeline skews macro, not single-stock). Two new data classes tried as a further check:
+insider buying (SEC Forms 3/4/5 bulk data, well-powered, 13,880 matched transactions) — clean null,
+flat zero across 30/60/90-day windows; Beneish M-score/Sloan accruals reused from the structural
+short-thesis script as a long-side quality filter — directionally correct but weak (−0.05 to −0.06),
+same noise band as everything else.
+
+**Exit-side: one false positive, caught and corrected before being trusted.** Widening the
+take-profit target while holding the stop fixed initially looked monotonically positive (+0.22R at
+3x) — but that measured "all trades including expired, marked-to-market" rather than real resolved
+outcomes; restricted to trades that actually hit SL/TP, wider targets are monotonically **worse**,
+down to −0.85R at 8x. Time-exit-with-stop-loss-active looked positive in raw R-multiples, but a
+proper SPY benchmark (after fixing a unit-mismatch bug — R-multiples vs. raw % returns aren't
+comparable without converting through each trade's own risk distance) showed **negative alpha at
+every horizon, worsening with hold time** (day 5: −0.31%, day 30: −1.01%) — the strategy loses to
+simply holding SPY over the same calendar windows.
+
+**One narrow lead surfaced, then weakened on out-of-sample testing.** Category-split alpha showed
+`stocks_mid` (+0.54%/+0.89% at day 15/30) and `stocks_small` (+3.16%/+3.05%) outperforming SPY while
+`stocks_large` (the highest-volume category) and `indices` underperformed it. Re-tested on a
+genuinely non-overlapping window (stored run `619e7aa5`, 2022-01-28→2022-10-28, a correction year):
+`stocks_small`'s alpha did not replicate (shrank to +0.17-0.34% on n=33 — noise, not signal; a
+sample-size artifact of the original window's noisiest category). `stocks_mid`'s raw alpha held in
+sign, but beta rose sharply in this down-market window (0.63-0.80 vs. 0.35-0.39 originally) and the
+beta-adjusted (regression) alpha turned **slightly negative** — a meaningful share of the apparent
+outperformance may be lower-than-SPY beta during a drawdown, not genuine stock-specific edge.
+
+**Decision: this diagnostic thread is concluded.** Neither entry-side reweighting/new-features nor
+exit-side policy changes produced a confirmed, replicable improvement after being pushed through
+out-of-sample scrutiny — the same "consistent null across many independent, rigorous tests" pattern
+that closed the shorts investigation (see `superpowers/plans/2026-09-18-shorts-engine.md`). The
+`stocks_mid` exit-timing lead is noted as "inconclusive, not confirmed" rather than ruled a clean
+negative — worth a cautious look if revisited with a larger/different OOS sample, but not something
+to design around now. No further confidence-reweighting or exit-policy-tuning work is planned on
+this thread. Next: pivot to the mid/small-cap recommendation-coverage problem (the `short_disabled`
+skew quantified in the mid/small-cap coverage audit, same investigation arc, separate mechanism).
+
+### Mid/small-cap watchlist diversification — root cause fixed, verified live
+
+Companion investigation to the above, same trigger ("a lot of recommendations do not reach us...
+mid-cap and small-cap"). Full detail in
+`superpowers/plans/2026-10-22-win-rate-coverage-investigation.md` §3.
+
+- **Root cause confirmed**: not the confidence-gate penalty originally suspected — `direction ==
+  "short"` + `SHORTS_ENGINE_ENABLED = False` drops the candidate at `engine.py:1266` before the
+  confidence pipeline ever runs. Persistent over 251 trading days, scaling inversely with cap size
+  (`stocks_large` 44.3% short-rate, `stocks_mid` 54.6%, `stocks_small` 59.9%, up to 73.1% in bull
+  regimes). Traced to watchlist composition: the curated `stocks_mid`/`stocks_small` lists (14/10
+  symbols) were almost entirely speculative/high-beta names, all `"aggressive"`/`"moderate"` risk
+  tier, zero representation in financials, REITs, healthcare, industrials, utilities, or consumer
+  staples — these chop bearish on their own per-symbol technicals far more often than
+  `stocks_large`'s balanced, profitable mix.
+- **Fix**: added 20 new symbols to `ASSETS_BY_CATEGORY` in `engine.py` (`stocks_mid` 14→24,
+  `stocks_small` 10→20), screened for SEC-EDGAR-verified profitability (positive net income, ≥2 of
+  last 3 fiscal years) and sector-gap-filling, reusing the structural-short-thesis script's ticker
+  pool and extraction code. Existing names kept, not replaced. Most additions tagged
+  `"conservative"`/`"moderate"` — first conservative-tier representation either watchlist has had.
+- **Verified live (2026-10-22)**: full unit suite green (386 tests), new lists load correctly.
+  Live batch run produced 3/5 `stocks_mid` candidates and the sole `stocks_small` candidate from
+  the new additions (`EWBC` conf=66, `MOH` conf=53, `CCK` conf=38, `TRNO` conf=48) — on a day the
+  prior all-speculative watchlist would likely have produced little to no mid/small coverage. No
+  data errors on any of the 20 new tickers.
+- **Decision: implemented.** No further changes planned unless future monitoring shows the new
+  names underperforming or the short-skew persisting disproportionately even with the larger
+  universe — would need a multi-week live sample to assess, not done as part of this fix.
+
+---
+
+## 2026-10-22 — `feature/shorts_fix`
+
+### Structural short thesis — validation concluded, longer-horizon shorts ruled out as a fix
+
+Picked up the §8 research thread from 2026-09-23 (does a different data source/horizon make shorts
+viable?). Full detail in `superpowers/plans/2026-09-18-shorts-engine.md` §9.
+
+- **Finished validating `scripts/validate_structural_short_thesis.py`** (Beneish M-score / Sloan
+  accruals, 90-day formation lag, 365-day forward window) across three universe passes. All three
+  missed the success bar (avg spread ≤ −5%/yr AND direction correct ≥60% of years): S&P 500 only
+  (−3.19%/yr, 66.7% — direction clears, magnitude misses), + mid/small (+3.38%/yr, sign flips, 40.0%),
+  + mid only (+2.05%/yr, still wrong sign, 53.3%). All three trace to a 2020 crisis-recovery outlier
+  (+46-60% single-year spread) that persists even after controlling for size.
+- **Dedicated research pass on what a working longer-horizon short would actually require**: the two
+  factors with real published edge (short-interest days-to-cover, daily short-sale volume) are both
+  diversified portfolio-level factors (hundreds of names, monthly-rebalanced), never validated
+  single-name — a structural mismatch with this app's one-ticker `Candidate` model, independent of
+  horizon. Options skew and insider selling ruled out (sign-unstable / weak-to-insignificant in their
+  own literature, respectively). One correction to the 09-23 research: FINRA's daily short-*volume*
+  file is free, unlike the biweekly short-*interest* report it was conflated with.
+- **Decision: shorts stay disabled on the current architecture, indefinitely.** No further
+  gate-tuning, horizon-extension, or data-source-swap work is planned on it. If a longer-horizon,
+  cross-sectional, factor-neutralized watchlist feature is ever built, it's a separate future
+  initiative (12-month forensic-accounting signal, monthly cadence, watchlist UI not a trade ticket),
+  not a continuation of this one — not currently scheduled.
+
+---
+
 ## 2026-09-23 — `feature/shorts_fix`
 
 ### Shorts engine — Phase 2 (confirmation-bar entry delay) tried, made things worse — effort CONCLUDED

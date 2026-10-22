@@ -297,6 +297,21 @@ ASSETS_BY_CATEGORY = {
         # Health / Consumer
         ("HIMS", "HIMS", "aggressive"),
         ("RKLB", "RKLB", "aggressive"),
+        # Financials (profitability/sector-balance addition, 2026-10-22)
+        ("RNR", "RNR", "conservative"),
+        ("EWBC", "EWBC", "conservative"),
+        # Real estate
+        ("NLY", "NLY", "moderate"),
+        # Consumer / Industrials
+        ("TOL", "TOL", "moderate"),
+        ("USFD", "USFD", "conservative"),
+        ("CSL", "CSL", "moderate"),
+        ("CCK", "CCK", "moderate"),
+        # Utilities
+        ("NJR", "NJR", "conservative"),
+        # Healthcare
+        ("UTHR", "UTHR", "moderate"),
+        ("MOH", "MOH", "moderate"),
     ],
     "stocks_small": [
         # AI
@@ -315,6 +330,21 @@ ASSETS_BY_CATEGORY = {
         ("RXRX", "RXRX", "aggressive"),
         # Real estate tech
         ("OPEN", "OPEN", "aggressive"),
+        # Consumer defensive (profitability/sector-balance addition, 2026-10-22)
+        ("CALM", "CALM", "conservative"),
+        ("LW", "LW", "conservative"),
+        # Financials
+        ("ABCB", "ABCB", "conservative"),
+        ("CATY", "CATY", "conservative"),
+        ("RDN", "RDN", "moderate"),
+        # Real estate
+        ("TRNO", "TRNO", "conservative"),
+        # Industrials
+        ("AWI", "AWI", "moderate"),
+        ("OTTR", "OTTR", "moderate"),
+        ("BLDR", "BLDR", "moderate"),
+        # Healthcare (profitable biotech)
+        ("ACAD", "ACAD", "moderate"),
     ],
     "commodities": [
         ("WTI", "CL=F", "conservative"),
